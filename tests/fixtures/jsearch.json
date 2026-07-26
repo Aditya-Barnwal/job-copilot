@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "job_id": "js-1",
+      "employer_name": "WidgetCo",
+      "job_title": "Software Engineer",
+      "job_description": "Python, FastAPI, AWS, Kubernetes.",
+      "job_city": "Bengaluru",
+      "job_state": "KA",
+      "job_country": "IN",
+      "job_is_remote": false,
+      "job_apply_link": "https://js.example/apply/js-1",
+      "job_posted_at_datetime_utc": "2026-06-21T08:00:00Z",
+      "job_min_salary": 1500000,
+      "job_max_salary": 2200000,
+      "job_salary_currency": "INR",
+      "job_salary_period": "1 YEAR"
+    }
+  ]
+}

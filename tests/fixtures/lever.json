@@ -1,0 +1,38 @@
+[
+  {
+    "id": "lv-aaa-111",
+    "text": "Senior Software Engineer",
+    "hostedUrl": "https://jobs.lever.co/motorq/aaa-111",
+    "workplaceType": "remote",
+    "createdAt": 1749600000000,
+    "categories": { "location": "Remote - India", "team": "Platform" },
+    "descriptionPlain": "Work on connected-vehicle data pipelines."
+  },
+  {
+    "id": "lv-bbb-222",
+    "text": "Embedded Engineer",
+    "hostedUrl": "https://jobs.lever.co/motorq/bbb-222",
+    "workplaceType": "on-site",
+    "createdAt": 1749700000000,
+    "categories": { "location": "Chennai, India", "team": "Firmware" },
+    "descriptionPlain": "Hands-on embedded role in Chennai."
+  },
+  {
+    "id": "lv-ccc-333",
+    "text": "Solutions Architect",
+    "hostedUrl": "https://jobs.lever.co/motorq/ccc-333",
+    "workplaceType": "hybrid",
+    "createdAt": 1749800000000,
+    "categories": { "location": "London, UK", "team": "Customer" },
+    "descriptionPlain": "Hybrid role based in London."
+  },
+  {
+    "id": "lv-ddd-444",
+    "text": "Data Engineer",
+    "hostedUrl": "https://jobs.lever.co/motorq/ddd-444",
+    "workplaceType": "remote",
+    "createdAt": 1749900000000,
+    "categories": { "location": "Berlin, Germany", "team": "Data" },
+    "descriptionPlain": "Fully remote data engineering role, EU hours."
+  }
+]

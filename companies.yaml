@@ -1,0 +1,80 @@
+# companies.yaml — your seed list.
+#
+# IMPORTANT, read this first:
+#   Every slug / tenant / site below is a BEST GUESS, not a verified value.
+#   ATS choices and board tokens change, and I can't confirm them from here.
+#   Before trusting a live pull, verify each company in ~30 seconds:
+#
+#     1. Open the company careers page.
+#     2. Click any job, then look at where the "Apply" button / URL points:
+#          boards.greenhouse.io/<slug>        -> connector: greenhouse, slug=<slug>
+#          jobs.lever.co/<slug>               -> connector: lever,      slug=<slug>
+#          jobs.ashbyhq.com/<slug>            -> connector: ashby,      slug=<slug>
+#          <tenant>.wd{N}.myworkdayjobs.com/  -> connector: workday
+#                                                tenant=<tenant>, wd_server=wd{N},
+#                                                site=<path segment after the locale>
+#          anything else (amazon.jobs, careers.google.com, higher.gs.com, ...)
+#                                             -> connector: manual (do by hand)
+#
+#   Set `verify: false` once you've confirmed a row works.
+#
+# Fields:
+#   name      display name
+#   sector    tech | fintech   (drives the optional sector filter)
+#   connector greenhouse | lever | ashby | workday | manual
+#   slug      board token (greenhouse/lever/ashby)
+#   tenant, wd_server, site   (workday only)
+#   note, verify              (housekeeping)
+
+companies:
+  # ---- Big tech / proprietary portals: no clean public feed -> manual ----
+  - { name: Google,        sector: tech,    connector: manual, note: "careers.google.com — proprietary; jobs API is partner-only" }
+  - { name: Microsoft,     sector: tech,    connector: manual, note: "careers.microsoft.com — proprietary search endpoint" }
+  - { name: Amazon,        sector: tech,    connector: manual, note: "amazon.jobs — proprietary" }
+  - { name: Oracle,        sector: tech,    connector: manual, note: "Oracle Recruiting Cloud (own system)" }
+
+  # ---- Finance / enterprise: mostly Workday or bespoke ----
+  - { name: Goldman Sachs, sector: fintech, connector: manual, note: "higher.gs.com — bespoke; needs a custom connector" }
+  - { name: JP Morgan,     sector: fintech, connector: manual, note: "Oracle Recruiting Cloud — needs an Oracle connector (not built yet)" }
+  - { name: Wells Fargo,   sector: fintech, connector: manual, note: "own recruiting portal — verify; may be Workday" }
+  - { name: D.E. Shaw,     sector: fintech, connector: manual, note: "bespoke careers page" }
+
+  - { name: PayPal,        sector: fintech, connector: workday, tenant: paypal, wd_server: wd1, site: jobs,                 verify: true, note: "GUESS — confirm tenant/wd_server/site on the careers URL" }
+  - { name: Adobe,         sector: tech,    connector: workday, tenant: adobe,  wd_server: wd5, site: external_experienced, verify: true, note: "GUESS — confirm tenant/wd_server/site on the careers URL" }
+
+  # ---- Likely on a clean public feed (Greenhouse/Lever/Ashby) ----
+  - { name: Uber,          sector: tech,    connector: manual, note: "uses iCIMS (apply URL contains icims.com); not supported by our 4 connectors" }
+  - { name: Okta,          sector: tech,    connector: greenhouse, slug: okta,     verify: true, note: "GUESS — confirm apply-URL domain & slug" }
+  - { name: BalkanID,      sector: tech,    connector: manual, apply_method: email, contact_email: "hiring@balkan.id", note: "no ATS board — applications by email" }
+  # TODO verify: open motorq.com careers, click a job, read the apply-URL domain, then set connector + slug and verify:false
+  - { name: Motorq,        sector: tech,    connector: manual, verify: true, note: "ATS unconfirmed — check apply URL: greenhouse/lever/ashby/workday?" }
+
+  # ---- Verified candidates (Part 2d, 2026-06-26). Failures left as comments. ----
+  - { name: Stripe, sector: fintech, connector: greenhouse, slug: stripe, verify: false, note: "verified live (493 roles)" }
+  # FAIL Plaid greenhouse:plaid HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/plaid/jobs?content=true
+  - { name: Affirm, sector: fintech, connector: greenhouse, slug: affirm, verify: false, note: "verified live (163 roles)" }
+  - { name: Robinhood, sector: fintech, connector: greenhouse, slug: robinhood, verify: false, note: "verified live (137 roles)" }
+  - { name: Brex, sector: fintech, connector: greenhouse, slug: brex, verify: false, note: "verified live (248 roles)" }
+  - { name: Mercury, sector: fintech, connector: greenhouse, slug: mercury, verify: false, note: "verified live (53 roles)" }
+  # FAIL Razorpay lever:razorpay HTTPError: 404 Client Error: Not Found for url: https://api.lever.co/v0/postings/razorpay?mode=json
+  - { name: CRED, sector: fintech, connector: lever, slug: cred, verify: false, note: "verified live (10 roles)" }
+  # FAIL Groww lever:groww HTTPError: 404 Client Error: Not Found for url: https://api.lever.co/v0/postings/groww?mode=json
+  # FAIL Setu lever:setu HTTPError: 404 Client Error: Not Found for url: https://api.lever.co/v0/postings/setu?mode=json
+  - { name: Postman, sector: tech, connector: greenhouse, slug: postman, verify: false, note: "verified live (121 roles)" }
+  # FAIL DigitalOcean greenhouse:digitalocean HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/digitalocean/jobs?content=true
+  - { name: Datadog, sector: tech, connector: greenhouse, slug: datadog, verify: false, note: "verified live (411 roles)" }
+  - { name: Cloudflare, sector: tech, connector: greenhouse, slug: cloudflare, verify: false, note: "verified live (200 roles)" }
+  # FAIL HashiCorp greenhouse:hashicorp HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/hashicorp/jobs?content=true
+  - { name: Mixpanel, sector: tech, connector: greenhouse, slug: mixpanel, verify: false, note: "verified live (39 roles)" }
+  - { name: Twilio, sector: tech, connector: greenhouse, slug: twilio, verify: false, note: "verified live (163 roles)" }
+  - { name: Asana, sector: tech, connector: greenhouse, slug: asana, verify: false, note: "verified live (139 roles)" }
+  - { name: Notion, sector: tech, connector: ashby, slug: notion, verify: false, note: "verified live (147 roles)" }
+  # FAIL Vercel ashby:vercel returned 0 roles
+  - { name: Linear, sector: tech, connector: ashby, slug: linear, verify: false, note: "verified live (23 roles)" }
+  - { name: Ramp, sector: fintech, connector: ashby, slug: ramp, verify: false, note: "verified live (117 roles)" }
+  - { name: Discord, sector: tech, connector: greenhouse, slug: discord, verify: false, note: "verified live (64 roles)" }
+  - { name: Figma, sector: tech, connector: greenhouse, slug: figma, verify: false, note: "verified live (172 roles)" }
+  - { name: Anthropic, sector: tech, connector: greenhouse, slug: anthropic, verify: false, note: "verified live (391 roles)" }
+  # FAIL ThoughtSpot greenhouse:thoughtspot HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/thoughtspot/jobs?content=true
+  # FAIL Freshworks greenhouse:freshworks HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/freshworks/jobs?content=true
+  # FAIL Hasura greenhouse:hasura HTTPError: 404 Client Error: Not Found for url: https://boards-api.greenhouse.io/v1/boards/hasura/jobs?content=true

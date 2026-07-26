@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+job-copilot refresh schedule (optional, opt-in).
+
+Hits the local /api/ingest endpoint every 6 hours. The server must be running
+(uvicorn server.app:app on :8000). This is NOT auto-installed — copy the
+file, edit the path, then `launchctl load`.
+
+Install:
+  cp scripts/com.jobcopilot.refresh.plist.example ~/Library/LaunchAgents/com.jobcopilot.refresh.plist
+  launchctl load   ~/Library/LaunchAgents/com.jobcopilot.refresh.plist
+
+Uninstall:
+  launchctl unload ~/Library/LaunchAgents/com.jobcopilot.refresh.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jobcopilot.refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/curl</string>
+    <string>-s</string>
+    <string>-X</string><string>POST</string>
+    <string>-H</string><string>Content-Type: application/json</string>
+    <string>-d</string><string>{}</string>
+    <string>http://localhost:8000/api/ingest</string>
+  </array>
+  <key>StartInterval</key><integer>21600</integer> <!-- 6 hours -->
+  <key>StandardOutPath</key><string>/tmp/jobcopilot.refresh.log</string>
+  <key>StandardErrorPath</key><string>/tmp/jobcopilot.refresh.err</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>

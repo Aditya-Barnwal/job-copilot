@@ -1,0 +1,453 @@
+"""SQLite persistence for jobs, statuses, and resume versions.
+
+The DB is the source of truth across runs. Ingest upserts; status / scores /
+applied-version-links set by the human or by scoring are preserved across
+re-ingests.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from .filters import FilterResult
+
+
+DEFAULT_DB_PATH = Path(os.environ.get(
+    "JOBCOPILOT_DB",
+    str(Path(__file__).resolve().parent.parent / "data" / "jobcopilot.db"),
+))
+RESUMES_DIR = Path(__file__).resolve().parent.parent / "data" / "resumes"
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    company TEXT NOT NULL,
+    company_sector TEXT,
+    external_id TEXT,
+    title TEXT NOT NULL,
+    role_family TEXT,
+    location_text TEXT,
+    workplace_type TEXT,
+    country_bucket TEXT,
+    url TEXT,
+    description_text TEXT,
+    department TEXT,
+    comp_currency TEXT,
+    comp_min REAL,
+    comp_max REAL,
+    comp_interval TEXT,
+    comp_summary TEXT,
+    posted_at TEXT,
+    posted_age_days INTEGER,
+    freshness TEXT,
+    package_estimated INTEGER DEFAULT 0,
+    country_uncertain INTEGER DEFAULT 0,
+    seniority_high INTEGER DEFAULT 0,
+    min_yoe_required INTEGER,
+    yoe_is_preferred INTEGER DEFAULT 0,
+    match_score REAL,
+    ats_coverage REAL,
+    required_keywords TEXT,
+    missing_keywords TEXT,
+    applied_version_id INTEGER,
+    status TEXT DEFAULT 'new',
+    notes TEXT,
+    first_seen REAL,
+    last_seen REAL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_role ON jobs(role_family);
+CREATE INDEX IF NOT EXISTS idx_jobs_freshness ON jobs(freshness);
+
+CREATE TABLE IF NOT EXISTS resume_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT,
+    role_family TEXT,
+    source_job_key TEXT,
+    source_company TEXT,
+    tailored_text TEXT,
+    pdf_path TEXT,
+    target_keywords TEXT,
+    base_ats_coverage REAL,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    k TEXT PRIMARY KEY,
+    v TEXT
+);
+"""
+
+
+@contextmanager
+def connect(db_path: Path | str = DEFAULT_DB_PATH):
+    p = Path(db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+    with connect(db_path) as conn:
+        conn.executescript(SCHEMA)
+        # Forward migrations for existing DBs from earlier phases.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "min_yoe_required" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN min_yoe_required INTEGER")
+        if "yoe_is_preferred" not in cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN yoe_is_preferred INTEGER DEFAULT 0")
+
+
+# --- jobs ---------------------------------------------------------------
+
+_POSTING_FIELDS = (
+    "source", "company", "company_sector", "external_id", "title", "role_family",
+    "location_text", "workplace_type", "country_bucket", "url", "description_text",
+    "department", "comp_currency", "comp_min", "comp_max", "comp_interval",
+    "comp_summary", "posted_at", "posted_age_days", "freshness",
+    "package_estimated", "country_uncertain", "seniority_high",
+    "min_yoe_required", "yoe_is_preferred",
+)
+
+
+def _row_from_filter_result(r: FilterResult) -> dict[str, Any]:
+    j = r.job
+    comp = j.compensation
+    return dict(
+        key=j.key,
+        source=j.source,
+        company=j.company,
+        company_sector=j.company_sector,
+        external_id=j.external_id,
+        title=j.title,
+        role_family=j.role_family,
+        location_text=j.location_text,
+        workplace_type=j.workplace_type,
+        country_bucket=j.country_bucket,
+        url=j.url,
+        description_text=j.description_text,
+        department=j.department,
+        comp_currency=(comp.currency if comp else None),
+        comp_min=(comp.min_value if comp else None),
+        comp_max=(comp.max_value if comp else None),
+        comp_interval=(comp.interval if comp else None),
+        comp_summary=(comp.summary if comp else None),
+        posted_at=j.posted_at,
+        posted_age_days=j.posted_age_days,
+        freshness=j.freshness,
+        package_estimated=int(r.package_estimated),
+        country_uncertain=int(r.country_uncertain),
+        seniority_high=int(j.seniority_high),
+        min_yoe_required=j.min_yoe_required,
+        yoe_is_preferred=int(j.yoe_is_preferred),
+    )
+
+
+def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str = DEFAULT_DB_PATH) -> tuple[int, int]:
+    """Insert new keys; update posting fields + last_seen on existing keys.
+
+    Preserves status, notes, scores, applied_version_id on update.
+    Returns (inserted, updated).
+    """
+    now = time.time()
+    inserted = 0
+    updated = 0
+    with connect(db_path) as conn:
+        for r in results:
+            row = _row_from_filter_result(r)
+            existing = conn.execute("SELECT key FROM jobs WHERE key = ?", (row["key"],)).fetchone()
+            if existing:
+                set_clause = ", ".join(f"{f} = :{f}" for f in _POSTING_FIELDS)
+                row["_last"] = now
+                conn.execute(
+                    f"UPDATE jobs SET {set_clause}, last_seen = :_last WHERE key = :key",
+                    row,
+                )
+                updated += 1
+            else:
+                row["first_seen"] = now
+                row["last_seen"] = now
+                cols = list(row.keys())
+                conn.execute(
+                    f"INSERT INTO jobs ({', '.join(cols)}) VALUES ({', '.join(':' + c for c in cols)})",
+                    row,
+                )
+                inserted += 1
+    return inserted, updated
+
+
+def _decode_keywords(row: dict) -> dict:
+    for f in ("required_keywords", "missing_keywords"):
+        v = row.get(f)
+        if isinstance(v, str) and v:
+            try:
+                row[f] = json.loads(v)
+            except Exception:
+                row[f] = []
+        elif v is None:
+            row[f] = []
+    return row
+
+
+def _derive(row: dict, user_yoe: Optional[int]) -> dict:
+    """Add display-time derived fields: fit_score, ats_low_confidence, yoe_gap."""
+    ms = row.get("match_score")
+    ats = row.get("ats_coverage")
+    if ms is not None and ats is not None:
+        row["fit_score"] = round(0.5 * ms + 0.5 * (ats * 100.0), 1)
+    elif ms is not None:
+        row["fit_score"] = round(ms, 1)
+    else:
+        row["fit_score"] = None
+    req = row.get("required_keywords") or []
+    row["ats_low_confidence"] = bool(len(req) < 3 and req)
+    # YOE gap
+    min_yoe = row.get("min_yoe_required")
+    pref = bool(row.get("yoe_is_preferred"))
+    if user_yoe is not None and min_yoe is not None and not pref and min_yoe > user_yoe:
+        row["yoe_gap"] = True
+    else:
+        row["yoe_gap"] = False
+    return row
+
+
+def list_jobs(
+    status: Optional[str] = None,
+    sector: Optional[str] = None,
+    country_bucket: Optional[str] = None,
+    workplace_type: Optional[str] = None,
+    role_family: Optional[str] = None,
+    freshness: Optional[str] = None,
+    q: Optional[str] = None,
+    min_score: Optional[float] = None,
+    max_age_days: Optional[int] = None,
+    hide_senior_high: bool = False,
+    limit: int = 500,
+    db_path: Path | str = DEFAULT_DB_PATH,
+) -> list[dict]:
+    where = []
+    args: list[Any] = []
+    if status:
+        where.append("status = ?"); args.append(status)
+    if sector:
+        where.append("company_sector = ?"); args.append(sector)
+    if country_bucket:
+        where.append("country_bucket = ?"); args.append(country_bucket)
+    if workplace_type:
+        where.append("workplace_type = ?"); args.append(workplace_type)
+    if role_family:
+        where.append("role_family = ?"); args.append(role_family)
+    if freshness:
+        where.append("freshness = ?"); args.append(freshness)
+    if q:
+        where.append("(LOWER(title) LIKE ? OR LOWER(company) LIKE ?)")
+        args += [f"%{q.lower()}%", f"%{q.lower()}%"]
+    if min_score is not None:
+        where.append("match_score >= ?"); args.append(min_score)
+    if max_age_days is not None:
+        where.append("(posted_age_days IS NULL OR posted_age_days <= ?)")
+        args.append(max_age_days)
+    if hide_senior_high:
+        where.append("seniority_high = 0")
+
+    sql = "SELECT * FROM jobs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += (
+        " ORDER BY match_score IS NULL, match_score DESC, "
+        " CASE freshness WHEN 'fresh' THEN 0 WHEN 'recent' THEN 1 "
+        " WHEN 'aging' THEN 2 WHEN 'stale' THEN 3 ELSE 4 END, "
+        " last_seen DESC LIMIT ?"
+    )
+    args.append(limit)
+    with connect(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+        user_yoe_raw = conn.execute("SELECT v FROM meta WHERE k='user_yoe'").fetchone()
+    user_yoe = int(user_yoe_raw["v"]) if user_yoe_raw and (user_yoe_raw["v"] or "").isdigit() else None
+    return [_derive(_decode_keywords(r), user_yoe) for r in rows]
+
+
+def get_job(key: str, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE key = ?", (key,)).fetchone()
+        user_yoe_raw = conn.execute("SELECT v FROM meta WHERE k='user_yoe'").fetchone()
+    if not row:
+        return None
+    user_yoe = int(user_yoe_raw["v"]) if user_yoe_raw and (user_yoe_raw["v"] or "").isdigit() else None
+    return _derive(_decode_keywords(dict(row)), user_yoe)
+
+
+def set_status(key: str, status: str, notes: Optional[str] = None,
+               db_path: Path | str = DEFAULT_DB_PATH) -> bool:
+    with connect(db_path) as conn:
+        if notes is not None:
+            cur = conn.execute("UPDATE jobs SET status = ?, notes = ? WHERE key = ?",
+                               (status, notes, key))
+        else:
+            cur = conn.execute("UPDATE jobs SET status = ? WHERE key = ?", (status, key))
+        return cur.rowcount > 0
+
+
+def set_scores(key: str, match_score: float, ats_coverage: float,
+               required_keywords: list[str], missing_keywords: list[str],
+               db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET match_score = ?, ats_coverage = ?, "
+            "required_keywords = ?, missing_keywords = ? WHERE key = ?",
+            (match_score, ats_coverage,
+             json.dumps(required_keywords), json.dumps(missing_keywords), key),
+        )
+
+
+def status_counts(db_path: Path | str = DEFAULT_DB_PATH) -> dict[str, int]:
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
+    return {r["status"]: r["n"] for r in rows}
+
+
+# --- meta / resume base -------------------------------------------------
+
+def set_meta(key: str, value: str, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    with connect(db_path) as conn:
+        conn.execute("INSERT INTO meta(k, v) VALUES(?, ?) "
+                     "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (key, value))
+
+
+def get_meta(key: str, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[str]:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+    return row["v"] if row else None
+
+
+# --- profile -----------------------------------------------------------
+
+PROFILE_FIELDS = (
+    "first_name", "last_name", "email", "phone",
+    "linkedin_url", "portfolio_url",
+)
+
+
+def get_profile(db_path: Path | str = DEFAULT_DB_PATH) -> dict:
+    v = get_meta("profile", db_path) or "{}"
+    try:
+        data = json.loads(v)
+    except Exception:
+        data = {}
+    return {k: (data.get(k) or "") for k in PROFILE_FIELDS}
+
+
+def set_profile(profile: dict, db_path: Path | str = DEFAULT_DB_PATH) -> dict:
+    cleaned = {k: (profile.get(k) or "").strip() for k in PROFILE_FIELDS}
+    set_meta("profile", json.dumps(cleaned), db_path)
+    return cleaned
+
+
+# --- answer pack -------------------------------------------------------
+
+def get_answer_pack(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    v = get_meta("answer_pack", db_path) or "[]"
+    try:
+        items = json.loads(v)
+        return items if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def upsert_answer(q: str, a: str, db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    items = get_answer_pack(db_path)
+    items = [it for it in items if (it.get("q") or "").strip().lower() != q.strip().lower()]
+    items.append({"q": q.strip(), "a": a.strip()})
+    set_meta("answer_pack", json.dumps(items), db_path)
+    return items
+
+
+def delete_answer(q: str, db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    items = [it for it in get_answer_pack(db_path)
+             if (it.get("q") or "").strip().lower() != q.strip().lower()]
+    set_meta("answer_pack", json.dumps(items), db_path)
+    return items
+
+
+def set_resume(text: str, filename: str, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    set_meta("resume_text", text, db_path)
+    set_meta("resume_filename", filename, db_path)
+    set_meta("resume_uploaded_at", str(time.time()), db_path)
+
+
+def get_resume(db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+    text = get_meta("resume_text", db_path)
+    if not text:
+        return None
+    return {
+        "text": text,
+        "filename": get_meta("resume_filename", db_path),
+        "uploaded_at": get_meta("resume_uploaded_at", db_path),
+    }
+
+
+# --- resume versions ----------------------------------------------------
+
+def add_version(label: str, role_family: Optional[str], source_job_key: Optional[str],
+                source_company: Optional[str], tailored_text: str, pdf_path: str,
+                target_keywords: list[str], base_ats_coverage: float,
+                db_path: Path | str = DEFAULT_DB_PATH) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO resume_versions(label, role_family, source_job_key, "
+            "source_company, tailored_text, pdf_path, target_keywords, "
+            "base_ats_coverage, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (label, role_family, source_job_key, source_company, tailored_text,
+             pdf_path, json.dumps(target_keywords), base_ats_coverage, time.time()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_versions(role_family: Optional[str] = None,
+                  db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+    sql = "SELECT * FROM resume_versions"
+    args: list[Any] = []
+    if role_family:
+        sql += " WHERE role_family = ?"; args.append(role_family)
+    sql += " ORDER BY created_at DESC"
+    with connect(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+    for r in rows:
+        try:
+            r["target_keywords"] = json.loads(r.get("target_keywords") or "[]")
+        except Exception:
+            r["target_keywords"] = []
+    return rows
+
+
+def get_version(version_id: int, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM resume_versions WHERE id = ?", (version_id,)).fetchone()
+    if not row:
+        return None
+    r = dict(row)
+    try:
+        r["target_keywords"] = json.loads(r.get("target_keywords") or "[]")
+    except Exception:
+        r["target_keywords"] = []
+    return r
+
+
+def link_job_version(key: str, version_id: int,
+                     db_path: Path | str = DEFAULT_DB_PATH) -> None:
+    with connect(db_path) as conn:
+        conn.execute("UPDATE jobs SET applied_version_id = ? WHERE key = ?",
+                     (version_id, key))

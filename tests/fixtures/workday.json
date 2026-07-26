@@ -1,0 +1,26 @@
+{
+  "total": 3,
+  "jobPostings": [
+    {
+      "title": "Software Engineer",
+      "externalPath": "/job/Bangalore/Software-Engineer_R-12345",
+      "locationsText": "Bangalore, India",
+      "postedOn": "Posted 3 Days Ago",
+      "bulletFields": ["R-12345"]
+    },
+    {
+      "title": "Product Designer",
+      "externalPath": "/job/San-Jose/Product-Designer_R-12346",
+      "locationsText": "San Jose, CA, United States",
+      "postedOn": "Posted 5 Days Ago",
+      "bulletFields": ["R-12346"]
+    },
+    {
+      "title": "Site Reliability Engineer",
+      "externalPath": "/job/Remote/SRE_R-12347",
+      "locationsText": "Remote, United States",
+      "postedOn": "Posted Today",
+      "bulletFields": ["R-12347"]
+    }
+  ]
+}

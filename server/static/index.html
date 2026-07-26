@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>job-copilot</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <h1>job-copilot</h1>
+  <nav class="tabs">
+    <button data-tab="browse" class="tab active">Browse</button>
+    <button data-tab="tracker" class="tab">Tracker</button>
+    <button data-tab="resume" class="tab">Resume</button>
+    <button data-tab="answers" class="tab">Answer Pack</button>
+  </nav>
+  <div class="meta-bar">
+    <button id="run-ingest">Run ingest</button>
+    <button id="run-score">Score all</button>
+    <span id="last-ingest" class="hint">last run: —</span>
+    <span id="resume-status" class="hint">resume: not uploaded</span>
+    <span id="llm-status" class="badge llm-unknown">LLM: …</span>
+  </div>
+</header>
+
+<main>
+  <section id="tab-browse" class="tab-panel active">
+    <div class="filters">
+      <input id="f-q" placeholder="search title / company" />
+      <select id="f-sector">
+        <option value="">all sectors</option>
+        <option value="tech">tech</option>
+        <option value="fintech">fintech</option>
+      </select>
+      <select id="f-geo">
+        <option value="">all geos</option>
+        <option value="IN">India</option>
+        <option value="non-IN">non-India</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <select id="f-work">
+        <option value="">any work-type</option>
+        <option value="remote">remote</option>
+        <option value="onsite">onsite</option>
+        <option value="hybrid">hybrid</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <select id="f-status">
+        <option value="">any status</option>
+        <option value="new">new</option>
+        <option value="interested">interested</option>
+        <option value="ready">ready</option>
+        <option value="applied">applied</option>
+        <option value="rejected">rejected</option>
+        <option value="not_interested">not interested</option>
+      </select>
+      <input id="f-role" placeholder="role family (e.g. backend_engineer)" />
+      <select id="f-fresh">
+        <option value="">any freshness</option>
+        <option value="fresh">fresh</option>
+        <option value="recent">recent</option>
+        <option value="aging">aging</option>
+        <option value="stale">stale</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <input id="f-min-score" type="number" step="0.1" placeholder="min score" />
+      <input id="f-max-yoe" type="number" min="0" max="50" placeholder="max YOE" />
+      <label class="chk"><input id="f-hide-stale" type="checkbox" /> hide stale</label>
+      <label class="chk"><input id="f-hide-senior" type="checkbox" checked /> hide senior+</label>
+      <button id="apply-filters" data-action="apply">Apply</button>
+      <button id="export-csv" data-action="export-csv">Download CSV</button>
+    </div>
+    <div id="jobs-list" class="jobs"></div>
+  </section>
+
+  <section id="tab-tracker" class="tab-panel">
+    <div class="board" id="board"></div>
+  </section>
+
+  <section id="tab-resume" class="tab-panel">
+    <h2>Base resume</h2>
+    <form id="resume-form">
+      <input type="file" name="file" accept=".pdf,.txt" required />
+      <button type="submit">Upload</button>
+    </form>
+    <pre id="resume-info" class="hint">no resume uploaded</pre>
+
+    <h2>Profile (fills the Apply hand-off panel)</h2>
+    <form id="profile-form" class="grid-form">
+      <label>First name<input id="p-first-name" /></label>
+      <label>Last name<input id="p-last-name" /></label>
+      <label>Email<input id="p-email" type="email" /></label>
+      <label>Phone<input id="p-phone" /></label>
+      <label>LinkedIn URL<input id="p-linkedin-url" /></label>
+      <label>Portfolio / GitHub URL<input id="p-portfolio-url" /></label>
+      <div class="row-span">
+        <button type="submit">Save profile</button>
+        <span id="profile-status" class="hint"></span>
+      </div>
+    </form>
+
+    <h2>Your years of experience</h2>
+    <form id="yoe-form" class="inline">
+      <input id="user-yoe-input" type="number" min="0" max="50" placeholder="e.g. 1" />
+      <button type="submit">Save</button>
+      <span id="user-yoe-status" class="hint"></span>
+    </form>
+
+    <h2>Email style sample (optional)</h2>
+    <form id="style-form">
+      <textarea id="style-input" rows="4" placeholder="Paste 1-2 of your own real emails so drafts sound like you."></textarea>
+      <button type="submit">Save style</button>
+      <span id="style-status" class="hint"></span>
+    </form>
+
+    <h2>Stored tailored versions</h2>
+    <div id="versions-list" class="hint">none yet</div>
+  </section>
+
+  <section id="tab-answers" class="tab-panel">
+    <h2>Answer Pack</h2>
+    <p class="hint">Reusable Q→A used by the email drafter and for copy/paste during manual apply.</p>
+    <form id="answer-form" class="inline">
+      <input id="answer-q" placeholder="question (e.g. Notice period)" />
+      <input id="answer-a" placeholder="answer (e.g. 30 days)" />
+      <button type="submit">Add / Update</button>
+    </form>
+    <div id="answers-list"></div>
+  </section>
+</main>
+
+<div id="tailor-modal" class="modal hidden">
+  <div class="modal-card">
+    <header>
+      <h3 id="modal-title">Tailor</h3>
+      <button id="modal-close" class="ghost">×</button>
+    </header>
+    <div id="modal-body"></div>
+    <footer>
+      <span id="modal-status" class="hint"></span>
+      <button id="modal-cancel" class="ghost">Cancel</button>
+      <button id="modal-approve" disabled>Approve</button>
+    </footer>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "jobs": [
+    {
+      "id": 5500111,
+      "title": "Software Engineer II",
+      "updated_at": "2026-06-10T09:00:00-04:00",
+      "location": { "name": "Bengaluru, India" },
+      "absolute_url": "https://boards.greenhouse.io/uber/jobs/5500111",
+      "departments": [{ "name": "Engineering" }],
+      "content": "&lt;p&gt;Build distributed systems at scale. &lt;strong&gt;Python, Go, Kafka.&lt;/strong&gt;&lt;/p&gt;"
+    },
+    {
+      "id": 5500222,
+      "title": "Backend Engineer",
+      "updated_at": "2026-06-12T09:00:00-04:00",
+      "location": { "name": "Remote - United States" },
+      "absolute_url": "https://boards.greenhouse.io/uber/jobs/5500222",
+      "departments": [{ "name": "Payments" }],
+      "content": "&lt;p&gt;Own backend services for the payments platform.&lt;/p&gt;"
+    },
+    {
+      "id": 5500333,
+      "title": "Platform Engineer",
+      "updated_at": "2026-06-14T09:00:00-04:00",
+      "location": { "name": "New York, NY, United States" },
+      "absolute_url": "https://boards.greenhouse.io/uber/jobs/5500333",
+      "departments": [{ "name": "Infrastructure" }],
+      "content": "&lt;p&gt;On-site infra role in NYC.&lt;/p&gt;"
+    }
+  ]
+}

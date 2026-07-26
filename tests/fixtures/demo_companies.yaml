@@ -1,0 +1,7 @@
+# Minimal config used only for the offline fixture demo / tests:
+# exactly one company per connector so the output stays crisp.
+companies:
+  - { name: Uber,     sector: tech, connector: greenhouse, slug: uber }
+  - { name: Motorq,   sector: tech, connector: lever,      slug: motorq }
+  - { name: BalkanID, sector: tech, connector: ashby,      slug: balkanid }
+  - { name: Adobe,    sector: tech, connector: workday,    tenant: adobe, wd_server: wd5, site: external_experienced }

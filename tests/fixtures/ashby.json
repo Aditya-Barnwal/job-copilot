@@ -1,0 +1,92 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "ash-1001",
+      "title": "Senior Software Engineer",
+      "location": "San Francisco, CA",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "department": "Engineering",
+      "jobUrl": "https://jobs.ashbyhq.com/balkanid/ash-1001",
+      "descriptionPlain": "Identity security platform engineering.",
+      "compensation": {
+        "compensationTierSummary": "$150K – $180K",
+        "compensationTiers": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 150000,
+            "maxValue": 180000
+          },
+          {
+            "compensationType": "Equity",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 0.05,
+            "maxValue": 0.15
+          }
+        ]
+      }
+    },
+    {
+      "id": "ash-1002",
+      "title": "Junior Support Analyst",
+      "location": "Austin, TX",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "department": "Support",
+      "jobUrl": "https://jobs.ashbyhq.com/balkanid/ash-1002",
+      "descriptionPlain": "Entry-level customer support.",
+      "compensation": {
+        "compensationTierSummary": "$10K – $12K",
+        "compensationTiers": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 10000,
+            "maxValue": 12000
+          }
+        ]
+      }
+    },
+    {
+      "id": "ash-1003",
+      "title": "Data Scientist",
+      "location": "Bengaluru, India",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "Onsite",
+      "department": "Data",
+      "jobUrl": "https://jobs.ashbyhq.com/balkanid/ash-1003",
+      "descriptionPlain": "ML and analytics for the India team.",
+      "compensation": {
+        "compensationTierSummary": "₹20L – ₹25L",
+        "compensationTiers": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "INR",
+            "minValue": 2000000,
+            "maxValue": 2500000
+          }
+        ]
+      }
+    },
+    {
+      "id": "ash-1004",
+      "title": "Internal Draft Role (should be skipped)",
+      "location": "Bengaluru, India",
+      "isListed": false,
+      "isRemote": false,
+      "workplaceType": "Onsite",
+      "department": "Engineering",
+      "jobUrl": "https://jobs.ashbyhq.com/balkanid/ash-1004",
+      "descriptionPlain": "Unlisted internal posting."
+    }
+  ]
+}

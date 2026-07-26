@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "id": "az-1",
+      "title": "Backend Engineer (Python)",
+      "description": "Join us as a <b>backend engineer</b>. Python, PostgreSQL, AWS. 3+ years of experience.",
+      "company": {"display_name": "FoobarTech"},
+      "location": {"display_name": "Bengaluru, Karnataka, India"},
+      "redirect_url": "https://adzuna.example/r/az-1",
+      "created": "2026-06-20T10:00:00Z",
+      "salary_min": 1800000,
+      "salary_max": 2500000,
+      "salary_is_predicted": false,
+      "category": {"label": "IT Jobs"}
+    },
+    {
+      "id": "az-2",
+      "title": "Data Engineer (Remote)",
+      "description": "Remote, India.",
+      "company": {"display_name": "Acme Data"},
+      "location": {"display_name": "Remote, India"},
+      "redirect_url": "https://adzuna.example/r/az-2",
+      "created": "2026-06-18T10:00:00Z"
+    }
+  ]
+}

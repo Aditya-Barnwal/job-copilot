@@ -390,8 +390,12 @@ function renderTailorResult(t) {
          <b>⚠ Grounding check failed:</b>
          ${grounding.inserted_unsupported.length
            ? `<div>inserted keywords not in original: ${grounding.inserted_unsupported.map(escapeHtml).join(", ")}</div>` : ""}
+         ${grounding.unsupported_skills?.length
+           ? `<div>skills not in original: ${grounding.unsupported_skills.map(escapeHtml).join(", ")}</div>` : ""}
          ${grounding.new_numbers.length
            ? `<div>new numbers/years not in original: ${grounding.new_numbers.map(escapeHtml).join(", ")}</div>` : ""}
+         ${grounding.inflated_claims?.length
+           ? `<div>seniority/ownership verbs not in original: ${grounding.inflated_claims.map(escapeHtml).join(", ")}</div>` : ""}
          <label><input type="checkbox" id="confirm-grounding"/> I confirm these are accurate</label>
        </div>` : "";
 
@@ -560,7 +564,9 @@ async function openEmailModal(key) {
   const flags = !g.clean ? `
     <div class="grounding-warn"><b>⚠ Grounding flagged:</b>
       ${g.inserted_unsupported?.length ? `<div>unsupported claims: ${g.inserted_unsupported.map(escapeHtml).join(", ")}</div>` : ""}
+      ${g.unsupported_skills?.length ? `<div>skills not in original: ${g.unsupported_skills.map(escapeHtml).join(", ")}</div>` : ""}
       ${g.new_numbers?.length ? `<div>new numbers: ${g.new_numbers.map(escapeHtml).join(", ")}</div>` : ""}
+      ${g.inflated_claims?.length ? `<div>seniority/ownership verbs not in original: ${g.inflated_claims.map(escapeHtml).join(", ")}</div>` : ""}
       <label><input type="checkbox" id="confirm-grounding-em"/> I confirm these are accurate</label>
     </div>` : "";
   $("#modal-body").innerHTML = `

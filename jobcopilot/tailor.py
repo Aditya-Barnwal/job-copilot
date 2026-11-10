@@ -206,9 +206,15 @@ def tailor(job_key: str, approved_keywords: Optional[list[str]] = None) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
+    # The raw reply is deliberately not echoed back: it is mostly résumé text,
+    # which must not end up in error payloads or logs.
+    if not isinstance(parsed, dict):
+        return {"error": "model returned JSON that is not an object",
+                "retries": meta.get("retries")}
     tailored_text = (parsed.get("tailored_text") or "").strip()
     if not tailored_text:
-        return {"error": "model returned empty tailored_text", "raw": raw[:1000]}
+        return {"error": "model returned empty tailored_text",
+                "retries": meta.get("retries")}
 
     # Re-score the tailored text against the job's required keywords.
     tailored_have = scoring.extract_keywords(tailored_text)

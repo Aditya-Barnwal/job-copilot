@@ -51,10 +51,9 @@ class AdzunaConnector(Connector):
             params["salary_min"] = company["salary_min"]
         url = self.BASE.format(country=company.get("country", "in"),
                                page=int(company.get("page", 1)))
-        resp = self.session.get(url, params=params, headers=DEFAULT_HEADERS,
-                                timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        # app_key rides in the query string; PoliteClient redacts it from logs/errors.
+        return self.client.get_json(url, params=params, headers=DEFAULT_HEADERS,
+                                    timeout=self.timeout)
 
     def parse(self, raw: Any, company: dict[str, Any]) -> list[Job]:
         jobs: list[Job] = []

@@ -3,6 +3,10 @@
 The DB is the source of truth across runs. Ingest upserts; status / scores /
 applied-version-links set by the human or by scoring are preserved across
 re-ingests.
+
+Paths are resolved on every call, never bound as argument defaults: a default
+bound at import time once let a test write into the real DB, and it made
+`monkeypatch.setattr(store, "DEFAULT_DB_PATH", ...)` silently ineffective.
 """
 from __future__ import annotations
 
@@ -14,81 +18,53 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from . import migrations
 from .filters import FilterResult
 
 
-DEFAULT_DB_PATH = Path(os.environ.get(
-    "JOBCOPILOT_DB",
-    str(Path(__file__).resolve().parent.parent / "data" / "jobcopilot.db"),
-))
-RESUMES_DIR = Path(__file__).resolve().parent.parent / "data" / "resumes"
+_REPO_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_IMPORT_DB_PATH = Path(os.environ.get("JOBCOPILOT_DB") or (_REPO_DATA_DIR / "jobcopilot.db"))
+_IMPORT_RESUMES_DIR = _REPO_DATA_DIR / "resumes"
+
+# Public knobs. Reassigning one (tests, scripts) beats the env var; left alone,
+# the env var is re-read on every call so `JOBCOPILOT_DB=... python ...` and
+# `monkeypatch.setenv` both work without re-importing this module.
+DEFAULT_DB_PATH: Path = _IMPORT_DB_PATH
+RESUMES_DIR: Path = _IMPORT_RESUMES_DIR
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-    key TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    company TEXT NOT NULL,
-    company_sector TEXT,
-    external_id TEXT,
-    title TEXT NOT NULL,
-    role_family TEXT,
-    location_text TEXT,
-    workplace_type TEXT,
-    country_bucket TEXT,
-    url TEXT,
-    description_text TEXT,
-    department TEXT,
-    comp_currency TEXT,
-    comp_min REAL,
-    comp_max REAL,
-    comp_interval TEXT,
-    comp_summary TEXT,
-    posted_at TEXT,
-    posted_age_days INTEGER,
-    freshness TEXT,
-    package_estimated INTEGER DEFAULT 0,
-    country_uncertain INTEGER DEFAULT 0,
-    seniority_high INTEGER DEFAULT 0,
-    min_yoe_required INTEGER,
-    yoe_is_preferred INTEGER DEFAULT 0,
-    match_score REAL,
-    ats_coverage REAL,
-    required_keywords TEXT,
-    missing_keywords TEXT,
-    applied_version_id INTEGER,
-    status TEXT DEFAULT 'new',
-    notes TEXT,
-    first_seen REAL,
-    last_seen REAL
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_role ON jobs(role_family);
-CREATE INDEX IF NOT EXISTS idx_jobs_freshness ON jobs(freshness);
+def resolve_db_path(db_path: Path | str | None = None) -> Path:
+    """Explicit arg > reassigned DEFAULT_DB_PATH > $JOBCOPILOT_DB > default."""
+    if db_path is not None:
+        return Path(db_path)
+    if Path(DEFAULT_DB_PATH) != _IMPORT_DB_PATH:
+        return Path(DEFAULT_DB_PATH)
+    env = os.environ.get("JOBCOPILOT_DB")
+    return Path(env) if env else Path(DEFAULT_DB_PATH)
 
-CREATE TABLE IF NOT EXISTS resume_versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    label TEXT,
-    role_family TEXT,
-    source_job_key TEXT,
-    source_company TEXT,
-    tailored_text TEXT,
-    pdf_path TEXT,
-    target_keywords TEXT,
-    base_ats_coverage REAL,
-    created_at REAL
-);
 
-CREATE TABLE IF NOT EXISTS meta (
-    k TEXT PRIMARY KEY,
-    v TEXT
-);
-"""
+def data_dir() -> Path:
+    """Directory holding the DB; logs and generated files live beside it."""
+    return resolve_db_path().parent
+
+
+def resolve_resumes_dir() -> Path:
+    """Reassigned RESUMES_DIR > $JOBCOPILOT_RESUMES_DIR > <data dir>/resumes.
+
+    Defaulting next to the DB keeps one data root: point JOBCOPILOT_DB at a
+    temp dir and generated PDFs follow it instead of landing in the repo.
+    """
+    if Path(RESUMES_DIR) != _IMPORT_RESUMES_DIR:
+        return Path(RESUMES_DIR)
+    env = os.environ.get("JOBCOPILOT_RESUMES_DIR")
+    if env:
+        return Path(env)
+    return data_dir() / "resumes"
 
 
 @contextmanager
-def connect(db_path: Path | str = DEFAULT_DB_PATH):
-    p = Path(db_path)
+def connect(db_path: Path | str | None = None):
+    p = resolve_db_path(db_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p)
     conn.row_factory = sqlite3.Row
@@ -99,16 +75,9 @@ def connect(db_path: Path | str = DEFAULT_DB_PATH):
         conn.close()
 
 
-def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
-    RESUMES_DIR.mkdir(parents=True, exist_ok=True)
-    with connect(db_path) as conn:
-        conn.executescript(SCHEMA)
-        # Forward migrations for existing DBs from earlier phases.
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-        if "min_yoe_required" not in cols:
-            conn.execute("ALTER TABLE jobs ADD COLUMN min_yoe_required INTEGER")
-        if "yoe_is_preferred" not in cols:
-            conn.execute("ALTER TABLE jobs ADD COLUMN yoe_is_preferred INTEGER DEFAULT 0")
+def init_db(db_path: Path | str | None = None) -> int:
+    """Create or upgrade the schema; returns the schema version now on disk."""
+    return migrations.migrate(resolve_db_path(db_path))
 
 
 # --- jobs ---------------------------------------------------------------
@@ -156,7 +125,7 @@ def _row_from_filter_result(r: FilterResult) -> dict[str, Any]:
     )
 
 
-def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str = DEFAULT_DB_PATH) -> tuple[int, int]:
+def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = None) -> tuple[int, int]:
     """Insert new keys; update posting fields + last_seen on existing keys.
 
     Preserves status, notes, scores, applied_version_id on update.
@@ -202,16 +171,32 @@ def _decode_keywords(row: dict) -> dict:
     return row
 
 
+# fit_score = 0.5·match + 0.5·ATS% (or match alone when ATS is unknown). The
+# SQL twin below lets `min_score` filter on the number the UI actually shows;
+# keep the two in sync.
+_FIT_SQL = (
+    "ROUND(CASE WHEN match_score IS NOT NULL AND ats_coverage IS NOT NULL "
+    "THEN 0.5 * match_score + 0.5 * (ats_coverage * 100.0) "
+    "ELSE match_score END, 1)"
+)
+
+
+def _fit_score(ms: Optional[float], ats: Optional[float]) -> Optional[float]:
+    if ms is not None and ats is not None:
+        return round(0.5 * ms + 0.5 * (ats * 100.0), 1)
+    if ms is not None:
+        return round(ms, 1)
+    return None
+
+
+def _user_yoe(conn: sqlite3.Connection) -> Optional[int]:
+    row = conn.execute("SELECT v FROM meta WHERE k='user_yoe'").fetchone()
+    return int(row["v"]) if row and (row["v"] or "").isdigit() else None
+
+
 def _derive(row: dict, user_yoe: Optional[int]) -> dict:
     """Add display-time derived fields: fit_score, ats_low_confidence, yoe_gap."""
-    ms = row.get("match_score")
-    ats = row.get("ats_coverage")
-    if ms is not None and ats is not None:
-        row["fit_score"] = round(0.5 * ms + 0.5 * (ats * 100.0), 1)
-    elif ms is not None:
-        row["fit_score"] = round(ms, 1)
-    else:
-        row["fit_score"] = None
+    row["fit_score"] = _fit_score(row.get("match_score"), row.get("ats_coverage"))
     req = row.get("required_keywords") or []
     row["ats_low_confidence"] = bool(len(req) < 3 and req)
     # YOE gap
@@ -236,7 +221,7 @@ def list_jobs(
     max_age_days: Optional[int] = None,
     hide_senior_high: bool = False,
     limit: int = 500,
-    db_path: Path | str = DEFAULT_DB_PATH,
+    db_path: Path | str | None = None,
 ) -> list[dict]:
     where = []
     args: list[Any] = []
@@ -256,7 +241,8 @@ def list_jobs(
         where.append("(LOWER(title) LIKE ? OR LOWER(company) LIKE ?)")
         args += [f"%{q.lower()}%", f"%{q.lower()}%"]
     if min_score is not None:
-        where.append("match_score >= ?"); args.append(min_score)
+        # Filter on the derived fit score the UI shows, not raw match_score.
+        where.append(f"{_FIT_SQL} >= ?"); args.append(min_score)
     if max_age_days is not None:
         where.append("(posted_age_days IS NULL OR posted_age_days <= ?)")
         args.append(max_age_days)
@@ -275,23 +261,21 @@ def list_jobs(
     args.append(limit)
     with connect(db_path) as conn:
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
-        user_yoe_raw = conn.execute("SELECT v FROM meta WHERE k='user_yoe'").fetchone()
-    user_yoe = int(user_yoe_raw["v"]) if user_yoe_raw and (user_yoe_raw["v"] or "").isdigit() else None
+        user_yoe = _user_yoe(conn)
     return [_derive(_decode_keywords(r), user_yoe) for r in rows]
 
 
-def get_job(key: str, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+def get_job(key: str, db_path: Path | str | None = None) -> Optional[dict]:
     with connect(db_path) as conn:
         row = conn.execute("SELECT * FROM jobs WHERE key = ?", (key,)).fetchone()
-        user_yoe_raw = conn.execute("SELECT v FROM meta WHERE k='user_yoe'").fetchone()
+        user_yoe = _user_yoe(conn)
     if not row:
         return None
-    user_yoe = int(user_yoe_raw["v"]) if user_yoe_raw and (user_yoe_raw["v"] or "").isdigit() else None
     return _derive(_decode_keywords(dict(row)), user_yoe)
 
 
 def set_status(key: str, status: str, notes: Optional[str] = None,
-               db_path: Path | str = DEFAULT_DB_PATH) -> bool:
+               db_path: Path | str | None = None) -> bool:
     with connect(db_path) as conn:
         if notes is not None:
             cur = conn.execute("UPDATE jobs SET status = ?, notes = ? WHERE key = ?",
@@ -303,7 +287,7 @@ def set_status(key: str, status: str, notes: Optional[str] = None,
 
 def set_scores(key: str, match_score: float, ats_coverage: float,
                required_keywords: list[str], missing_keywords: list[str],
-               db_path: Path | str = DEFAULT_DB_PATH) -> None:
+               db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute(
             "UPDATE jobs SET match_score = ?, ats_coverage = ?, "
@@ -313,7 +297,7 @@ def set_scores(key: str, match_score: float, ats_coverage: float,
         )
 
 
-def status_counts(db_path: Path | str = DEFAULT_DB_PATH) -> dict[str, int]:
+def status_counts(db_path: Path | str | None = None) -> dict[str, int]:
     with connect(db_path) as conn:
         rows = conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
     return {r["status"]: r["n"] for r in rows}
@@ -321,13 +305,13 @@ def status_counts(db_path: Path | str = DEFAULT_DB_PATH) -> dict[str, int]:
 
 # --- meta / resume base -------------------------------------------------
 
-def set_meta(key: str, value: str, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+def set_meta(key: str, value: str, db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute("INSERT INTO meta(k, v) VALUES(?, ?) "
                      "ON CONFLICT(k) DO UPDATE SET v = excluded.v", (key, value))
 
 
-def get_meta(key: str, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[str]:
+def get_meta(key: str, db_path: Path | str | None = None) -> Optional[str]:
     with connect(db_path) as conn:
         row = conn.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
     return row["v"] if row else None
@@ -341,7 +325,7 @@ PROFILE_FIELDS = (
 )
 
 
-def get_profile(db_path: Path | str = DEFAULT_DB_PATH) -> dict:
+def get_profile(db_path: Path | str | None = None) -> dict:
     v = get_meta("profile", db_path) or "{}"
     try:
         data = json.loads(v)
@@ -350,7 +334,7 @@ def get_profile(db_path: Path | str = DEFAULT_DB_PATH) -> dict:
     return {k: (data.get(k) or "") for k in PROFILE_FIELDS}
 
 
-def set_profile(profile: dict, db_path: Path | str = DEFAULT_DB_PATH) -> dict:
+def set_profile(profile: dict, db_path: Path | str | None = None) -> dict:
     cleaned = {k: (profile.get(k) or "").strip() for k in PROFILE_FIELDS}
     set_meta("profile", json.dumps(cleaned), db_path)
     return cleaned
@@ -358,7 +342,7 @@ def set_profile(profile: dict, db_path: Path | str = DEFAULT_DB_PATH) -> dict:
 
 # --- answer pack -------------------------------------------------------
 
-def get_answer_pack(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+def get_answer_pack(db_path: Path | str | None = None) -> list[dict]:
     v = get_meta("answer_pack", db_path) or "[]"
     try:
         items = json.loads(v)
@@ -367,7 +351,7 @@ def get_answer_pack(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
         return []
 
 
-def upsert_answer(q: str, a: str, db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+def upsert_answer(q: str, a: str, db_path: Path | str | None = None) -> list[dict]:
     items = get_answer_pack(db_path)
     items = [it for it in items if (it.get("q") or "").strip().lower() != q.strip().lower()]
     items.append({"q": q.strip(), "a": a.strip()})
@@ -375,20 +359,20 @@ def upsert_answer(q: str, a: str, db_path: Path | str = DEFAULT_DB_PATH) -> list
     return items
 
 
-def delete_answer(q: str, db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+def delete_answer(q: str, db_path: Path | str | None = None) -> list[dict]:
     items = [it for it in get_answer_pack(db_path)
              if (it.get("q") or "").strip().lower() != q.strip().lower()]
     set_meta("answer_pack", json.dumps(items), db_path)
     return items
 
 
-def set_resume(text: str, filename: str, db_path: Path | str = DEFAULT_DB_PATH) -> None:
+def set_resume(text: str, filename: str, db_path: Path | str | None = None) -> None:
     set_meta("resume_text", text, db_path)
     set_meta("resume_filename", filename, db_path)
     set_meta("resume_uploaded_at", str(time.time()), db_path)
 
 
-def get_resume(db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+def get_resume(db_path: Path | str | None = None) -> Optional[dict]:
     text = get_meta("resume_text", db_path)
     if not text:
         return None
@@ -404,7 +388,7 @@ def get_resume(db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
 def add_version(label: str, role_family: Optional[str], source_job_key: Optional[str],
                 source_company: Optional[str], tailored_text: str, pdf_path: str,
                 target_keywords: list[str], base_ats_coverage: float,
-                db_path: Path | str = DEFAULT_DB_PATH) -> int:
+                db_path: Path | str | None = None) -> int:
     with connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO resume_versions(label, role_family, source_job_key, "
@@ -417,7 +401,7 @@ def add_version(label: str, role_family: Optional[str], source_job_key: Optional
 
 
 def list_versions(role_family: Optional[str] = None,
-                  db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+                  db_path: Path | str | None = None) -> list[dict]:
     sql = "SELECT * FROM resume_versions"
     args: list[Any] = []
     if role_family:
@@ -433,7 +417,7 @@ def list_versions(role_family: Optional[str] = None,
     return rows
 
 
-def get_version(version_id: int, db_path: Path | str = DEFAULT_DB_PATH) -> Optional[dict]:
+def get_version(version_id: int, db_path: Path | str | None = None) -> Optional[dict]:
     with connect(db_path) as conn:
         row = conn.execute("SELECT * FROM resume_versions WHERE id = ?", (version_id,)).fetchone()
     if not row:
@@ -447,7 +431,7 @@ def get_version(version_id: int, db_path: Path | str = DEFAULT_DB_PATH) -> Optio
 
 
 def link_job_version(key: str, version_id: int,
-                     db_path: Path | str = DEFAULT_DB_PATH) -> None:
+                     db_path: Path | str | None = None) -> None:
     with connect(db_path) as conn:
         conn.execute("UPDATE jobs SET applied_version_id = ? WHERE key = ?",
                      (version_id, key))

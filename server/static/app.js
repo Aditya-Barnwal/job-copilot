@@ -22,7 +22,12 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(`${res.status}: ${t}`);
+    const err = new Error(`${res.status}: ${t}`);
+    // Callers that need to react to a specific failure (e.g. the 409 from the
+    // server-side grounding gate) read these; everyone else just uses .message.
+    err.status = res.status;
+    try { err.payload = JSON.parse(t); } catch { err.payload = null; }
+    throw err;
   }
   return res.json();
 }
@@ -423,17 +428,42 @@ function renderTailorResult(t) {
   }
 
   $("#modal-approve").onclick = async () => {
+    const body = { tailored_text: t.tailored_text };
+    // The server re-runs grounding on this exact text and refuses (409)
+    // unless every flagged item is explicitly confirmed. Send exactly the
+    // lists the user just confirmed in this modal.
+    if (!grounding.clean) body.confirmed_flags = confirmedFlagsFrom(grounding);
     try {
       const res = await api(`/api/jobs/${encodeURIComponent(tailorState.key)}/approve`, {
         method: "POST",
-        body: JSON.stringify({ tailored_text: t.tailored_text }),
+        body: JSON.stringify(body),
       });
       alert(`Saved version ${res.version_id} (ATS ${Math.round(res.new_ats_coverage * 100)}%). Status: ready.`);
       hideModal();
       loadJobs();
       loadVersions();
-    } catch (e) { alert(e.message); }
+    } catch (e) {
+      if (e.status === 409 && e.payload && e.payload.grounding) {
+        // The server found flags not confirmed here (e.g. the resume or job
+        // keywords changed since tailoring). Show its findings and require a
+        // fresh confirmation; nothing was saved.
+        t.grounding = e.payload.grounding;
+        renderTailorResult(t);
+        $("#modal-status").textContent =
+          e.payload.detail || "Grounding check failed on the server. Nothing was saved.";
+        return;
+      }
+      alert(e.message);
+    }
   };
+}
+
+const GROUNDING_FLAG_KEYS = ["inserted_unsupported", "unsupported_skills", "new_numbers", "inflated_claims"];
+
+function confirmedFlagsFrom(grounding) {
+  const out = {};
+  for (const k of GROUNDING_FLAG_KEYS) out[k] = Array.isArray(grounding[k]) ? [...grounding[k]] : [];
+  return out;
 }
 
 // --- profile ---

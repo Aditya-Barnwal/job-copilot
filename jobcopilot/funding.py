@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
 
-import requests
 import yaml
 
 from . import llm
@@ -61,8 +60,9 @@ STAGE_LEVELS = {
 
 
 def _parse_rss(url: str) -> list[dict]:
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
+    # Shared polite client: honest UA, robots.txt, per-host rate limit, retries.
+    from .http import default_client
+    r = default_client().get(url, timeout=10)
     items = []
     root = ET.fromstring(r.content)
     for it in root.iter("item"):

@@ -2,9 +2,11 @@
 
 Default provider is **Ollama** (free, local, no key). Configured by env:
 
-  LLM_PROVIDER = ollama | groq | gemini | anthropic
+  LLM_PROVIDER = ollama | groq | gemini | anthropic, or a comma-separated
+                 fallback chain such as "groq,ollama" (tried in order)
   OLLAMA_MODEL=qwen2.5:7b      (or candidates: "qwen2.5:7b,llama3.2:3b")
-  GROQ_API_KEY, GROQ_MODEL
+  GROQ_API_KEY, GROQ_MODEL     (e.g. "openai/gpt-oss-120b,qwen/qwen3.8-27b")
+  GROQ_REASONING_EFFORT=low    (reasoning models only: low | medium | high)
   GEMINI_API_KEY, GEMINI_MODEL
   ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 
@@ -15,6 +17,12 @@ Includes:
   - parse_json: tolerant JSON parsing (small local models often add fences).
   - available_models / resolve_model: list + fallback so a stale model name in
     .env auto-falls-back or errors with the available list.
+  - provider fallback: a failing provider (down, rate-limited, bad key) hands
+    over to the next one in LLM_PROVIDER instead of failing the whole run.
+  - reasoning-model handling: models like gpt-oss spend tokens "thinking"
+    before answering, so a tiny max_tokens returns empty content. We give them
+    a token floor and a reasoning-effort hint, and turn an empty truncated
+    reply into a clear error instead of silently returning "".
   - health(): cheap status check for the UI badge.
 """
 from __future__ import annotations
@@ -31,7 +39,29 @@ import requests
 log = logging.getLogger("jobcopilot.llm")
 
 
-PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
+def provider_chain() -> list[str]:
+    """Providers to try, in order, from LLM_PROVIDER (read at call time)."""
+    raw = os.getenv("LLM_PROVIDER", "ollama").lower()
+    chain = [p.strip() for p in raw.split(",") if p.strip()]
+    return chain or ["ollama"]
+
+
+# First provider in the chain — kept as a module attribute for callers/UI that
+# display "the" provider. Resolved at import; complete() re-reads the env.
+PROVIDER = provider_chain()[0]
+
+# Reasoning models need room to think before they answer.
+_REASONING_MODEL_PREFIXES = ("openai/gpt-oss", "gpt-oss", "qwen/qwen3", "deepseek-r1")
+_REASONING_TOKEN_FLOOR = 512
+
+
+class LLMTruncated(RuntimeError):
+    """The model hit max_tokens before producing any answer text."""
+
+
+def _is_reasoning_model(model: str) -> bool:
+    m = (model or "").lower()
+    return any(m.startswith(p) for p in _REASONING_MODEL_PREFIXES)
 
 
 _COMPAT = {
@@ -47,7 +77,8 @@ _COMPAT = {
         api_key=None,
         api_key_env="GROQ_API_KEY",
         model_env="GROQ_MODEL",
-        default_model="llama-3.1-8b-instant",
+        # Groq retired the Llama 3.x models in 2026; gpt-oss is the current default.
+        default_model="openai/gpt-oss-120b,openai/gpt-oss-20b",
     ),
     "gemini": dict(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -136,19 +167,46 @@ def resolve_model(provider: str, configured: str) -> str:
 
 def complete(system: str, user: str, *, temperature: float = 0.2,
              max_tokens: int = 1500) -> str:
-    """Return the model's text. Provider chosen by LLM_PROVIDER (default ollama)."""
-    if PROVIDER == "anthropic":
+    """Return the model's text, trying each provider in LLM_PROVIDER in order.
+
+    A provider that fails (unreachable, missing key, rate-limited, truncated)
+    hands over to the next one; if all fail, the last error is raised with the
+    per-provider reasons attached so the UI can say what went wrong.
+    """
+    errors: list[str] = []
+    last_exc: Exception | None = None
+    for provider in provider_chain():
+        try:
+            return _complete_one(provider, system, user, temperature, max_tokens)
+        except Exception as exc:  # noqa: BLE001 — fall through to next provider
+            log.warning("llm provider=%s failed: %s", provider, exc)
+            errors.append(f"{provider}: {exc}")
+            last_exc = exc
+    if len(errors) == 1 and last_exc is not None:
+        raise last_exc
+    raise RuntimeError("All LLM providers failed — " + " | ".join(errors)) from last_exc
+
+
+def _complete_one(provider: str, system: str, user: str,
+                  temperature: float, max_tokens: int) -> str:
+    if provider == "anthropic":
         return _anthropic(system, user, temperature, max_tokens)
 
-    cfg = _COMPAT.get(PROVIDER)
+    cfg = _COMPAT.get(provider)
     if not cfg:
-        raise ValueError(f"Unknown LLM_PROVIDER={PROVIDER!r}")
+        raise ValueError(f"Unknown LLM provider {provider!r}")
     api_key = cfg.get("api_key") or (os.getenv(cfg["api_key_env"]) if cfg["api_key_env"] else None)
-    if PROVIDER != "ollama" and not api_key:
-        raise RuntimeError(f"{cfg['api_key_env']} not set for LLM_PROVIDER={PROVIDER}")
+    if provider != "ollama" and not api_key:
+        raise RuntimeError(f"{cfg['api_key_env']} not set for provider {provider}")
 
     configured = os.getenv(cfg["model_env"], cfg["default_model"])
-    model = resolve_model(PROVIDER, configured)
+    model = resolve_model(provider, configured)
+
+    kwargs: dict = {}
+    if _is_reasoning_model(model):
+        max_tokens = max(max_tokens, _REASONING_TOKEN_FLOOR)
+        if provider == "groq":
+            kwargs["reasoning_effort"] = os.getenv("GROQ_REASONING_EFFORT", "low")
 
     try:
         from openai import OpenAI
@@ -161,15 +219,24 @@ def complete(system: str, user: str, *, temperature: float = 0.2,
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            **kwargs,
         )
-        return resp.choices[0].message.content or ""
     except Exception as exc:
-        if PROVIDER == "ollama":
+        if provider == "ollama":
             raise RuntimeError(
                 "Ollama call failed. Is it running and is the model pulled? "
                 f"Run `ollama serve` and `ollama pull {model}`."
             ) from exc
         raise
+
+    choice = resp.choices[0]
+    content = choice.message.content or ""
+    if not content.strip() and getattr(choice, "finish_reason", None) == "length":
+        raise LLMTruncated(
+            f"{provider}/{model} used all {max_tokens} tokens before answering "
+            "(reasoning models need a larger max_tokens)."
+        )
+    return content
 
 
 def complete_json(system: str, user: str, *, temperature: float = 0.2,
@@ -217,14 +284,22 @@ def _anthropic(system: str, user: str, temperature: float, max_tokens: int) -> s
 # ---------------------------------------------------------------------------
 
 def health() -> dict:
-    cfg = _COMPAT.get(PROVIDER) if PROVIDER != "anthropic" else None
+    """Status of the FIRST provider in the chain (what the UI badge shows),
+    plus the full chain so a configured fallback is visible."""
+    provider = provider_chain()[0]
+    cfg = _COMPAT.get(provider) if provider != "anthropic" else None
+    if provider != "anthropic" and cfg is None:
+        return {"provider": provider, "chain": provider_chain(), "configured": None,
+                "model": None, "reachable": False, "model_ok": False,
+                "available_sample": [], "hint": f"Unknown LLM provider {provider!r}"}
     configured = (
         os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
-        if PROVIDER == "anthropic"
+        if provider == "anthropic"
         else os.getenv(cfg["model_env"], cfg["default_model"])
     )
     out = {
-        "provider": PROVIDER,
+        "provider": provider,
+        "chain": provider_chain(),
         "configured": configured,
         "model": None,
         "reachable": False,
@@ -233,16 +308,16 @@ def health() -> dict:
         "hint": None,
     }
     try:
-        avail = available_models(PROVIDER)
+        avail = available_models(provider)
         out["reachable"] = True
         out["available_sample"] = sorted(avail)[:8]
         try:
-            out["model"] = resolve_model(PROVIDER, configured)
+            out["model"] = resolve_model(provider, configured)
             out["model_ok"] = True
         except Exception as exc:
             out["hint"] = str(exc)
     except Exception as exc:
-        if PROVIDER == "ollama":
+        if provider == "ollama":
             out["hint"] = "Start `ollama serve` and `ollama pull " + (configured.split(",")[0]) + "`."
         else:
             out["hint"] = f"{type(exc).__name__}: {exc}"

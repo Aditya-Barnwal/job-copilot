@@ -1,6 +1,7 @@
+# Core runtime: pipeline + API server. This is what the Docker image installs.
+# Browser autofill deps live in requirements-autofill.txt (local-only, never in the image).
 requests>=2.31
 PyYAML>=6.0
-pytest>=8.0
 fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9

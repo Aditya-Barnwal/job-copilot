@@ -1,0 +1,19 @@
+# Job sources + HTTP politeness. Access rules per source: docs/SOURCES.md.
+http:
+  user_agent: "job-copilot/2.0 (personal, non-commercial; +https://github.com/Aditya-Barnwal/job-copilot)"
+  timeout_sec: 20
+  default_rate_per_sec: 1.0      # per host
+  max_retries: 3                 # 429 / 5xx only, honouring Retry-After
+  host_rates: {}                 # e.g. {"remoteok.com": 1.0}
+  # Documented public APIs only, each with a reason. These skip the robots.txt
+  # check but are still rate-limited. Robots results checked 2026-11-11:
+  #   boards-api.greenhouse.io  200, Disallow: /embed/ only  -> /v1/boards allowed, no exemption
+  #   api.lever.co              200, Allow: /, Crawl-delay: 1 -> allowed (delay honoured)
+  #   *.myworkdayjobs.com       200, Disallow: /refreshFacet/ -> /wday/cxs allowed
+  #   api.ashbyhq.com           401 (robots.txt unreadable)    -> exempt below
+  #   api.adzuna.com, jsearch.p.rapidapi.com  "Disallow: /"    -> NOT exempted; both are
+  #     key-gated and unused today. Decide explicitly if you ever add keys.
+  robots_exempt_hosts:
+    api.ashbyhq.com: "Ashby public Job Postings API (developers.ashbyhq.com) built for job boards; its robots.txt answers 401 so it cannot be read"
+
+boards: {}                       # Phase 1: per-board on/off + options

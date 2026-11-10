@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from .connectors import REGISTRY
+from .http import RobotsDisallowed
 from .filters import (
     FilterConfig,
     DEFAULT_TARGET_ROLES,
@@ -83,8 +84,11 @@ def enrich_workday_descriptions(
     from .connectors.workday import WorkdayConnector
     from . import store as _store
 
+    # The shared HTTP client already spaces requests per host (config/sources.yaml,
+    # default 1 req/s), so the extra sleep is off by default — set
+    # WORKDAY_DETAIL_DELAY_SEC to add more padding on top of it.
     delay = float(delay if delay is not None
-                  else os.environ.get("WORKDAY_DETAIL_DELAY_SEC", "0.7"))
+                  else os.environ.get("WORKDAY_DETAIL_DELAY_SEC", "0"))
     cap = int(max_per_company if max_per_company is not None
               else os.environ.get("WORKDAY_DETAIL_MAX", "60"))
 
@@ -170,6 +174,11 @@ def ingest(
                 company_jobs = connector.parse(raw, company)
             else:
                 company_jobs = connector.fetch(company)
+        except RobotsDisallowed as exc:
+            # Not a failure: the site asked crawlers not to fetch this, so we don't.
+            print(f"  · skip   {company['name']:<16} (robots.txt: {exc})", file=sys.stderr)
+            log.info("skip company=%s reason=robots exc=%s", company.get("name"), exc)
+            continue
         except Exception as exc:  # noqa: BLE001
             print(f"  · error  {company['name']:<16} ({type(exc).__name__}: {exc})", file=sys.stderr)
             log.error("error company=%s connector=%s exc=%s", company.get("name"), connector_name, exc)
@@ -233,7 +242,8 @@ def print_summary(results: list[FilterResult], total_ingested: int, role_kept: i
 def main(argv: list[str] | None = None) -> int:
     here = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="Job-copilot ingestion")
-    parser.add_argument("--companies", default=str(here / "companies.yaml"))
+    from . import config as _config
+    parser.add_argument("--companies", default=str(_config.companies_path()))
     parser.add_argument("--fixtures", default=None)
     parser.add_argument("--out", default=str(here / "jobs.jsonl"))
     parser.add_argument("--min-lpa", type=float, default=15.0)

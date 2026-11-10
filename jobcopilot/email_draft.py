@@ -63,7 +63,14 @@ def _block(label: str, value: Optional[str]) -> str:
     return f"\n{label}:\n\"\"\"\n{value}\n\"\"\"\n"
 
 
-def draft(job_key: str) -> dict:
+def draft(job_key: str, *, contact_email: Optional[str] = None,
+          apply_method: Optional[str] = None) -> dict:
+    """Draft an application email for `job_key`.
+
+    `contact_email` / `apply_method` come from companies.yaml, not the jobs
+    table, so the caller passes them in. (The server used to smuggle them in
+    by monkeypatching `store.get_job` globally — not thread-safe.)
+    """
     job = store.get_job(job_key)
     if not job:
         return {"error": "job not found"}
@@ -71,7 +78,10 @@ def draft(job_key: str) -> dict:
     if not resume or not resume.get("text"):
         return {"error": "no resume uploaded"}
 
-    contact_email = job.get("contact_email") or ""
+    method = apply_method or job.get("apply_method")
+    if method is not None and method != "email":
+        return {"error": "this job is not flagged apply_method:email in companies.yaml"}
+    contact_email = (contact_email or job.get("contact_email") or "").strip()
     if not contact_email:
         return {"error": "this job has no contact_email; check companies.yaml apply_method"}
 
@@ -107,10 +117,13 @@ def draft(job_key: str) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
+    if not isinstance(parsed, dict):
+        return {"error": "model returned JSON that is not an object"}
     subject = (parsed.get("subject") or "").strip()
     body = (parsed.get("body") or "").strip()
     if not body:
-        return {"error": "empty body from model", "raw": raw[:500]}
+        # No raw echo: the reply may quote résumé text.
+        return {"error": "empty body from model"}
 
     # Grounding applies to the email body too. A cover email inventing a
     # project is worse than a résumé doing it.
@@ -120,7 +133,9 @@ def draft(job_key: str) -> dict:
         job_missing_keywords=job.get("missing_keywords") or [],
     )
 
-    log.info("email key=%s grounding_clean=%s subject=%r", job_key, grounding["clean"], subject)
+    # Subject lines often carry the applicant's name — log only its length.
+    log.info("email key=%s grounding_clean=%s subject_len=%d",
+             job_key, grounding["clean"], len(subject))
 
     return {
         "to": contact_email,

@@ -1,0 +1,38 @@
+# Hard filters + queue knobs. Every value here has a default in jobcopilot/config.py.
+# Phase 2 wires these into filtering/scoring; every exclusion is stored with its
+# reason and shown in the Excluded view — nothing is dropped silently.
+
+yoe:
+  user_yoe: 1          # your years of experience (whole years)
+  max_required: 2      # drop roles whose HARD minimum is above this (i.e. 3+ years)
+
+# Annual floors per currency. Roles with no disclosed pay are kept, flagged, ranked lower.
+salary_floors:
+  INR: 1500000         # 15 LPA
+  USD: 30000           # remote roles abroad — edit to taste
+  EUR: 28000
+
+fx_to_inr:             # approximate; used only to compare against the INR floor
+  USD: 83.0
+  EUR: 90.0
+
+geo:
+  india_allow: [remote, hybrid, onsite, unknown]
+  india_preferred_cities: [bengaluru, bangalore]
+  outside_india_allow: [remote]                 # outside India: fully remote only
+  outside_india_require_india_eligible: true    # "Remote – US only" is excluded
+  min_ist_overlap_hours: 3                      # time-zone overlap with IST for remote-abroad
+  keep_unknown_country: true
+
+roles:
+  families: []         # empty = built-in list (SDE / backend / full-stack / ML / AI / GenAI / data)
+
+companies:
+  require_tier: [brand, funded]   # recognised brand OR seriously funded startup
+  funded_min_stage: series_a
+  yc_counts_as_funded: true
+
+queue:
+  daily_target_min: 15
+  daily_target_max: 25
+  max_per_company: 3

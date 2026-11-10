@@ -1,0 +1,15 @@
+# Local container run:  docker compose up --build   ->  http://localhost:8000
+# Data, config and profile stay on the host and are mounted in (nothing personal in the image).
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"   # loopback only — this app is for you, not the network
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - ./profile:/app/profile:ro
+    restart: unless-stopped

@@ -1,0 +1,44 @@
+# FAKE example of profile/base_resumes/bases.yaml (no PDFs are committed).
+# Layout of each base résumé; ids refer to ../resume_facts.yaml.
+schema_version: 1
+
+bases:
+  backend_sde:
+    pdf: backend_sde.pdf
+    roles: [backend, sde, full-stack]
+    sections: [education, skills, experience, projects, research, hackathons]
+    headings:
+      education: "Education"
+      skills: "Skills"
+      experience: "Work Experience"
+      projects: "Projects"
+      research: "Research"
+      hackathons: "Hackathons"
+    skills_categories:
+      - heading: "Languages"
+        skills: [skill.go, skill.python]
+      - heading: "Cloud"
+        skills: [skill.aws, skill.docker]
+    projects: [proj.widgetbot]
+    tech_order: {}
+    hackathons: [hack.hackexample]
+
+  ml_ai:
+    pdf: ml_ai.pdf
+    roles: [ml, ai, genai, data]
+    sections: [education, skills, experience, projects, research]
+    headings:
+      education: "Education"
+      skills: "Skills"
+      experience: "Experience"
+      projects: "Projects"
+      research: "Publications"
+    skills_categories:
+      - heading: "Languages"
+        skills: [skill.python]
+      - heading: "ML and Cloud"
+        skills: [skill.pytorch, skill.aws, skill.docker]
+    projects: [proj.sketchml, proj.widgetbot]
+    tech_order:
+      proj.widgetbot: [Python, Docker, AWS ECS, FastAPI]
+    hackathons: []

@@ -1,0 +1,173 @@
+# FAKE example of profile/resume_facts.yaml — committed so CI can validate the
+# schema without personal data. "Alex Example" is not a real person.
+# Schema: jobcopilot/facts.py.  Check:  python -m jobcopilot.facts check profile.example/resume_facts.yaml
+#
+# Unlike a freshly pre-filled real file (everything `unconfirmed`), this example
+# mixes all three statuses so the tests can exercise usable_facts().
+schema_version: 1
+
+person:
+  name: "Alex Example"
+  email: "alex@example.com"
+  phone: "+1 555 0100"
+  location: "Springfield"
+  links:
+    linkedin: "https://example.com/linkedin/alex-example"
+    github: "https://example.com/github/alex-example"
+    portfolio: "https://alex.example.com/"
+
+education:
+  - id: edu.esu
+    text: "Example State University | 2019 – 2023 | B.Sc. in Computer Science | GPA: 3.7"
+    institution: "Example State University"
+    degree: "B.Sc. in Computer Science"
+    start: "2019"
+    end: "2023"
+    grade: "GPA: 3.7"
+    metrics: ["3.7"]
+    sources: [backend_sde, ml_ai]
+    status: confirmed
+
+experience:
+  - id: exp.acme
+    text: "Acme Widgets Inc. | Springfield | Software Engineer | Jan 2024 – Present"
+    company: "Acme Widgets Inc."
+    location: "Springfield"
+    title: "Software Engineer"
+    start: "Jan 2024"
+    end: "Present"
+    sources: [backend_sde, ml_ai]
+    status: confirmed
+    bullets:
+      - id: exp.acme.b1
+        text: "Built a Go order service handling 200+ requests per second behind a REST API."
+        skills: [Go, REST API]
+        metrics: ["200+"]
+        sources: [backend_sde, ml_ai]
+        status: confirmed
+      - id: exp.acme.b2
+        text: "Cut nightly batch runtime by 30% by moving widget pricing to PostgreSQL."
+        variants:
+          ml_ai: "Cut nightly feature-batch runtime by 30% by moving widget pricing features to PostgreSQL."
+        skills: [PostgreSQL]
+        metrics: ["30%"]
+        sources: [backend_sde, ml_ai]
+        status: confirmed
+      - id: exp.acme.b3
+        text: "Mentored two interns on code review."
+        sources: [backend_sde]
+        status: unconfirmed
+
+  - id: exp.globex
+    text: "Globex Example Labs | Remote | Data Intern | Jun 2022 – Aug 2022"
+    company: "Globex Example Labs"
+    location: "Remote"
+    title: "Data Intern"
+    start: "Jun 2022"
+    end: "Aug 2022"
+    sources: [ml_ai]
+    status: unconfirmed
+    bullets:
+      - id: exp.globex.b1
+        text: "Trained a churn model in PyTorch on 10k example rows."
+        skills: [PyTorch]
+        metrics: ["10k"]
+        sources: [ml_ai]
+        status: confirmed          # confirmed, but its role header isn't -> not usable
+
+projects:
+  - id: proj.widgetbot
+    name: "WidgetBot"
+    text: "WidgetBot — Example Chat Assistant"
+    tech: [Python, FastAPI, Docker, AWS ECS]
+    sources: [backend_sde, ml_ai]
+    status: confirmed
+    claims:
+      - id: proj.widgetbot.tech_ecs
+        tech: [Docker, AWS ECS]
+        status: pending
+        pending_until: phase-3b
+        pending_reason: "Example: the container deploy isn't built yet."
+    bullets:
+      - id: proj.widgetbot.b1
+        text: "Built a FastAPI chat backend that answers 5 kinds of widget question; deployed on AWS ECS."
+        variants:
+          ml_ai: "Built a FastAPI chat backend with an intent model that answers 5 kinds of widget question; deployed on AWS ECS."
+        skills: [FastAPI, AWS ECS]
+        metrics: ["5 kinds"]
+        sources: [backend_sde, ml_ai]
+        status: confirmed
+        claims:
+          - id: proj.widgetbot.b1.ecs
+            text: "; deployed on AWS ECS"
+            status: pending
+            pending_until: phase-3b
+            pending_reason: "Example: not deployed yet."
+      - id: proj.widgetbot.b2
+        text: "Added a grounding check that verifies every answer against the docs."
+        sources: [backend_sde, ml_ai]
+        status: pending
+        pending_until: phase-3
+        pending_reason: "Example: the check is only partial today."
+
+  - id: proj.sketchml
+    name: "SketchML"
+    text: "SketchML — Example Doodle Classifier"
+    tech: [Python, PyTorch, OpenCV]
+    sources: [ml_ai]
+    status: unconfirmed
+    bullets:
+      - id: proj.sketchml.b1
+        text: "Classified 20 doodle categories with 91% top-1 accuracy."
+        metrics: ["20", "91%"]
+        sources: [ml_ai]
+        status: unconfirmed
+
+research:
+  - id: res.widget_paper
+    kind: publication
+    text: "Fast Widgets: An Example Paper — Example Workshop on Widgets, 2023."
+    metrics: ["2023"]
+    sources: [backend_sde, ml_ai]
+    status: unconfirmed
+
+hackathons:
+  - id: hack.hackexample
+    name: "QueueSnap"
+    event: "HackExample 2022"
+    text: "QueueSnap — Example Queue Tracker (HackExample 2022)"
+    tech: [Flutter, Dart]
+    sources: [backend_sde]
+    status: confirmed
+    bullets:
+      - id: hack.hackexample.b1
+        text: "Built a Flutter app showing live canteen queue length; top 5 of 40 teams."
+        skills: [Flutter]
+        metrics: ["top 5", "40 teams"]
+        sources: [backend_sde]
+        status: unconfirmed
+
+skills:
+  languages:
+    - {id: skill.python, text: "Python", sources: [backend_sde, ml_ai], status: confirmed}
+    - {id: skill.go, text: "Go", sources: [backend_sde], status: confirmed}
+  ml:
+    - {id: skill.pytorch, text: "PyTorch", sources: [ml_ai], status: unconfirmed}
+  cloud:
+    - id: skill.aws
+      text: "AWS (Lambda, ECS)"
+      skills: [Lambda, ECS]
+      sources: [backend_sde, ml_ai]
+      status: confirmed
+      claims:
+        - id: skill.aws.ecs
+          text: ", ECS"
+          status: pending
+          pending_until: phase-3b
+          pending_reason: "Example: no ECS use yet."
+    - id: skill.docker
+      text: "Docker"
+      sources: [backend_sde, ml_ai]
+      status: pending
+      pending_until: phase-3b
+      pending_reason: "Example: not used yet."

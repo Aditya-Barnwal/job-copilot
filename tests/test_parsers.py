@@ -260,13 +260,13 @@ def test_profile_and_answer_pack_roundtrip(tmp_path):
     from jobcopilot import store
     db = tmp_path / "ap.db"
     store.init_db(db)
-    store.set_profile({"first_name": "Ada", "last_name": "L", "email": "a@x.com",
+    store.set_profile({"first_name": "Ada", "last_name": "L", "email": "a@example.com",
                        "phone": "+1", "linkedin_url": "https://li/ada",
                        "portfolio_url": "https://gh/ada"}, db_path=db)
     store.upsert_answer("Notice period", "30 days", db_path=db)
     p = store.get_profile(db_path=db)
     assert p["first_name"] == "Ada"
-    assert p["email"] == "a@x.com"
+    assert p["email"] == "a@example.com"
     ans = store.get_answer_pack(db_path=db)
     assert any(a["q"] == "Notice period" and a["a"] == "30 days" for a in ans)
 

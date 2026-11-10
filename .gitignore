@@ -1,6 +1,21 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.DS_Store
+
+# Runtime data + secrets — never committed (repo is public)
 data/
 .env
 jobs.jsonl
+discovered_companies.yaml
+
+# Personal profile: résumé facts, answers bank, base résumés. Only profile.example/ is committed.
+profile/
+
+# Browser automation state (normally ~/.jobcopilot, outside the repo)
+.browser-profile/
+
+# Frontend build artefacts (Phase 5)
+web/node_modules/
+server/static/dist/

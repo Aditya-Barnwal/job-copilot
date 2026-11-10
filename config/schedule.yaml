@@ -1,0 +1,4 @@
+# Nightly pipeline (installed as a macOS LaunchAgent by `make schedule-install`).
+timezone: Asia/Kolkata
+daily_run: "19:00"     # discover -> filter -> score -> tailor -> fill-plan; ready by 20:00
+rss_poll_hours: 2      # short RSS feeds (Jobspresso) that only hold the last ~10 posts

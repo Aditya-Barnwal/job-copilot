@@ -10,8 +10,11 @@ This is the medium-difficulty one. Three quirks worth knowing:
   2. Every tenant lives on a different data center: wd1 / wd3 / wd5 / ... You
      must use the right one (read it off the careers-page URL).
   3. The list response has no descriptions — only title, location, postedOn and
-     an externalPath. Full text needs a follow-up GET per job, which we leave
-     for later (filtering/scoring doesn't need the body).
+     an externalPath. Full text needs a follow-up GET per job: fetch_detail(),
+     called only for postings that survive the filters.
+
+robots.txt on *.myworkdayjobs.com (checked 2026-11-11) disallows only
+/refreshFacet/, so the /wday/cxs/ paths used here are allowed.
 
 Per-company config therefore needs: tenant, wd_server, site.
 e.g. https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced
@@ -56,11 +59,11 @@ class WorkdayConnector(Connector):
                 "offset": offset,
                 "searchText": company.get("search_text", ""),
             }
-            resp = self.session.post(
-                list_url, json=payload, headers=headers, timeout=self.timeout
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            # A read-only search, so retrying a 5xx can't create anything.
+            data = self.client.post_json(
+                list_url, json=payload, headers=headers, timeout=self.timeout,
+                idempotent=True,
+            ) or {}
             page = data.get("jobPostings", []) or []
             postings.extend(page)
 
@@ -119,8 +122,6 @@ class WorkdayConnector(Connector):
             "Referer": f"{host}/en-US/{site}",
             "Accept": "application/json",
         }
-        resp = self.session.get(url, headers=headers, timeout=self.timeout)
-        resp.raise_for_status()
-        data = resp.json() or {}
+        data = self.client.get_json(url, headers=headers, timeout=self.timeout) or {}
         info = data.get("jobPostingInfo") or {}
         return strip_html(info.get("jobDescription") or "")

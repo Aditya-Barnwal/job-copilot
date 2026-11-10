@@ -20,11 +20,9 @@ class GreenhouseConnector(Connector):
 
     def fetch_raw(self, company: dict[str, Any]) -> Any:
         url = self.BASE.format(slug=company["slug"])
-        resp = self.session.get(
+        return self.client.get_json(
             url, params={"content": "true"}, headers=DEFAULT_HEADERS, timeout=self.timeout
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def parse(self, raw: Any, company: dict[str, Any]) -> list[Job]:
         jobs: list[Job] = []

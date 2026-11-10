@@ -5,16 +5,22 @@ import re
 import time
 from pathlib import Path
 from typing import Optional
+from xml.sax.saxutils import escape
 
 from . import store
-
-
-RESUMES_DIR = store.RESUMES_DIR
 
 
 def _slug(s: str) -> str:
     s = re.sub(r"[^A-Za-z0-9]+", "_", s or "").strip("_").lower()
     return s[:48] or "resume"
+
+
+def _to_markup(para: str) -> str:
+    """reportlab Paragraphs parse a mini-XML; a stray `<`, `>` or `&` in résumé
+    text ("C++ & Go", "<5 ms") would otherwise raise mid-build. Escape first
+    (`&` before `<`/`>` — saxutils does that), then add our own line breaks so
+    the `<br/>` tags aren't themselves escaped."""
+    return escape(para).replace("\n", "<br/>")
 
 
 def write_pdf(text: str, out_path: Path) -> Path:
@@ -33,8 +39,7 @@ def write_pdf(text: str, out_path: Path) -> Path:
                           fontName="Helvetica", fontSize=10, leading=13)
     story = []
     for para in (text or "").split("\n\n"):
-        para = para.replace("\n", "<br/>").replace("&", "&amp;")
-        story.append(Paragraph(para, body))
+        story.append(Paragraph(_to_markup(para), body))
         story.append(Spacer(1, 6))
     doc.build(story)
     return out_path
@@ -48,7 +53,9 @@ def save_tailored_version(
     """Generate PDF + write a row in resume_versions. Returns the version row."""
     ts = int(time.time())
     fname = f"{_slug(source_company or 'resume')}_{_slug(role_family or label)}_{ts}.pdf"
-    out_path = RESUMES_DIR / fname
+    # Resolved per call (not copied at import) so a redirected store — tests,
+    # JOBCOPILOT_DB — also redirects where PDFs land.
+    out_path = store.resolve_resumes_dir() / fname
     write_pdf(tailored_text, out_path)
     vid = store.add_version(
         label=label,

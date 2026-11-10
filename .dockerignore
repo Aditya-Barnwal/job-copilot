@@ -1,0 +1,21 @@
+# Personal data + secrets: never baked into an image
+.env
+.env.*
+!.env.example
+profile/
+data/
+jobs.jsonl
+discovered_companies.yaml
+.browser-profile/
+
+# Dev noise
+.git/
+.github/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.DS_Store
+tests/
+docs/
+web/node_modules/

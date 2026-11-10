@@ -1,0 +1,4 @@
+# Local-only: headed browser autofill that stops before Submit (Phase 4).
+# Uses the installed Google Chrome (channel="chrome") with a dedicated profile,
+# so no Playwright browser download is needed.
+playwright>=1.47

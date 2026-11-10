@@ -1,0 +1,44 @@
+# FAKE example of profile/answers.yaml, filled in for "Alex Example" to show the
+# expected value types. The real template in profile/ starts with every value empty.
+schema_version: 1
+
+notice_period: "30 days"
+earliest_start: ""
+current_location: "Springfield, Exampleland"
+willing_to_relocate: true
+relocation_cities: [Example City]
+remote_preference: "hybrid"
+
+work_authorization:
+  india: "Not authorised"
+  other_countries: "Authorised to work in Exampleland"
+requires_sponsorship: true
+
+expected_ctc:
+  inr_lpa: 20
+  usd: 40000
+  eur: null
+  negotiable: true
+current_ctc:
+  inr_lpa: null
+
+total_experience_years: 1
+languages_spoken: [English]
+
+why_company_template: "I'd like to build {role} work at {company} because ..."
+why_role_template: ""
+cover_letter_signoff: "Best regards, Alex Example"
+
+how_did_you_hear: "Company careers page"
+referral_name: ""
+
+voluntary_disclosures:
+  gender: ""
+  pronouns: ""
+  disability: ""
+  veteran_status: ""
+
+custom:
+  - question: "Do you have experience with widgets?"
+    answer: "Yes — see the Acme Widgets role."
+    added: 2026-01-01

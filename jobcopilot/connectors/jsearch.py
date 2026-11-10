@@ -49,10 +49,8 @@ class JsearchConnector(Connector):
             "X-RapidAPI-Key": key,
             "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
         }
-        resp = self.session.get(self.BASE, params=params, headers=headers,
-                                timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        return self.client.get_json(self.BASE, params=params, headers=headers,
+                                    timeout=self.timeout)
 
     def parse(self, raw: Any, company: dict[str, Any]) -> list[Job]:
         jobs: list[Job] = []

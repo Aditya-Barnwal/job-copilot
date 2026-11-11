@@ -84,3 +84,56 @@ Re-check terms when a source starts failing or every ~6 months. Anything marked 
 3. Follow `<iframe src>` and grep its JS for `boards-api.greenhouse.io` / `BOARD_TOKEN`.
 4. Still nothing → follow one job-detail link; else mark `manual`.
 5. Always confirm with one API call; on 429 back off, never loop.
+
+## Phase 1b survey (2026-11-12)
+
+Surveyed 28 top job-automation repos (largest: career-ops 81.9k★, ai-job-search 71.2k★, awesome-remote-job 50.5k★, AIHawk 32.5k★, SimplifyJobs New-Grad 18.4k★, JobSpy 4.7k★; also ever-jobs, jobseek, kalil0321/ats-scrapers, openings-mcp, speedyapply, Hasjob).
+Many of them scrape LinkedIn / Indeed / Naukri / Glassdoor — those stay link-out only here.
+
+### Verdicts for new candidates
+
+| Source | Verdict | Endpoint | Notes / duties | Relevance |
+|---|---|---|---|---|
+| HN "Who is hiring" | OK-API | Firebase `v0/user/whoishiring.json` → Algolia `hn.algolia.com/api/v1/items/{id}` (whole thread, 1 call) | free-text posts → needs a parser; ~225 posts/month, ~30 junior, ~6 India | High |
+| speedyapply `NEW_GRAD_INTL.md` | OK (raw GitHub) | raw markdown table | no licence → credit the repo; ~116 India new-grad rows | High |
+| SimplifyJobs `listings.json` | OK (raw GitHub) | `.github/scripts/listings.json` (~13 MB) | no licence → credit; US-centric; best used to harvest employer ATS slugs | Medium |
+| Jobicy | Attribution | `/api/v2/remote-jobs?geo=apac` | credit with a link; Apply → original URL | Medium |
+| realworkfromanywhere | OK-RSS | `/rss.xml` | worldwide-only roles (fits the India-eligibility rule); `/go/` disallowed | Medium-High |
+| 4dayweek | Attribution | `/api/v2` (robots allows v1/v2, disallows `/api/`) | link back to 4dayweek.io | Medium |
+| CryptoJobsList | OK-RSS | `api.cryptojobslist.com/jobs.rss` | terms page unverified | Medium |
+| Hasjob | OK-Atom | `hasjob.co/feed` | India-only, low volume | Medium |
+| Remote.com | OK-JSON | `apply.remote.com/api/public/jobs` | has pay + region | Low-Medium |
+| Arbeitnow | Attribution | `/api/job-board-api` | Germany-heavy | Low |
+| NoDesk | OK-RSS | `/remote-jobs/index.xml` | 10 items | Low |
+| Remotive | **robots disallow `/api/*`** | — | not exempted (only ~13 dev jobs) | Low |
+| remotefirstjobs | robots unreadable (403) | `/remote-jobs.rss` | needs an exemption decision | Medium |
+| Findwork, Web3.career, Jooble, Careerjet, Reed | Key required | — | free keys need the user to sign up | Low-Medium |
+| The Muse, startup.jobs, echojobs | Dead for us (Cloudflare / bot wall) | — | never bypass | — |
+| USAJobs, Landing.jobs, Breezy | DO-NOT-AUTOMATE (robots) | — | link-out | — |
+| Internshala, Cutshort, Instahyre, Hirist/iimjobs, Foundit, freehire.me | DO-NOT-AUTOMATE (terms / no API / scraped data) | — | link-out | — |
+
+### More ATS types with public board endpoints
+
+| ATS | Endpoint | robots |
+|---|---|---|
+| Recruitee | `{co}.recruitee.com/api/offers/` | allows (only `/v/` disallowed) |
+| Workable | `apply.workable.com/api/v1/widget/accounts/{co}` | allows |
+| Rippling | `ats.rippling.com/api/v2/board/{slug}/jobs` | allows (only `/internal/`) |
+| Teamtailor | `{co}.teamtailor.com/jobs.rss` | allows |
+| Pinpoint | `{co}.pinpointhq.com/postings.json` | allows |
+| Personio | `{co}.jobs.personio.(de\|com)/xml` | allows |
+| BambooHR | `{co}.bamboohr.com/careers/list` | allows |
+| Keka (India) | `{t}.keka.com/careers/...` | `Allow: /careers` — verify endpoint |
+| Darwinbox (India) | — | robots unreadable (302) → needs an exemption decision |
+
+### Employer job-board datasets (feed the existing ATS connectors)
+
+| Dataset | Licence | Size |
+|---|---|---|
+| kalil0321/ats-scrapers `ats-companies/*.csv` | MIT | Greenhouse 6,031 · Workday 3,530 · Ashby 3,448 · Lever 2,402 · SmartRecruiters 2,747 · Workable 4,752 · Recruitee 1,164 · Rippling 1,923 · Teamtailor 1,464 · Pinpoint 406 · Keka 185 · … |
+| colophon-group/jobseek `boards.csv` | MIT (code) | 8,307 boards |
+| zshah101 `data/companies.json` | MIT | 5,355 |
+| amikai/openings-mcp `companies.yaml` per ATS | MIT | ~1–4k per ATS |
+| slugs from SimplifyJobs listing URLs | none (facts only) | ~2,400 new-grad-hiring employers |
+
+None carry country tags, and polling ~30k boards daily would break the low-volume rule, so the plan is a **rotating India probe**: ~500 boards/day, keeping boards that show at least one India / APAC / worldwide-remote role, prioritised by overlap with new-grad lists, yc-oss and Bangalore Startup Map.

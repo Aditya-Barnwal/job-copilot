@@ -156,14 +156,31 @@ def _find_existing(conn: sqlite3.Connection, row: dict, occurrences: list[dict])
         if hit:
             return hit
     mine = {o["source"] for o in occurrences}
-    for cand in conn.execute("SELECT key, source FROM jobs WHERE canonical_key = ?",
+    my_regions = _regions_of(row["region_restrictions"])
+    for cand in conn.execute("SELECT key, source, region_restrictions FROM jobs WHERE canonical_key = ?",
                              (row["canonical_key"],)).fetchall():
         theirs = {r["source"] for r in conn.execute(
             "SELECT source FROM job_sources WHERE job_key = ?", (cand["key"],))}
         theirs.add(cand["source"])
-        if not (theirs & mine):
-            return cand
+        if theirs & mine:
+            continue
+        # 'USA Only' and 'Canada' copies are two roles (same rule as dedupe.merge)
+        their_regions = _regions_of(cand["region_restrictions"])
+        if my_regions and their_regions and not (my_regions & their_regions):
+            continue
+        return cand
     return None
+
+
+def _regions_of(value: Any) -> frozenset[str]:
+    from .dedupe import _region_token
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "[]")
+        except ValueError:
+            value = []
+    return frozenset(t for t in (_region_token(str(v)) for v in value or []) if t)
 
 
 def _write_sources(conn: sqlite3.Connection, job_key: str, occurrences: list[dict], now: float) -> None:
@@ -210,9 +227,16 @@ def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = No
                         {**row, "_last": now, "_target": target},
                     )
                 else:
+                    # A lower-rank source still lists this role, so the row's
+                    # expiry is the LATEST over live sources: one listing
+                    # without an expiry (NULL) means it hasn't expired.
                     conn.execute("UPDATE jobs SET last_seen = ?, "
-                                 "company_id = COALESCE(company_id, ?) WHERE key = ?",
-                                 (now, row["company_id"], target))
+                                 "company_id = COALESCE(company_id, ?), "
+                                 "expires_at = CASE WHEN ? IS NULL OR expires_at IS NULL "
+                                 "OR expires_at = '' THEN NULL "
+                                 "WHEN ? > expires_at THEN ? ELSE expires_at END WHERE key = ?",
+                                 (now, row["company_id"], row["expires_at"] or None,
+                                  row["expires_at"], row["expires_at"], target))
                 updated += 1
             else:
                 target = row["key"]

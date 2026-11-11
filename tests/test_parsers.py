@@ -349,3 +349,20 @@ def test_ashby_compensation_nested_live_shape():
     c = _parse_compensation(comp)
     assert (c.currency, c.min_value, c.max_value, c.interval) == ("USD", 180000, 220000, "1 YEAR")
     assert c.summary.startswith("$180K")
+
+
+def test_normalize_company_name_more_legal_suffixes():
+    # correctness-6
+    from jobcopilot.normalize import normalize_company_name as n
+    assert n("Proxify AB") == "proxify"
+    assert n("Posit Software, PBC") == "posit software"
+    assert n("Celonis SE") == "celonis"
+    assert n("Wolt Oy") == "wolt"
+    assert n("Nokia Oyj") == n("Nokia") == "nokia"
+    assert n("Kahoot! ASA") == n("Kahoot AS") == "kahoot"
+    assert n("Booking.com B.V.") == n("Booking.com BV") == "booking com"
+    assert n("Ferrari S.p.A.") == "ferrari" and n("Acme S.r.l.") == "acme"
+    assert n("Doctolib SAS") == "doctolib" and n("Acme SARL") == "acme"
+    assert n("Mercari K.K.") == "mercari" and n("Philips N.V.") == "philips"
+    # never empty, and a bare suffix-looking name is kept
+    assert n("AB") == "ab" and n("SAS") == "sas" and n("S.A.") == "sa"

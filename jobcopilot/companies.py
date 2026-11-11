@@ -9,6 +9,23 @@ Every tier comes with human-readable reasons naming their source
 ("yc-oss: W23", "bsm: Series B", "config: brand") so a tier filter can always
 explain an exclusion (D8). A tier set by hand in config is sticky: it is stored
 as the reason "config: <tier>" and no computed signal overrides it.
+
+Identity rules (Phase 1 review):
+  * Shared hosts (app stores, Google Docs/Forms, link-in-bio, site builders,
+    *.vercel.app, medium.com, ...) are never a company's domain: usable_domain()
+    returns '' for them and every subdomain of them.
+  * Same normalised name + two different real domains = two companies. The
+    `normalized_name` column is UNIQUE, so the second one is stored under the
+    disambiguated key '<name>#<domain>' (e.g. 'atlas#atlashq.in'); compute_tier
+    and get_company() strip everything from '#' on. Callers may also pass an
+    explicit `match_key` (the funding watcher stores an ambiguous name-only
+    signal as '<name>#funding-rss' rather than guessing which company it is).
+  * config/companies.yaml + target_companies.yaml are the human source of
+    truth: a config row always replaces the ATS fields (clearing stale ones),
+    no other source overwrites a config-set ATS, and a company deleted from
+    config loses its config tier, its 'config' signal and its config-granted
+    ATS trust (ats_confidence drops to UNVERIFIED_CONFIDENCE, so it leaves live
+    ingest; to block a company outright keep it in config with enabled: false).
 """
 from __future__ import annotations
 
@@ -48,12 +65,32 @@ _SOFT = ("sector", "notes", "hq_location")
 # "config: brand" or "config: brand (public company, USDC issuer)"
 _CONFIG_TIER_RE = re.compile(r"^config: (brand|funded|unknown|excluded)(?: \(.*\))?$")
 
-# Hosts many unrelated companies share as their "website" — never match on them.
+# Hosts many unrelated companies share as their "website" — never an identity
+# domain. Matched suffix-aware: the host itself AND every subdomain of it
+# (acme.vercel.app, play.google.com/...), so google.com itself stays usable.
 _GENERIC_DOMAINS = frozenset({
-    "linkedin.com", "facebook.com", "twitter.com", "x.com", "instagram.com", "github.com",
-    "medium.com", "notion.site", "wixsite.com", "angel.co", "wellfound.com",
-    "crunchbase.com", "ycombinator.com", "bit.ly", "linktr.ee", "sites.google.com",
-    "youtube.com", "substack.com", "carrd.co", "webflow.io", "framer.website",
+    # social / profiles / directories
+    "linkedin.com", "lnkd.in", "facebook.com", "fb.com", "fb.me", "twitter.com", "x.com",
+    "instagram.com", "youtube.com", "youtu.be", "t.me", "wa.me", "whatsapp.com",
+    "angel.co", "wellfound.com", "crunchbase.com", "ycombinator.com", "producthunt.com",
+    "github.com", "gitlab.com", "bitbucket.org", "linktr.ee", "bio.link", "beacons.ai",
+    # app stores
+    "play.google.com", "apps.apple.com", "itunes.apple.com", "testflight.apple.com",
+    "chrome.google.com", "chromewebstore.google.com",
+    # Google docs / forms / sites / short links
+    "docs.google.com", "drive.google.com", "forms.google.com", "sites.google.com",
+    "maps.google.com", "g.page", "goo.gl", "g.co", "forms.gle", "bit.ly", "tinyurl.com",
+    # scheduling / forms
+    "calendly.com", "cal.com", "typeform.com", "tally.so", "jotform.com", "airtable.com",
+    # site builders / static hosting
+    "notion.site", "notion.so", "wixsite.com", "webflow.io", "carrd.co", "framer.website",
+    "framer.ai", "framer.app", "super.site", "bubbleapps.io", "softr.app", "github.io",
+    "gitlab.io", "vercel.app", "netlify.app", "herokuapp.com", "pages.dev", "web.app",
+    "firebaseapp.com", "replit.app", "repl.co", "glitch.me", "onrender.com", "fly.dev",
+    "wordpress.com", "blogspot.com", "myshopify.com", "gitbook.io", "readthedocs.io",
+    "squarespace.com", "weebly.com", "godaddysites.com", "mystrikingly.com",
+    # blogs / newsletters
+    "medium.com", "substack.com", "beehiiv.com", "mailchi.mp", "hashnode.dev",
 })
 # Trailing words dropped for a looser brand / body-shop name match ("Google India").
 _CORE_SUFFIXES = frozenset({"india", "technologies", "technology", "software", "internet", "online"})
@@ -102,10 +139,22 @@ def _decode(row: Any) -> dict:
     return d
 
 
+def is_shared_host(domain: Optional[str]) -> bool:
+    """True for a shared host or any subdomain of one (acme.vercel.app, play.google.com)."""
+    d = (domain or "").lower().strip(".")
+    parts = d.split(".")
+    return any(".".join(parts[i:]) in _GENERIC_DOMAINS for i in range(len(parts)))
+
+
 def usable_domain(url_or_domain: Optional[str]) -> str:
     """domain_of(), but '' for shared hosts (linkedin.com/company/x is not a domain)."""
     d = domain_of(url_or_domain)
-    return "" if (not d or d in _GENERIC_DOMAINS or "." not in d) else d
+    return "" if (not d or "." not in d or is_shared_host(d)) else d
+
+
+def base_key(normalized_name: Optional[str]) -> str:
+    """'atlas#atlashq.in' -> 'atlas' (strip a disambiguation suffix)."""
+    return str(normalized_name or "").split("#", 1)[0]
 
 
 def stage_level(stage: Optional[str]) -> Optional[int]:
@@ -165,8 +214,32 @@ def prepare_rules(rules: Mapping[str, Any]) -> dict:
     r["require_tier"] = list(r.get("require_tier") or ["brand", "funded"])
     r["funded_min_stage"] = r.get("funded_min_stage") or "series_a"
     r["yc_counts_as_funded"] = bool(r.get("yc_counts_as_funded", True))
-    r["brands"] = {normalize_company_name(b) for b in r.get("brands") or [] if b}
-    r["brand_domains"] = {domain_of(d) for d in r.get("brand_domains") or [] if d}
+    # brands: a plain string is a distinctive name (loose match: "Google India").
+    # A mapping {name, domains, aliases} is an AMBIGUOUS common-word brand
+    # ("Zoom", "Linear"): it matches when the company's domain is one of its
+    # domains, or - only when no domain is known - on the exact normalised name.
+    loose: set[str] = set()
+    exact: dict[str, set[str]] = {}
+    for b in r.get("brands") or []:
+        if isinstance(b, Mapping):
+            names = [b.get("name"), *(b.get("aliases") or [])]
+            doms = {usable_domain(d) for d in b.get("domains") or []} - {""}
+            for n in names:
+                if n and normalize_company_name(str(n)):
+                    exact.setdefault(normalize_company_name(str(n)), set()).update(doms)
+        elif b:
+            loose.add(normalize_company_name(str(b)))
+    r["brands"], r["brand_exact"] = loose, exact
+    # brand domains match EXACTLY (list a subdomain explicitly if it should count);
+    # a shared host listed by mistake is ignored, never matched.
+    bd = set()
+    for d in r.get("brand_domains") or []:
+        dom = domain_of(str(d)) if d else ""
+        if dom and not is_shared_host(dom):
+            bd.add(dom)
+        elif dom:
+            log.warning("brands.yaml: brand_domains entry %s is a shared host; ignored", dom)
+    r["brand_domains"] = bd
     r["body_shop_names"] = {normalize_company_name(b) for b in r.get("body_shop_names") or [] if b}
     r["body_shop_allow"] = {normalize_company_name(b) for b in r.get("body_shop_allow") or [] if b}
     r["body_shop_patterns"] = [
@@ -178,19 +251,39 @@ def prepare_rules(rules: Mapping[str, Any]) -> dict:
 
 
 def _domain_in(domain: str, domains: set[str]) -> bool:
-    return bool(domain) and any(domain == d or domain.endswith("." + d) for d in domains)
+    """Exact domain match only: careers.flipkart.com counts only if listed itself."""
+    return bool(domain) and domain in domains
+
+
+def _brand_match(norm: str, core: str, domain: str, r: Mapping[str, Any]) -> bool:
+    if norm in r["brands"] or core in r["brands"]:
+        return True
+    for key in (norm, core):
+        doms = r.get("brand_exact", {}).get(key)
+        if doms is None:
+            continue
+        if domain:                       # domain known: it must agree
+            if domain in doms:
+                return True
+        elif key == norm:                # no domain: exact name only, never the core
+            return True
+    return any(domain and domain in doms for doms in r.get("brand_exact", {}).values())
 
 
 def compute_tier(company: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[str, list[str]]:
     """(tier, reasons) for one company dict. Pure: no I/O.
 
-    Order: a config tier (sticky) > body-shop name > brand > funded > body-shop
-    keyword > unknown. Keywords only exclude when nothing positive is known, so a
-    funded product startup with "staffing" in its name is not thrown out.
+    Order: a config tier (sticky) > body-shop name > brand > Public (unless a
+    body-shop keyword matches) > funded > body-shop keyword > unknown. Keywords
+    only exclude when nothing positive is known, so a funded product startup
+    with "staffing" in its name is not thrown out - but a "Public" stage alone
+    is not a positive enough signal to skip them (listed IT-services firms).
     """
     r = prepare_rules(rules)
     name = company.get("name") or ""
-    norm = company.get("normalized_name") or normalize_company_name(name)
+    # fresh key from the name: a stored key may predate the current normaliser
+    # ('d e shaw' vs 'de shaw') or carry a '#domain' disambiguation suffix
+    norm = normalize_company_name(name) or base_key(company.get("normalized_name"))
     core = _core(norm)
     domain = usable_domain(company.get("domain") or company.get("website"))
     reasons_in = [str(x) for x in _as_list(company.get("tier_reasons"))]
@@ -205,15 +298,24 @@ def compute_tier(company: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[
     if not allowed and (norm in r["body_shop_names"] or core in r["body_shop_names"]):
         return "excluded", [f"brands.yaml: IT-services/staffing firm '{name}'"]
 
-    if norm in r["brands"] or core in r["brands"]:
-        return "brand", [f"brands.yaml: brand '{name}'"]
     if _domain_in(domain, r["brand_domains"]):
         return "brand", [f"brands.yaml: brand domain {domain}"]
+    if _brand_match(norm, core, domain, r):
+        return "brand", [f"brands.yaml: brand '{name}'"]
+
+    def keyword_hit() -> Optional[str]:
+        if allowed:
+            return None
+        for raw, pat in r["body_shop_patterns"]:
+            if pat.search(norm):
+                return f"brands.yaml: staffing/services keyword '{raw}' in '{name}'"
+        return None
 
     stage = company.get("funding_stage")
     stage_src = "bsm" if "bsm" in sources else ("funding-rss" if "funding-rss" in sources else "stage")
     if stage and str(stage).strip().lower() == "public":
-        return "brand", [f"{stage_src}: Public"]
+        hit = keyword_hit()
+        return ("excluded", [hit]) if hit else ("brand", [f"{stage_src}: Public"])
 
     funded: list[str] = []
     yc = company.get("yc_batch")
@@ -229,10 +331,9 @@ def compute_tier(company: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[
     if funded:
         return "funded", funded
 
-    if not allowed:
-        for raw, pat in r["body_shop_patterns"]:
-            if pat.search(norm):
-                return "excluded", [f"brands.yaml: staffing/services keyword '{raw}' in '{name}'"]
+    hit = keyword_hit()
+    if hit:
+        return "excluded", [hit]
 
     why = [f"{stage_src}: {stage} (below {r['funded_min_stage']})"] if stage else []
     return "unknown", why or ["no brand, YC or funding signal"]
@@ -240,24 +341,61 @@ def compute_tier(company: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[
 
 # --------------------------------------------------------------------- DB
 
-def _find(conn, norm: str, domain: str) -> Optional[Any]:
+def _by_key(conn, key: str) -> Optional[Any]:
+    return conn.execute("SELECT * FROM companies WHERE normalized_name = ?", (key,)).fetchone()
+
+
+def _find(conn, norm: str, domain: str) -> tuple[Optional[Any], str]:
+    """(matching row or None, normalized_name key to insert under).
+
+    Domain first. Then name - but a same-named row with a DIFFERENT real domain
+    is a different company, stored under '<norm>#<domain>'."""
     if domain:
         row = conn.execute("SELECT * FROM companies WHERE domain = ? ORDER BY id LIMIT 1",
                            (domain,)).fetchone()
         if row:
-            return row
-    return conn.execute("SELECT * FROM companies WHERE normalized_name = ?", (norm,)).fetchone()
+            return row, norm
+    row = _by_key(conn, norm)
+    if row is not None and domain:
+        other = usable_domain(row["domain"] or row["website"])
+        if other and other != domain:
+            key = f"{norm}#{domain}"
+            return _by_key(conn, key), key
+    return row, norm
 
 
-def upsert_company(name: str, *, db_path: Any = None, **fields: Any) -> int:
+def name_candidates(name: str, db_path: Any = None) -> list[dict]:
+    """Every row whose (disambiguated) key has this normalised name."""
+    norm = normalize_company_name(name)
+    if not norm:
+        return []
+    like = norm.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "#%"
+    with store.connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM companies WHERE normalized_name = ? "
+                            "OR normalized_name LIKE ? ESCAPE '\\' ORDER BY id", (norm, like)).fetchall()
+    return [_decode(r) for r in rows]
+
+
+def _is_config_ats(evidence: Any) -> bool:
+    ev = str(evidence or "")
+    return ev == "config" or ev.startswith("config (")
+
+
+def upsert_company(name: str, *, db_path: Any = None, match_key: Optional[str] = None,
+                   company_id: Optional[int] = None, **fields: Any) -> int:
     """Insert or merge one company; returns its id.
 
     Extra conveniences: `signal_source="yc-oss"` appends one source;
     `verified=True/False` sets ats_confidence when it isn't given. Lists
     (signal_sources, tier_reasons, investors) are merged, never replaced.
     Scalars from the caller win, except: website/domain are fill-only, ATS
-    fields are not overwritten by a lower-confidence guess, and a tier set by
-    config is never replaced by a non-config caller.
+    fields are not overwritten by a lower-confidence guess (nor, from a
+    non-config caller, when config set them), and a tier set by config is never
+    replaced by a non-config caller. A config caller passing `ats` replaces
+    every ATS field, clearing the ones it leaves out.
+
+    `company_id` updates exactly that row (LookupError if it is gone - never a
+    new row); `match_key` matches/inserts by that stored key only.
     """
     if not name or not str(name).strip():
         raise ValueError("company name required")
@@ -282,13 +420,21 @@ def upsert_company(name: str, *, db_path: Any = None, **fields: Any) -> int:
     now = time.time()
 
     with store.connect(db_path) as conn:
-        row = _find(conn, norm, domain)
+        if company_id is not None:
+            row, key = conn.execute("SELECT * FROM companies WHERE id = ?",
+                                    (int(company_id),)).fetchone(), norm
+            if row is None:
+                raise LookupError(f"company id {company_id} not found")
+        elif match_key:
+            row, key = _by_key(conn, match_key), match_key
+        else:
+            row, key = _find(conn, norm, domain)
         if row is None:
             vals = {k: v for k, v in fields.items() if v is not None}
             for f in _JSON_LIST_FIELDS:
                 if f in vals:
                     vals[f] = json.dumps(_as_list(vals[f]), ensure_ascii=False)
-            vals.update(name=name, normalized_name=norm, first_seen=now, last_seen=now, updated_at=now)
+            vals.update(name=name, normalized_name=key, first_seen=now, last_seen=now, updated_at=now)
             cols = ", ".join(vals)
             cur = conn.execute(f"INSERT INTO companies ({cols}) VALUES ({', '.join('?' * len(vals))})",
                                tuple(vals.values()))
@@ -300,7 +446,13 @@ def upsert_company(name: str, *, db_path: Any = None, **fields: Any) -> int:
         from_config = "config" in _as_list(fields.get("signal_sources"))
         new_conf = fields.get("ats_confidence")
         keep_ats = bool(old.get("ats")) and fields.get("ats") is not None and (
-            (new_conf if new_conf is not None else 0.0) < (old.get("ats_confidence") or 0.0))
+            (new_conf if new_conf is not None else 0.0) < (old.get("ats_confidence") or 0.0)
+            or (not from_config and _is_config_ats(old.get("ats_evidence"))))
+        if from_config and fields.get("ats") is not None:
+            keep_ats = False      # config is the human source of truth for the ATS
+            for k in _ATS_FIELDS:
+                if k != "ats_checked_at" and fields.get(k) is None and old.get(k) is not None:
+                    upd[k] = None
         for k, v in fields.items():
             if v is None:
                 continue
@@ -312,7 +464,8 @@ def upsert_company(name: str, *, db_path: Any = None, **fields: Any) -> int:
                 if merged != old[k]:
                     upd[k] = json.dumps(merged, ensure_ascii=False)
             elif k in _FILL_ONLY:
-                if not old.get(k):
+                # a stale shared-host value (play.google.com) counts as empty
+                if not old.get(k) or (not usable_domain(old.get(k)) and usable_domain(v)):
                     if k == "domain" and conn.execute(
                             "SELECT 1 FROM companies WHERE domain = ? AND id != ?",
                             (v, old["id"])).fetchone():
@@ -346,8 +499,7 @@ def get_company(name_or_domain: str, db_path: Any = None) -> Optional[dict]:
             row = conn.execute("SELECT * FROM companies WHERE domain = ? ORDER BY id LIMIT 1",
                                (dom,)).fetchone()
         if row is None:
-            row = conn.execute("SELECT * FROM companies WHERE normalized_name = ?",
-                               (normalize_company_name(q),)).fetchone()
+            row = _by_key(conn, normalize_company_name(q))
         return _decode(row) if row else None
 
 
@@ -373,6 +525,9 @@ def recompute_tiers(db_path: Any = None, rules: Optional[Mapping[str, Any]] = No
     with store.connect(db_path) as conn:
         rows = [_decode(x) for x in conn.execute("SELECT * FROM companies").fetchall()]
         for c in rows:
+            if c.get("domain") and not usable_domain(c["domain"]):   # legacy shared-host domain
+                conn.execute("UPDATE companies SET domain = NULL WHERE id = ?", (c["id"],))
+                c["domain"] = None
             tier, reasons = compute_tier(c, r)
             counts[tier] = counts.get(tier, 0) + 1
             if tier != c.get("tier") or reasons != c["tier_reasons"]:
@@ -382,23 +537,124 @@ def recompute_tiers(db_path: Any = None, rules: Optional[Mapping[str, Any]] = No
     return counts
 
 
+def _merge_rows(conn, keep: dict, drop: dict) -> None:
+    """Fold row `drop` into row `keep` (same company), re-point jobs, delete `drop`.
+    Lists are merged; scalars only fill gaps; the stronger ATS wins."""
+    upd: dict[str, Any] = {}
+    for f in _JSON_LIST_FIELDS:
+        merged = _merge_lists(keep[f], drop[f])
+        if merged != keep[f]:
+            upd[f] = json.dumps(merged, ensure_ascii=False)
+    take_ats = bool(drop.get("ats")) and (drop.get("ats_confidence") or 0.0) > (keep.get("ats_confidence") or 0.0)
+    for k in _FIELDS - set(_JSON_LIST_FIELDS) - {"enabled", "yc_top_company"}:
+        if k in _ATS_FIELDS:
+            if take_ats and drop.get(k) != keep.get(k):
+                upd[k] = drop.get(k)
+        elif keep.get(k) in (None, "") and drop.get(k) not in (None, ""):
+            upd[k] = drop[k]
+    if drop.get("yc_top_company") and not keep.get("yc_top_company"):
+        upd["yc_top_company"] = 1
+    if drop.get("enabled") is False and keep.get("enabled") is not False:
+        upd["enabled"] = 0                       # a disable on either copy sticks (fail-closed)
+    for k, agg in (("first_seen", min), ("last_seen", max)):
+        vals = [v for v in (keep.get(k), drop.get(k)) if v is not None]
+        if vals and agg(vals) != keep.get(k):
+            upd[k] = agg(vals)
+    if upd:
+        sets = ", ".join(f"{k} = ?" for k in upd)
+        conn.execute(f"UPDATE companies SET {sets} WHERE id = ?", (*upd.values(), keep["id"]))
+    conn.execute("UPDATE jobs SET company_id = ? WHERE company_id = ?", (keep["id"], drop["id"]))
+    conn.execute("DELETE FROM companies WHERE id = ?", (drop["id"],))
+    keep.update({k: (json.loads(v) if k in _JSON_LIST_FIELDS else v) for k, v in upd.items()})
+
+
+def renormalize_names(db_path: Any = None) -> dict[str, int]:
+    """Recompute normalized_name for every row with the CURRENT normaliser.
+
+    Idempotent. Rows whose new base key collides are merged only when they are
+    the same company: same real domain, or one side has no domain while the
+    group holds at most one domain. Same name + different domains stay apart
+    as '<base>#<domain>'. Name-only signal rows stored under a non-domain key
+    ('<base>#funding-rss') are never merged into a domain row. Merged rows'
+    jobs are re-pointed (jobs.company_id) before the duplicate is deleted.
+    Returns {"rekeyed": n, "merged": n}."""
+    out = {"rekeyed": 0, "merged": 0}
+    with store.connect(db_path) as conn:
+        rows = [_decode(r) for r in conn.execute("SELECT * FROM companies ORDER BY id").fetchall()]
+        groups: dict[str, list[dict]] = {}
+        for c in rows:
+            base = normalize_company_name(c["name"]) or base_key(c["normalized_name"])
+            groups.setdefault(base, []).append(c)
+        final: dict[int, str] = {}
+        for base, members in groups.items():
+            by_dom: dict[str, list[dict]] = {}
+            pinned: dict[str, list[dict]] = {}
+            loose: list[dict] = []
+            for c in members:
+                dom = usable_domain(c.get("domain") or c.get("website"))
+                suffix = c["normalized_name"].split("#", 1)[1] if "#" in c["normalized_name"] else ""
+                if dom:
+                    by_dom.setdefault(dom, []).append(c)
+                elif suffix and "." not in suffix:
+                    pinned.setdefault(suffix, []).append(c)
+                else:
+                    loose.append(c)
+            clusters: list[tuple[str, list[dict]]] = [(d, cs) for d, cs in by_dom.items()]
+            if len(by_dom) <= 1:
+                if clusters:
+                    clusters[0][1].extend(loose)
+                elif loose:
+                    clusters.append(("", loose))
+            else:   # ambiguous: a domainless row cannot be told apart -> keep it alone
+                clusters += [(f"id{c['id']}", [c]) for c in loose]
+            clusters += [(sfx, cs) for sfx, cs in pinned.items()]
+            # the base key goes to the cluster already holding it, else the oldest
+            owner = next((i for i, (_, cs) in enumerate(clusters)
+                          if any(c["normalized_name"] == base for c in cs)), None)
+            if owner is None:
+                owner = min(range(len(clusters)), key=lambda i: min(c["id"] for c in clusters[i][1]))
+            for i, (tag, cs) in enumerate(clusters):
+                cs.sort(key=lambda c: (c["normalized_name"] != base, c["id"]))
+                keep = cs[0]
+                for dup in cs[1:]:
+                    _merge_rows(conn, keep, dup)
+                    out["merged"] += 1
+                final[keep["id"]] = base if i == owner else f"{base}#{tag}"
+        stored = {c["id"]: c["normalized_name"] for c in rows}
+        changed = {i: k for i, k in final.items() if k != stored[i]}
+        for i in changed:            # two passes so the UNIQUE index never trips mid-way
+            conn.execute("UPDATE companies SET normalized_name = ? WHERE id = ?", (f"__renorm#{i}", i))
+        for i, k in changed.items():
+            conn.execute("UPDATE companies SET normalized_name = ? WHERE id = ?", (k, i))
+        out["rekeyed"] = len(changed)
+    if out["rekeyed"] or out["merged"]:
+        log.info("renormalize: %s", out)
+    return out
+
+
 def _ingest_connectors() -> set[str]:
     """ATS names we can actually pull jobs from (search-style connectors excluded)."""
     from .connectors import REGISTRY
     return set(REGISTRY) - {"adzuna", "jsearch", "manual"}
 
 
-def enabled_ats_companies(db_path: Any = None, rules: Optional[Mapping[str, Any]] = None) -> list[dict]:
-    """Companies ready for live ingest, as config/companies.yaml-style rows.
+def enabled_ats_companies(db_path: Any = None, rules: Optional[Mapping[str, Any]] = None,
+                          *, include_config: bool = False) -> list[dict]:
+    """Discovered companies ready for live ingest, as config/companies.yaml-style rows.
 
     Requires: enabled, a supported ATS verified to VERIFIED_CONFIDENCE, and a
     tier in rules.require_tier. `company_id` is included for linking jobs.
+    Rows that come from config are skipped (the roster already reads the config
+    files; re-adding them here could resurrect stale DB copies) unless
+    include_config=True.
     """
     req = (prepare_rules(rules) if rules is not None
            else prepare_rules(config.filters().get("companies") or {}))["require_tier"]
     supported = _ingest_connectors()
     out: list[dict] = []
     for c in list_companies(tier=req, enabled=True, db_path=db_path):
+        if not include_config and "config" in c["signal_sources"]:
+            continue
         ats = (c.get("ats") or "").lower()
         if ats not in supported or (c.get("ats_confidence") or 0.0) < VERIFIED_CONFIDENCE:
             continue
@@ -452,8 +708,12 @@ def _config_fields(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def sync_config_companies(paths: list[Path], db_path: Any = None) -> int:
-    """Load config/companies.yaml + config/target_companies.yaml rows (missing files skipped)."""
+    """Load config/companies.yaml + config/target_companies.yaml rows (missing files skipped).
+
+    Rows tagged 'config' that are in none of `paths` any more are de-configured
+    (see _deconfigure): the config files are the whole truth about config."""
     n = 0
+    synced: set[int] = set()
     for p in paths:
         p = Path(p)
         if not p.exists():
@@ -467,12 +727,75 @@ def sync_config_companies(paths: list[Path], db_path: Any = None) -> int:
                 continue  # a search query, not an employer
             f = _config_fields(row)
             cid = upsert_company(row["name"], db_path=db_path, **f)
+            synced.add(cid)
             if not f.get("tier"):
                 _drop_config_tier(cid, db_path)  # tier removed from config -> no longer sticky
             n += 1
-    if n:
+    removed = _deconfigure(synced, db_path)
+    if n or removed:
         recompute_tiers(db_path)
     return n
+
+
+def _deconfigure(keep_ids: set[int], db_path: Any) -> int:
+    """A company deleted from config: drop the 'config' signal + config tier, and
+    the trust config gave its ATS (confidence -> UNVERIFIED, so enabled_ats_companies
+    no longer offers it; the detector may re-verify it like any discovered row)."""
+    n = 0
+    now = time.time()
+    with store.connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM companies WHERE signal_sources LIKE '%\"config\"%'").fetchall()
+        for raw in rows:
+            c = _decode(raw)
+            if c["id"] in keep_ids or "config" not in c["signal_sources"]:
+                continue
+            upd: dict[str, Any] = {
+                "signal_sources": json.dumps([x for x in c["signal_sources"] if x != "config"]),
+                "tier_reasons": json.dumps([x for x in c["tier_reasons"]
+                                            if not _CONFIG_TIER_RE.match(str(x))], ensure_ascii=False),
+                "updated_at": now,
+            }
+            if _is_config_ats(c.get("ats_evidence")):
+                upd["ats_confidence"] = min(c.get("ats_confidence") or 0.0, UNVERIFIED_CONFIDENCE)
+                upd["ats_evidence"] = f"removed from config (was: {c['ats_evidence']})"
+            sets = ", ".join(f"{k} = ?" for k in upd)
+            conn.execute(f"UPDATE companies SET {sets} WHERE id = ?", (*upd.values(), c["id"]))
+            n += 1
+    if n:
+        log.info("sync_config_companies: %d company row(s) no longer in config de-configured", n)
+    return n
+
+
+def record_ats_detection(company_id: int, result: Any, *, checked_at: Optional[float] = None,
+                         db_path: Any = None) -> None:
+    """Store one ats_detect.detect() result on a company row.
+
+    Always sets ats_checked_at + ats_evidence. The ATS fields are written with
+    confidence 1.0 only when result.verified; an unverified detection is written
+    with the detector's own confidence, and only if it is not weaker than what
+    the row already holds. A config-set ATS is never touched."""
+    now = time.time() if checked_at is None else float(checked_at)
+    ev = str(getattr(result, "evidence", "") or "")
+    with store.connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM companies WHERE id = ?", (int(company_id),)).fetchone()
+        if row is None:
+            raise LookupError(f"company id {company_id} not found")
+        old = _decode(row)
+        upd: dict[str, Any] = {"ats_checked_at": now, "updated_at": now}
+        config_ats = _is_config_ats(old.get("ats_evidence"))
+        if not config_ats:
+            upd["ats_evidence"] = ("ats_detect: " + ev)[:500]
+        ats = getattr(result, "ats", None)
+        verified = bool(getattr(result, "verified", False))
+        conf = 1.0 if verified else float(getattr(result, "confidence", 0.0) or 0.0)
+        if ats and not config_ats and (verified or conf >= (old.get("ats_confidence") or 0.0)):
+            upd.update(ats=str(ats), ats_slug=getattr(result, "slug", None),
+                       ats_tenant=getattr(result, "tenant", None),
+                       ats_wd_server=getattr(result, "wd_server", None),
+                       ats_site=getattr(result, "site", None),
+                       ats_region=getattr(result, "region", None), ats_confidence=conf)
+        sets = ", ".join(f"{k} = ?" for k in upd)
+        conn.execute(f"UPDATE companies SET {sets} WHERE id = ?", (*upd.values(), int(company_id)))
 
 
 def _drop_config_tier(company_id: int, db_path: Any) -> None:

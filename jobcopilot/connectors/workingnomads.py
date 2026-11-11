@@ -57,7 +57,7 @@ class WorkingNomadsConnector(Connector):
                 title=(j.get("title") or "").strip(),
                 location_text=location or "Remote",
                 workplace_type=REMOTE,
-                country_bucket=infer_country_bucket(", ".join(regions)),
+                country_bucket=infer_country_bucket(location),   # full text, like the other boards
                 url=url,
                 description_text=strip_html(j.get("description")),
                 department=j.get("category_name") or None,

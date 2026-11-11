@@ -9,6 +9,7 @@ explicit `workplaceType` plus an `isRemote` boolean.
 """
 from __future__ import annotations
 
+import urllib.parse
 from typing import Any, Optional
 
 from .base import Connector, DEFAULT_HEADERS
@@ -78,8 +79,18 @@ class AshbyConnector(Connector):
     source = "ashby"
     BASE = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
 
+    @classmethod
+    def list_url(cls, slug: str) -> str:
+        """Jobs-list endpoint for a board, with the slug as ONE percent-encoded path
+        segment: a slug that came from untrusted HTML must never add '/', '?' or a
+        dot segment to a request on this robots-exempt host."""
+        slug = str(slug or "").strip()
+        if slug in ("", ".", ".."):
+            raise ValueError(f"unusable Ashby slug {slug!r}")
+        return cls.BASE.format(slug=urllib.parse.quote(slug, safe=""))
+
     def fetch_raw(self, company: dict[str, Any]) -> Any:
-        url = self.BASE.format(slug=company["slug"])
+        url = self.list_url(company["slug"])
         return self.client.get_json(
             url,
             params={"includeCompensation": "true"},

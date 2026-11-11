@@ -195,3 +195,105 @@ def test_tenant_scoped_workday_ids_do_not_collide(tmp_path):
     assert len(merged) == 2
     assert store.upsert_jobs([_fr(j) for j in merged], db_path=db) == (2, 0)
     assert store.get_job(a.key, db_path=db)["sources"][0]["external_id"] == "paypal/R-1"
+
+
+# --- Phase 1 review fixes (fix1_dedupe) ----------------------------------------
+
+def _with(job: Job, *, bucket=None, regions=None, tz=None) -> Job:
+    if bucket is not None:
+        job.country_bucket = bucket
+    if regions is not None:
+        job.region_restrictions = list(regions)
+    if tz is not None:
+        job.timezone_restrictions = list(tz)
+    return job
+
+
+def test_us_only_board_copy_never_attaches_to_india_ats_posting():
+    # correctness-2: the reviewer's case
+    ats = _with(_job("ashby", "in-1", location="Remote - India"), bucket="IN")
+    board = _with(_himalayas("h1", location="USA Only"), bucket="non-IN", regions=["USA Only"])
+    merged = dedupe.merge([ats, board])
+    assert len(merged) == 2
+    in_job = next(j for j in merged if j.source == "ashby")
+    assert in_job.region_restrictions == [] and in_job.country_bucket == "IN"
+    assert dedupe.canonical_key(ats) != dedupe.canonical_key(board)
+
+
+def test_unknown_country_joins_only_an_unambiguous_bucket():
+    ats = _job("ashby", "a1", location="Remote")                      # country unknown
+    b_in = _with(_himalayas("h1", location="India"), bucket="IN", regions=["India"])
+    b_us = _with(_job("remoteok", "r1", location="USA"), bucket="non-IN", regions=["USA"])
+    assert len(dedupe.merge([ats, b_in, b_us])) == 3                  # two candidates: no merge
+    merged = dedupe.merge([ats, b_in])
+    assert len(merged) == 1 and merged[0].country_bucket == "IN"
+    # an unknown side that names a specific other place never joins
+    brazil = _job("lever", "l1", location="Remote - Brazil")
+    assert len(dedupe.merge([brazil, b_in])) == 2
+
+
+def test_conflicting_region_sets_block_a_merge():
+    a = _with(_himalayas("h1", location="USA Only"), bucket="non-IN", regions=["USA Only"])
+    b = _with(_job("remoteok", "r1", location="Canada"), bucket="non-IN", regions=["Canada"])
+    assert len(dedupe.merge([a, b])) == 2
+    c = _with(_job("remoteok", "r2", location="United States"), bucket="non-IN",
+              regions=["United States"])
+    assert len(dedupe.merge([a, c])) == 1                             # same country, two spellings
+
+
+def test_board_regions_not_copied_onto_primary_with_own_country_signal():
+    ats = _with(_job("ashby", "a1", location="Remote - US"), bucket="non-IN")
+    board = _with(_himalayas("h1", location="US, Canada"), bucket="non-IN",
+                  regions=["US", "Canada"], tz=[-5.0])
+    board.tz_requirement_text = "EST"
+    j = dedupe.merge([ats, board])
+    assert len(j) == 1 and j[0].source == "ashby"
+    assert j[0].region_restrictions == [] and j[0].timezone_restrictions == []
+    assert j[0].tz_requirement_text is None
+
+
+def test_ats_unknown_workplace_matches_its_board_copy_in_same_country():
+    # correctness-5
+    gh = _with(_job("greenhouse", "g1", location="Bengaluru, India", workplace="unknown"), bucket="IN")
+    board = _with(_himalayas("h1", location="India"), bucket="IN", regions=["India"])
+    merged = dedupe.merge([gh, board])
+    assert len(merged) == 1 and merged[0].source == "greenhouse"
+    assert {s["source"] for s in merged[0].sources} == {"greenhouse", "himalayas"}
+    # different country bucket: no merge
+    us_board = _with(_himalayas("h2", location="USA"), bucket="non-IN", regions=["USA"])
+    assert len(dedupe.merge([gh, us_board])) == 2
+    # two same-source ATS candidates (one role per city): ambiguous, no merge
+    gh2 = _with(_job("greenhouse", "g2", location="Hyderabad, India", workplace="unknown"), bucket="IN")
+    assert len(dedupe.merge([gh, gh2, board])) == 3
+    # two ATS rows, neither a board: the unknown-workplace path does not apply
+    lever = _with(_job("lever", "l1", location="Remote - India"), bucket="IN")
+    assert len(dedupe.merge([gh, lever])) == 2
+
+
+def test_board_still_listing_a_role_is_not_purged_after_its_better_source_expires(tmp_path):
+    # correctness-3: run 1 Himalayas only; run 2 Himalayas + Remote OK;
+    # run 3 the Himalayas listing expired (dropped before merge), Remote OK still lists it.
+    db = tmp_path / "e.db"
+    store.init_db(db)
+    h = _himalayas("h1"); h.expires_at = "2026-11-20"
+    store.upsert_jobs([_fr(j) for j in dedupe.merge([h])], db_path=db)
+    r = _job("remoteok", "r1", url="https://remoteok.com/l/r1")
+    store.upsert_jobs([_fr(j) for j in dedupe.merge([h, r])], db_path=db)
+    assert store.purge_expired("2026-11-15", db_path=db) == 0
+    store.upsert_jobs([_fr(j) for j in dedupe.merge([_job("remoteok", "r1", url="https://remoteok.com/l/r1")])],
+                      db_path=db)
+    assert store.purge_expired("2026-11-25", db_path=db) == 0
+    got = store.get_job(h.key, db_path=db)
+    assert got is not None and {s["source"] for s in got["sources"]} == {"himalayas", "remoteok"}
+    # once nobody lists it any more and the expiry has passed, it goes
+    store.upsert_jobs([_fr(j) for j in dedupe.merge([h])], db_path=db)   # himalayas relists, expiry back
+    assert store.purge_expired("2026-11-25", db_path=db) == 1
+
+
+def test_store_canonical_match_respects_region_conflict(tmp_path):
+    db = tmp_path / "r.db"
+    store.init_db(db)
+    a = _with(_himalayas("h1", location="USA Only"), bucket="non-IN", regions=["USA Only"])
+    store.upsert_jobs([_fr(j) for j in dedupe.merge([a])], db_path=db)
+    b = _with(_job("remoteok", "r1", location="Canada"), bucket="non-IN", regions=["Canada"])
+    assert store.upsert_jobs([_fr(j) for j in dedupe.merge([b])], db_path=db) == (1, 0)

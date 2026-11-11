@@ -310,3 +310,68 @@ def test_regions_from_list():
     assert regions_from_list(["United States", {"name": "Canada"}, "united states"]) == \
         ["United States", "Canada"]
     assert regions_from_list(None) == []
+
+
+# ------------------------------------------- Phase 1 review fixes (fix1_dedupe)
+
+@pytest.mark.parametrize("text,expected", [
+    # correctness-1: 'm' of monthly/min/max is not "million"
+    ("$3,000 - $4,000 monthly", ("USD", 3000.0, 4000.0, "1 MONTH", False)),
+    ("$2000 min", ("USD", 2000.0, 2000.0, "1 YEAR", False)),
+    ("€4000 - 5000 monthly", ("EUR", 4000.0, 5000.0, "1 MONTH", False)),
+    # European thousands separators
+    ("€60.000 - €80.000", ("EUR", 60000.0, 80000.0, "1 YEAR", False)),
+    # a trailing k on the last number applies to the whole range
+    ("60-80k EUR", ("EUR", 60000.0, 80000.0, "1 YEAR", False)),
+    # R$ is Brazilian real, never USD
+    ("R$ 15.000 - 20.000", ("BRL", 15000.0, 20000.0, "1 YEAR", False)),
+    # genuine suffixes still work
+    ("$1.2M", ("USD", 1.2e6, 1.2e6, "1 YEAR", False)),
+    ("US$54k-90k", ("USD", 54000.0, 90000.0, "1 YEAR", False)),
+    # unknown $-prefixed currency or implausible figure -> summary only
+    ("MX$ 40,000 - 60,000", (None, None, None, None, True)),
+    ("$90,000,000 per year", (None, None, None, None, True)),
+    ("$500k monthly", (None, None, None, None, True)),
+    ("₹12,00,000 - ₹18,00,000", ("INR", 1.2e6, 1.8e6, "1 YEAR", False)),
+])
+def test_jobspresso_salary_text_review_strings(text, expected):
+    c = parse_salary_text(text)
+    assert (c.currency, c.min_value, c.max_value, c.interval, c.is_estimate) == expected
+    assert c.summary == text
+
+
+def test_partition_location_trailing_parenthetical_tz():
+    # correctness-4
+    assert partition_location("India (IST)") == (["India"], "IST")
+    assert partition_location("USA (EST)") == (["USA"], "EST")
+    assert partition_location("Americas (UTC-8 to UTC-3)") == (["Americas"], "UTC-8 to UTC-3")
+    assert partition_location("Remote (US only)") == (["Remote (US only)"], None)
+    # whole-field tz text is unchanged
+    assert partition_location("CET (+/- 3 hours)") == ([], "CET (+/- 3 hours)")
+
+
+def test_two_letter_zone_abbreviations_need_a_cue():
+    # correctness-7: US state / country codes keep their region
+    assert partition_location("Hartford, CT") == (["Hartford", "CT"], None)
+    assert partition_location("Lisbon, PT") == (["Lisbon", "PT"], None)
+    assert partition_location("Helena, MT") == (["Helena", "MT"], None)
+    assert partition_location("Lisbon (PT)") == (["Lisbon (PT)"], None)
+    # ...but are zones with another cue, or as the whole field
+    assert partition_location("US; PT overlap") == (["US"], "PT overlap")
+    assert partition_location("ET working hours") == ([], "ET working hours")
+    assert partition_location("PT (+/- 2 hours)") == ([], "PT (+/- 2 hours)")
+    assert partition_location("PT") == ([], "PT")
+    assert partition_location("ET/PT") == ([], "ET/PT")
+    assert is_timezone_text("PT") and not is_timezone_text("Hartford, CT")
+    assert is_timezone_text("EST overlap") and is_timezone_text("CET")
+
+
+def test_workingnomads_country_bucket_uses_full_location():
+    # correctness-4: "India (IST)" must bucket as IN, like the other boards
+    item = {"url": "https://www.workingnomads.com/job/go/1/", "title": "Engineer",
+            "company_name": "X", "category_name": "Development", "location": "India (IST)"}
+    job = WorkingNomadsConnector().parse([item], {})[0]
+    assert job.country_bucket == "IN"
+    assert job.region_restrictions == ["India"] and job.tz_requirement_text == "IST"
+    item["location"] = "Time zone: IST (+/- 2 hours)"   # tz-only text still says India
+    assert WorkingNomadsConnector().parse([item], {})[0].country_bucket == "unknown"

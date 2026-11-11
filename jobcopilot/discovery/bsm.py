@@ -4,8 +4,14 @@ Per run: ONE conditional GET of the homepage. Its Next.js RSC payload
 (`self.__next_f.push([1, "..."])` chunks) holds every startup (name, slug,
 stage, sector, website) and a hiring map `roles{slug: [...]}`. Company pages
 (`/company/<slug>`) are fetched only for hiring companies whose role list
-changed since the last run, spaced >= company_page_delay_sec apart and capped
-per run; the rest are deferred to the next run. A company page's role ids
+changed since the last run, spaced >= company_page_delay_sec apart (the
+homepage GET counts: page 1 waits too) and capped per run; the rest are deferred
+to the next run, oldest-queued first. A page that answers 404/410 is dropped
+until its roles change again; other failures back off (12 h, 24 h, ...) and the
+slug is dropped after MAX_PAGE_ATTEMPTS, so no slug can starve the queue.
+Slugs must match ^[a-z0-9][a-z0-9-]*$ and are URL-quoted; any URL whose path
+contains /api/ is refused. The hint is written to the SAME row the homepage
+upsert matched (slug -> company id), never to a new row. A company page's role ids
 ("greenhouse:<board>:<id>") reveal the ATS — stored as an unverified hint for
 the detector to confirm. `/api/` is never called (robots-disallowed) and their
 role feed is never mirrored: jobs come from the ATS APIs.
@@ -18,11 +24,11 @@ import re
 import time
 from collections import Counter
 from typing import Any, Callable, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, urlsplit
 
 from .. import companies as co
 from .. import config
-from ..http import HttpError, PoliteClient, default_client
+from ..http import HttpError, HttpStatusError, PoliteClient, default_client
 
 log = logging.getLogger("jobcopilot.discovery.bsm")
 
@@ -30,6 +36,9 @@ SOURCE = "bsm"
 DEFAULT_URL = "https://bangalorestartupmap.com/"
 DEFAULT_MAX_COMPANY_PAGES = 40
 DEFAULT_DELAY_SEC = 5.0
+MAX_PAGE_ATTEMPTS = 3          # failed fetches before a slug is dropped
+BACKOFF_SEC = 12 * 3600        # 12 h, 24 h, 48 h ... between retries
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 _PUSH_RE = re.compile(r"self\.__next_f\.push\((\[.*?\])\)\s*</script>", re.S)
 # Role ids look like "greenhouse:razorpaysoftwareprivatelimited:4749341005".
@@ -123,13 +132,35 @@ def parse_company_page(html: str) -> Optional[dict]:
 
 
 def role_hashes(roles: dict[str, list]) -> dict[str, str]:
-    return {slug: co.content_hash(v) for slug, v in roles.items() if v}
+    return {slug: co.content_hash(v) for slug, v in roles.items() if v and valid_slug(slug)}
+
+
+def valid_slug(slug: Any) -> bool:
+    return isinstance(slug, str) and bool(_SLUG_RE.fullmatch(slug))
+
+
+def company_url(base: str, slug: Any) -> Optional[str]:
+    """base + 'company/' + slug, or None for an unsafe slug or an /api/ URL."""
+    if not valid_slug(slug):
+        return None
+    url = base.rstrip("/") + "/company/" + quote(slug, safe="")
+    if "/api/" in (urlsplit(url).path + "/"):
+        return None
+    return url
+
+
+def _pending_entry(v: Any, now: float) -> dict:
+    """Old state stored pending[slug] = hash; now {hash, since, attempts, next_try}."""
+    if isinstance(v, dict):
+        return {"hash": v.get("hash"), "since": float(v.get("since") or now),
+                "attempts": int(v.get("attempts") or 0), "next_try": float(v.get("next_try") or 0)}
+    return {"hash": v, "since": now, "attempts": 0, "next_try": 0.0}
 
 
 def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
         max_company_pages: int = DEFAULT_MAX_COMPANY_PAGES, delay_sec: Optional[float] = None,
         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-        force: bool = False) -> dict:
+        force: bool = False, now: Optional[float] = None) -> dict:
     """Daily refresh. Returns counts; errors are logged and reported, never raised."""
     cfg = (config.sources().get("discovery") or {}).get("bangalore_startup_map") or {}
     if not cfg.get("enabled", True) and not force:
@@ -140,17 +171,21 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
     client = client or default_client()
     st = co.get_source_state(SOURCE, db_path)
     state = st.get("state") or {}
+    now = time.time() if now is None else float(now)
     hashes: dict[str, str] = dict(state.get("hashes") or {})
-    pending: dict[str, str] = dict(state.get("pending") or {})
+    pending: dict[str, dict] = {k: _pending_entry(v, now) for k, v in (state.get("pending") or {}).items()}
     names: dict[str, str] = dict(state.get("names") or {})
-    now = time.time()
+    ids: dict[str, int] = {k: int(v) for k, v in (state.get("ids") or {}).items()
+                           if isinstance(v, (int, float, str)) and str(v).isdigit()}
     out: dict[str, Any] = {"source": SOURCE, "unchanged": False, "upserted": 0,
-                           "pages_fetched": 0, "ats_hints": 0, "deferred": 0}
+                           "pages_fetched": 0, "ats_hints": 0, "deferred": 0, "dropped": 0}
 
     # 1) homepage: one conditional GET
     validators: dict[str, Any] = {}
     digest = st.get("content_hash")
+    last: Optional[float] = None
     try:
+        last = clock()       # the homepage counts toward the 1 req / delay spacing
         resp = client.get(base, headers=(co.conditional_headers(st) or None) if not force else None)
         validators = {"etag": resp.headers.get("ETag") or st.get("etag"),
                       "last_modified": resp.headers.get("Last-Modified") or st.get("last_modified")}
@@ -167,13 +202,17 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
                     if not f:
                         continue
                     nm = f.pop("name")
-                    co.upsert_company(nm, db_path=db_path, signal_source=SOURCE, **f)
-                    if s.get("slug"):
-                        names[str(s["slug"])] = nm
+                    cid = co.upsert_company(nm, db_path=db_path, signal_source=SOURCE, **f)
+                    slug = s.get("slug")
+                    if valid_slug(slug):
+                        names[slug], ids[slug] = nm, cid
                     out["upserted"] += 1
                 for slug, h in role_hashes(roles).items():
                     if hashes.get(slug) != h:
-                        pending[slug] = h
+                        if slug in pending:
+                            pending[slug]["hash"] = h      # keep its place in the queue
+                        else:
+                            pending[slug] = _pending_entry(h, now)
     except (HttpError, ValueError) as exc:
         log.error("bsm homepage failed: %s", exc)
         co.put_source_state(SOURCE, db_path, last_run=now, last_error=str(exc)[:500])
@@ -181,28 +220,57 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
         return out
 
     # 2) company pages for new / changed hiring companies only, spaced and capped
-    todo = sorted(pending)
-    last = None
+    for slug in [k for k in pending if company_url(base, k) is None]:
+        log.warning("bsm: refusing unsafe slug/url %r", slug)
+        pending.pop(slug)
+        out["dropped"] += 1
+    due = sorted((k for k, v in pending.items() if v["next_try"] <= now),
+                 key=lambda k: (pending[k]["since"], k))          # oldest first
     errors = 0
-    for slug in todo[:max(0, int(max_company_pages))]:
+    for slug in due[:max(0, int(max_company_pages))]:
         if last is not None:
             wait = delay - (clock() - last)
             if wait > 0:
                 sleep(wait)
         last = clock()
+        entry = pending[slug]
         try:
-            page = client.get(urljoin(base, f"company/{slug}"))
+            page = client.get(company_url(base, slug))
+            status = int(getattr(page, "status_code", 200) or 200)
+            if status >= 400:
+                raise HttpStatusError("GET", company_url(base, slug), page)
             hint = parse_company_page(page.text)
         except (HttpError, ValueError) as exc:
             errors += 1
-            log.warning("bsm company page %s failed: %s", slug, exc)
+            status = getattr(exc, "status_code", None)
+            entry["attempts"] += 1
+            if status in (404, 410) or entry["attempts"] >= MAX_PAGE_ATTEMPTS:
+                log.warning("bsm company page %s dropped after %d attempt(s): %s",
+                            slug, entry["attempts"], exc)
+                hashes[slug] = pending.pop(slug)["hash"]   # re-queued only if its roles change
+                out["dropped"] += 1
+            else:
+                entry["next_try"] = now + BACKOFF_SEC * 2 ** (entry["attempts"] - 1)
+                log.warning("bsm company page %s failed (attempt %d): %s", slug, entry["attempts"], exc)
             continue
         out["pages_fetched"] += 1
-        hashes[slug] = pending.pop(slug)
-        if hint and names.get(slug):
-            co.upsert_company(names[slug], db_path=db_path, signal_source=SOURCE,
-                              ats_confidence=co.UNVERIFIED_CONFIDENCE, ats_checked_at=now, **hint)
-            out["ats_hints"] += 1
+        hashes[slug] = pending.pop(slug)["hash"]
+        if hint:
+            cid = ids.get(slug)
+            if cid is None and names.get(slug):        # state from before ids were kept
+                row = co.get_company(names[slug], db_path)
+                cid = row["id"] if row else None
+            if cid is None:
+                log.info("bsm: ATS hint for %s skipped: company row unknown", slug)
+                continue
+            try:
+                co.upsert_company(names.get(slug) or slug, db_path=db_path, company_id=cid,
+                                  signal_source=SOURCE, ats_confidence=co.UNVERIFIED_CONFIDENCE,
+                                  ats_checked_at=now, **hint)
+                out["ats_hints"] += 1
+            except LookupError:
+                ids.pop(slug, None)
+                log.info("bsm: ATS hint for %s skipped: company row %s is gone", slug, cid)
     out["deferred"] = len(pending)
     if pending:
         log.info("bsm: %d company page(s) deferred to the next run (cap %d): %s",
@@ -213,5 +281,6 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
         out["tiers"] = co.recompute_tiers(db_path)
     co.put_source_state(SOURCE, db_path, content_hash=digest, last_run=now, last_ok=now,
                         last_error=None, items=out["upserted"] or st.get("items"),
-                        state={"hashes": hashes, "pending": pending, "names": names}, **validators)
+                        state={"hashes": hashes, "pending": pending, "names": names, "ids": ids},
+                        **validators)
     return out

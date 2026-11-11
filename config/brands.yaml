@@ -5,7 +5,17 @@
 # so every company's tier + reasons are recomputed.
 #
 #   brands       recognised product / tech companies  -> tier "brand"
-#   brand_domains  same, matched on the company's website domain (subdomains count)
+#                A plain name is distinctive: it also matches with a trailing
+#                India/Technologies/Software... ("Google India").
+#                A COMMON-WORD brand ("Zoom", "Linear", "Target") must be written
+#                {name: Zoom, domains: [zoom.us, zoom.com], aliases: [...]}: it then
+#                matches only (a) a company whose domain is one of `domains`, or
+#                (b) when no domain is known, the exact normalised name/alias -
+#                so "Zoom Technologies" (a seed startup) or "Linear" on
+#                linear-labs.in is NOT tagged brand.
+#   brand_domains  same, matched on the company's website domain EXACTLY (a
+#                subdomain counts only if listed itself). Shared hosts
+#                (play.google.com, *.vercel.app, ...) are ignored here.
 #   body_shops   IT-services / staffing firms          -> tier "excluded"
 #     names      exact company names (matched after normalisation, so
 #                "Infosys Limited" == "Infosys")
@@ -23,15 +33,15 @@ brands:
   - Google
   - Alphabet
   - Microsoft
-  - Amazon
+  - {name: Amazon, domains: [amazon.com, amazon.in, amazon.jobs, amazon.science, aboutamazon.com], aliases: [Amazon India, Amazon Development Centre India]}
   - Amazon Web Services
-  - Apple
-  - Meta
+  - {name: Apple, domains: [apple.com]}
+  - {name: Meta, domains: [meta.com, metacareers.com], aliases: [Meta Platforms]}
   - Netflix
   - Nvidia
   - Adobe
   - Salesforce
-  - Oracle
+  - {name: Oracle, domains: [oracle.com]}
   - SAP
   - IBM
   - Intel
@@ -42,7 +52,7 @@ brands:
   - Intuit
   - ServiceNow
   - Workday
-  - Snowflake
+  - {name: Snowflake, domains: [snowflake.com]}
   - Databricks
   - Atlassian
   - Uber
@@ -51,23 +61,23 @@ brands:
   - DoorDash
   - Stripe
   - PayPal
-  - Visa
+  - {name: Visa, domains: [visa.com, visa.co.in]}
   - Mastercard
-  - Block
+  - {name: Block, domains: [block.xyz]}
   - Shopify
   - Spotify
   - LinkedIn
   - Pinterest
-  - Snap
+  - {name: Snap, domains: [snap.com], aliases: [Snap Inc]}
   - Dropbox
-  - Zoom
-  - Slack
+  - {name: Zoom, domains: [zoom.us, zoom.com], aliases: [Zoom Video Communications]}
+  - {name: Slack, domains: [slack.com]}
   - Twilio
   - Okta
   - Cloudflare
   - Datadog
   - MongoDB
-  - Elastic
+  - {name: Elastic, domains: [elastic.co]}
   - Confluent
   - HashiCorp
   - GitLab
@@ -76,27 +86,27 @@ brands:
   - Palantir
   - OpenAI
   - Anthropic
-  - Notion
+  - {name: Notion, domains: [notion.com], aliases: [Notion Labs]}
   - Figma
   - Canva
-  - Linear
+  - {name: Linear, domains: [linear.app]}
   - Vercel
   - Supabase
-  - Discord
-  - Asana
+  - {name: Discord, domains: [discord.com]}
+  - {name: Asana, domains: [asana.com]}
   - Mixpanel
-  - Plaid
-  - Ramp
+  - {name: Plaid, domains: [plaid.com]}
+  - {name: Ramp, domains: [ramp.com]}
   - Brex
-  - Mercury
-  - Affirm
+  - {name: Mercury, domains: [mercury.com]}
+  - {name: Affirm, domains: [affirm.com]}
   - Robinhood
   - Coinbase
   - Grammarly
   - Booking.com
   - Expedia
   - Rippling
-  - Deel
+  - {name: Deel, domains: [deel.com]}
   - Goldman Sachs
   - JP Morgan
   - Morgan Stanley
@@ -104,28 +114,28 @@ brands:
   - Tower Research Capital
   - Optiver
   - Jane Street
-  - Citadel
+  - {name: Citadel, domains: [citadel.com, citadelsecurities.com], aliases: [Citadel Securities]}
   - Walmart
-  - Target
+  - {name: Target, domains: [target.com]}
   # --- Indian product companies ---
   - Flipkart
   - Myntra
   - Swiggy
   - Zomato
-  - Eternal
+  - {name: Eternal, domains: [eternal.com, zomato.com]}
   - Blinkit
   - Zepto
   - Zerodha
   - PhonePe
   - Paytm
   - Razorpay
-  - CRED
+  - {name: CRED, domains: [cred.club]}
   - Meesho
-  - Postman
+  - {name: Postman, domains: [postman.com]}
   - Freshworks
   - Zoho
   - Groww
-  - Ola
+  - {name: Ola, domains: [olacabs.com, olakrutrim.com], aliases: [ANI Technologies]}
   - Ola Electric
   - Ather Energy
   - Nykaa
@@ -133,32 +143,32 @@ brands:
   - PolicyBazaar
   - MakeMyTrip
   - InMobi
-  - Glance
+  - {name: Glance, domains: [glance.com]}
   - ShareChat
   - Dream11
   - Dream Sports
   - Games24x7
-  - MPL
+  - {name: MPL, domains: [mpl.live], aliases: [Mobile Premier League]}
   - Unacademy
   - upGrad
   - PhysicsWallah
   - Urban Company
   - Delhivery
-  - Udaan
+  - {name: Udaan, domains: [udaan.com]}
   - BrowserStack
   - Chargebee
   - Druva
   - Hasura
-  - Setu
-  - Jupiter
-  - Slice
+  - {name: Setu, domains: [setu.co]}
+  - {name: Jupiter, domains: [jupiter.money]}
+  - {name: Slice, domains: [sliceit.com]}
   - Juspay
   - Pine Labs
   - BharatPe
   - Cars24
   - Spinny
   - OYO
-  - Rapido
+  - {name: Rapido, domains: [rapido.bike]}
   - Dunzo
   - Licious
   - CureFit
@@ -170,7 +180,7 @@ brands:
   - CleverTap
   - Capillary Technologies
   - ThoughtSpot
-  - Atlan
+  - {name: Atlan, domains: [atlan.com]}
   - Uniphore
   - Observe.AI
   - Sarvam AI
@@ -185,7 +195,7 @@ brands:
   - Fyle
   - Hevo Data
   - LambdaTest
-  - Zeta
+  - {name: Zeta, domains: [zeta.tech]}
   - M2P Fintech
   - Perfios
 
@@ -217,6 +227,7 @@ brand_domains:
   - zoho.com
 
 body_shops:
+  # Editable judgement calls, not facts: remove a name if you'd take a job there.
   names:
     - Tata Consultancy Services
     - TCS
@@ -284,6 +295,21 @@ body_shops:
     - Mindteck
     - Datamatics
     - 3i Infotech
+    # added in the Phase 1 review (IT services / engineering outsourcing):
+    - ALTEN Calsoft Labs
+    - ALTEN India
+    - Calsoft
+    - Tata Elxsi
+    - Quest Global
+    - Sify Technologies
+    - LatentView Analytics
+    - LatentView
+    - KPIT
+    - EPAM Systems
+    - GlobalLogic
+    - Nagarro
+    # Persistent Systems / KPIT Technologies / Cyient are product-engineering
+    # services firms; kept excluded above - delete those lines to allow them.
   patterns:
     - staffing
     - manpower

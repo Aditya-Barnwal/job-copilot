@@ -19,7 +19,15 @@ Recency (F12): items whose RSS pubDate is older than `recent_days`, or missing
 and never costs tokens.
 
 If RSS is unreachable or the LLM is unavailable, this skips with a log line
-rather than crashing the ingest.
+rather than crashing the ingest. LLM output is untrusted: it is coerced
+(dict check, str stage/sector, numeric-or-0 amount, null investors dropped)
+and every item is handled in its own try/except.
+
+A funding headline gives a name, never a domain, so record_companies() merges
+into an existing company only when exactly ONE company has that name; with two
+or more same-named companies (e.g. 'atlas' and 'atlas#atlashq.in') the round is
+stored as its own row under the key '<name>#funding-rss' instead of marking a
+possibly-wrong company funded.
 """
 from __future__ import annotations
 
@@ -118,26 +126,79 @@ def is_recent(pub_date: str, recent_days: int, now: Optional[datetime] = None) -
     return now - timedelta(days=recent_days) <= dt <= now + timedelta(days=2)
 
 
+def _num(v) -> float:
+    """amount_usd from the LLM: a number (or numeric string) else 0."""
+    if isinstance(v, bool):
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v) if v == v and v > 0 else 0.0   # NaN / negative -> 0
+    if isinstance(v, str):
+        try:
+            f = float(v.replace(",", "").replace("$", "").strip())
+            return f if f == f and f > 0 else 0.0
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _coerce(rec) -> Optional[dict]:
+    """Validate one LLM extraction; None if unusable."""
+    if not isinstance(rec, dict):
+        return None
+    company = rec.get("company")
+    if not isinstance(company, str) or not company.strip():
+        return None
+    inv = rec.get("investors")
+    if isinstance(inv, str):
+        inv = [inv]
+    investors = [str(i).strip() for i in (inv if isinstance(inv, list) else [])
+                 if i is not None and not isinstance(i, (dict, list)) and str(i).strip()]
+    stage = rec.get("stage")
+    sector = rec.get("sector")
+    return {
+        "company": re.sub(r"\s+", " ", company).strip()[:200],
+        "stage": str(stage).strip()[:40] if stage is not None and not isinstance(stage, (dict, list)) else "",
+        "amount_usd": _num(rec.get("amount_usd")),
+        "investors": investors,
+        "sector": str(sector).strip().lower() if isinstance(sector, str) else "",
+    }
+
+
 def record_companies(qualifiers: list[dict], db_path=None) -> int:
     """Upsert qualified companies into the companies table (tier "funded" via
-    signal source funding-rss), then recompute tiers. Returns rows written."""
+    signal source funding-rss), then recompute tiers. Returns rows written.
+    Name-only: an existing company is updated only if it is the ONLY one with
+    that name; otherwise the round is kept as a separate '<name>#funding-rss' row."""
     from . import companies
+    from .normalize import normalize_company_name
     n = 0
     for q in qualifiers:
-        amount = q.get("amount_usd")
-        note = "funding-rss: " + ", ".join(p for p in (
-            q.get("stage") or "",
-            f"${amount / 1e6:.0f}M" if isinstance(amount, (int, float)) and amount else "",
-            q.get("source_url") or "",
-        ) if p)
         try:
-            companies.upsert_company(
-                q["name"], db_path=db_path, signal_source="funding-rss",
-                funding_stage=q.get("stage") or None,
-                investors=[str(i) for i in q.get("investors") or []],
-                sector=q.get("sector") or "tech", notes=note)
+            amount = _num(q.get("amount_usd"))
+            note = "funding-rss: " + ", ".join(p for p in (
+                str(q.get("stage") or ""),
+                f"${amount / 1e6:.0f}M" if amount else "",
+                str(q.get("source_url") or ""),
+            ) if p)
+            name = str(q["name"])
+            fields = dict(db_path=db_path, signal_source="funding-rss",
+                          funding_stage=str(q.get("stage") or "") or None,
+                          investors=[str(i) for i in q.get("investors") or [] if i is not None],
+                          sector=str(q.get("sector") or "tech"), notes=note)
+            same = companies.name_candidates(name, db_path)
+            if len(same) > 1:
+                key = f"{normalize_company_name(name)}#funding-rss"
+                log.info("funding: %r matches %d companies; stored separately as %s",
+                         name, len(same), key)
+                fields["notes"] = (note + f"; ambiguous name: {len(same)} companies called "
+                                   f"{name!r}, not merged - link by hand")
+                companies.upsert_company(name, match_key=key, **fields)
+            elif same:
+                companies.upsert_company(name, company_id=same[0]["id"], **fields)
+            else:
+                companies.upsert_company(name, **fields)
             n += 1
-        except (ValueError, TypeError) as exc:
+        except Exception as exc:   # noqa: BLE001 — one bad item never aborts the run
             log.warning("funding: could not record %r: %s", q.get("name"), exc)
     if n:
         companies.recompute_tiers(db_path)
@@ -192,14 +253,18 @@ def run(out_path: str | Path = "discovered_companies.yaml",
     qualifiers: list[dict] = []
     seen: set[str] = set()
     for it in recent[:60]:  # cap to keep LLM cost low
-        rec = _ask_llm(it["title"], it["description"])
-        if not rec or not rec.get("company"):
-            continue
-        company = re.sub(r"\s+", " ", rec["company"]).strip()
-        if company.lower() in seen:
-            continue
-        seen.add(company.lower())
-        if not _qualifies(rec, min_amount_usd, recent_days):
+        try:
+            rec = _coerce(_ask_llm(str(it.get("title") or ""), str(it.get("description") or "")))
+            if not rec:
+                continue
+            company = rec["company"]
+            if company.lower() in seen:
+                continue
+            seen.add(company.lower())
+            if not _qualifies(rec, min_amount_usd, recent_days):
+                continue
+        except Exception as exc:   # noqa: BLE001 — one bad item never aborts the run
+            log.warning("funding: skipped item %r: %s", it.get("title"), exc)
             continue
         qualifiers.append({
             "name": company,
@@ -223,7 +288,10 @@ def run(out_path: str | Path = "discovered_companies.yaml",
             existing = yaml.safe_load(out.read_text(encoding="utf-8")) or {}
         except Exception:
             existing = {}
-    existing_companies = {c["name"].lower(): c for c in (existing.get("companies") or [])}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing_companies = {str(c["name"]).lower(): c for c in (existing.get("companies") or [])
+                          if isinstance(c, dict) and c.get("name")}
     for q in qualifiers:
         existing_companies[q["name"].lower()] = {**existing_companies.get(q["name"].lower(), {}), **q}
     out.write_text(yaml.safe_dump(

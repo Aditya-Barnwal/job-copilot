@@ -75,14 +75,16 @@ def normalize_title(title: Optional[str]) -> str:
 
 
 def location_bucket(job: Job) -> str:
-    """'remote' for remote roles, else '<country bucket>:<first city>'.
+    """'remote:<country bucket>' for remote roles, else '<country bucket>:<first city>'.
 
-    Remote roles collapse to one bucket because boards rewrite remote locations
-    freely ("Worldwide", "Remote - US", "Anywhere"); same-source postings are
-    protected from merging separately (see merge()).
+    Remote roles ignore the city because boards rewrite remote locations
+    freely ("Worldwide", "Remote - US", "Anywhere"), but keep the IN / non-IN
+    bucket so an India posting never merges with a US-only copy. A remote role
+    whose country is unknown may still join one known bucket in merge(), only
+    when that is unambiguous; same-source postings are protected separately.
     """
     if (job.workplace_type or "").lower() == REMOTE:
-        return "remote"
+        return f"remote:{job.country_bucket or 'unknown'}"
     first = (job.location_text or "").split(",")[0].split("/")[0]
     city = " ".join(_NON_ALNUM.sub(" ", _fold(first)).split())
     city = _CITY_ALIASES.get(city, city)
@@ -146,6 +148,52 @@ def sources_of(job: Job) -> list[dict[str, Any]]:
     return list(attached) if attached else [occurrence(job)]
 
 
+# Region tokens that name the same place. Only the spellings boards actually
+# use; anything else compares by its folded text.
+_REGION_ALIASES = {
+    "us": "us", "usa": "us", "u s": "us", "u s a": "us", "the u s": "us", "united states": "us",
+    "united states of america": "us", "america": "us",
+    "uk": "uk", "u k": "uk", "united kingdom": "uk", "great britain": "uk", "britain": "uk",
+    "in": "in", "india": "in", "eu": "europe", "european union": "europe",
+}
+_REGION_NOISE = re.compile(r"\b(?:only|remote|based|residents?|citizens?|in|from)\b")
+
+
+def _region_token(token: str) -> str:
+    t = " ".join(_NON_ALNUM.sub(" ", _fold(token)).split())
+    if t in _REGION_ALIASES:
+        return _REGION_ALIASES[t]
+    t = " ".join(_REGION_NOISE.sub(" ", t).split())
+    return _REGION_ALIASES.get(t, t)
+
+
+def region_set(job: Job) -> frozenset[str]:
+    return frozenset(x for x in (_region_token(r) for r in job.region_restrictions or []) if x)
+
+
+def regions_conflict(a: Iterable[Job], b: Iterable[Job]) -> bool:
+    """Both sides restrict regions and share none ('USA Only' vs 'Canada').
+    Disjoint counts as a conflict: a missed merge beats a hidden role."""
+    ra = frozenset().union(*(region_set(j) for j in a))
+    rb = frozenset().union(*(region_set(j) for j in b))
+    return bool(ra and rb and not (ra & rb))
+
+
+# Location words that say nothing about WHERE ("Remote", "Worldwide").
+_PLACELESS = {"remote", "hybrid", "onsite", "on", "site", "wfh", "work", "from", "home",
+              "anywhere", "worldwide", "global", "globally", "world", "the", "in", "only",
+              "fully", "first", "unknown", "location", "locations", "n", "a", "tbd"}
+
+
+def has_place_signal(job: Job) -> bool:
+    """True when the job says where it is: a known country bucket, or location
+    text naming something beyond 'Remote' / 'Worldwide'."""
+    if (job.country_bucket or "unknown") != "unknown":
+        return True
+    words = _NON_ALNUM.sub(" ", _fold(job.location_text or "")).split()
+    return any(w not in _PLACELESS for w in words)
+
+
 def _richness(job: Job) -> tuple[int, int]:
     comp = job.compensation
     has_comp = int(bool(comp and (comp.min_value is not None or comp.max_value is not None)))
@@ -158,6 +206,9 @@ _FILL_FIELDS = ("description_text", "department", "compensation", "posted_at", "
                 "tz_requirement_text", "attribution_name", "attribution_url")
 
 
+_REGION_FIELDS = ("region_restrictions", "timezone_restrictions", "tz_requirement_text")
+
+
 def _empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == "unknown"
 
@@ -166,7 +217,12 @@ def _merge_group(group: list[Job]) -> Job:
     ordered = sorted(group, key=lambda j: (source_rank(j.source), tuple(-x for x in _richness(j))))
     primary = copy.copy(ordered[0])
     others = ordered[1:]
+    # A board's "USA Only" must not become the restriction of an employer
+    # posting that already says where it is ("Remote - India").
+    own_place = has_place_signal(primary)
     for f in _FILL_FIELDS:
+        if own_place and f in _REGION_FIELDS:
+            continue
         if _empty(getattr(primary, f)):
             for o in others:
                 if not _empty(getattr(o, f)):
@@ -201,6 +257,40 @@ def _merge_group(group: list[Job]) -> Job:
     primary.sources = occ  # type: ignore[attr-defined]
     primary.canonical_key = canonical_key(primary)  # type: ignore[attr-defined]
     return primary
+
+
+def _component_info(group: list[Job]) -> Optional[dict[str, Any]]:
+    """What a merge group looks like for the cross-bucket stage, or None when
+    it is not eligible (on-site / hybrid, or mixed country buckets)."""
+    buckets = {j.country_bucket for j in group if (j.country_bucket or "unknown") != "unknown"}
+    if len(buckets) > 1:
+        return None
+    work = {(j.workplace_type or "unknown").lower() for j in group}
+    if work == {REMOTE}:
+        kind = "board_remote" if not any(is_ats(j.source) for j in group) else "remote"
+    elif work == {"unknown"} and any(is_ats(j.source) for j in group):
+        kind = "ats_unknown"
+    else:
+        return None
+    return {"kind": kind, "bucket": next(iter(buckets), "unknown"),
+            "placeless": not any(has_place_signal(j) for j in group)}
+
+
+def _cross_match(a: Optional[dict[str, Any]], b: Optional[dict[str, Any]]) -> bool:
+    if a is None or b is None:
+        return False
+    kinds = {a["kind"], b["kind"]}
+    if kinds <= {"remote", "board_remote"}:
+        # remote + remote: only an unknown country joining a known one (equal
+        # buckets were already merged by key, or are same-source on purpose)
+        if (a["bucket"] == "unknown") == (b["bucket"] == "unknown"):
+            return False
+    elif kinds != {"ats_unknown", "board_remote"}:
+        return False      # ATS 'unknown' only ever matches a board's remote copy
+    if a["bucket"] == b["bucket"]:
+        return True
+    unknown = a if a["bucket"] == "unknown" else b if b["bucket"] == "unknown" else None
+    return bool(unknown and unknown["placeless"])
 
 
 def merge(jobs: Iterable[Job]) -> list[Job]:
@@ -254,7 +344,11 @@ def merge(jobs: Iterable[Job]) -> list[Job]:
         k = url_key(j.apply_url)
         if k and k in by_url:
             union(by_url[k], i, distinct_sources=True)
-    # 2) same company + title + location, across sources only
+    def blocked(ra: int, rb: int) -> bool:
+        return regions_conflict((jobs[m] for m in members[ra]), (jobs[m] for m in members[rb]))
+
+    # 2) same company + title + location bucket, across sources only, never
+    # across conflicting region restrictions
     by_canon: dict[str, list[int]] = {}
     for i, j in enumerate(jobs):
         by_canon.setdefault(canonical_key(j), []).append(i)
@@ -263,7 +357,34 @@ def merge(jobs: Iterable[Job]) -> list[Job]:
             for first in idxs:
                 if first == i:
                     break
-                union(first, i, distinct_sources=True)
+                if find(first) != find(i) and not blocked(find(first), find(i)):
+                    union(first, i, distinct_sources=True)
+
+    # 3) the matches a single key can't express, made only when unambiguous
+    # (each side has exactly one candidate):
+    #   * a remote role with an unknown country joining one IN / non-IN group;
+    #   * an employer ATS posting with workplace 'unknown' (common on Greenhouse
+    #     and Workday) and its remote board copy in the same country bucket.
+    by_role: dict[tuple[str, str], set[int]] = {}
+    for i, j in enumerate(jobs):
+        by_role.setdefault((normalize_company_name(j.company), normalize_title(j.title)), set()).add(i)
+    for idxs in by_role.values():
+        roots = sorted({find(i) for i in idxs})
+        if len(roots) < 2:
+            continue
+        info = {r: _component_info([jobs[m] for m in members[r]]) for r in roots}
+        cands: dict[int, set[int]] = {r: set() for r in roots}
+        for x, a in enumerate(roots):
+            for b in roots[x + 1:]:
+                if (_cross_match(info[a], info[b]) and not (srcs(a) & srcs(b))
+                        and not blocked(a, b)):
+                    cands[a].add(b)
+                    cands[b].add(a)
+        for a in roots:
+            if len(cands[a]) == 1:
+                (b,) = cands[a]
+                if len(cands[b]) == 1:
+                    union(a, b, distinct_sources=True)
 
     out = [_merge_group([jobs[m] for m in sorted(members[r])]) for r in sorted(members)]
     if len(out) != len(jobs):

@@ -8,6 +8,7 @@ reported in the counts, never raised into the caller's run.
 from __future__ import annotations
 
 from .bsm import run as run_bsm
+from .detect import run as run_detect
 from .yc import run as run_yc
 
-__all__ = ["run_bsm", "run_yc"]
+__all__ = ["run_bsm", "run_detect", "run_yc"]

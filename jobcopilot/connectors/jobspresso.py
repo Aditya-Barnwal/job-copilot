@@ -25,10 +25,23 @@ RSS_HEADERS = {"Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.1"
 
 _CURRENCIES = (  # longest symbols first so "CA$" wins over "$"
     ("CA$", "CAD"), ("C$", "CAD"), ("A$", "AUD"), ("AU$", "AUD"), ("US$", "USD"),
-    ("USD", "USD"), ("EUR", "EUR"), ("GBP", "GBP"), ("CAD", "CAD"), ("AUD", "AUD"),
-    ("INR", "INR"), ("€", "EUR"), ("£", "GBP"), ("₹", "INR"), ("$", "USD"),
+    ("R$", "BRL"), ("USD", "USD"), ("EUR", "EUR"), ("GBP", "GBP"), ("CAD", "CAD"),
+    ("AUD", "AUD"), ("INR", "INR"), ("BRL", "BRL"), ("€", "EUR"), ("£", "GBP"),
+    ("₹", "INR"), ("$", "USD"),
 )
-_AMOUNT_RE = re.compile(r"(\d+(?:[.,]\d+)*)\s*([kKmM])?")
+_KNOWN_DOLLAR_PREFIXES = {"US", "CA", "C", "A", "AU", "R"}
+_DOLLAR_PREFIX_RE = re.compile(r"(?<![A-Za-z])([A-Za-z]{1,3})\$")
+# A number with optional ./, groups, and a k/m suffix that TOUCHES it and ends
+# at a word boundary: "60k", "1.2M" yes; "$2000 min", "4,000 monthly" no.
+_AMOUNT_RE = re.compile(r"(\d+(?:[.,]\d+)*)(?:([kKmM])(?![A-Za-z]))?")
+_RANGE_GAP_RE = re.compile(r"\s*(?:[-–—~]|to)\s*(?:[A-Za-z]{0,3}\$|[€£₹]|[A-Z]{3})?\s*", re.I)
+
+# Same idea as remoteok.MAX_PLAUSIBLE_USD_YEAR, per currency (rough units per
+# USD): an annualised figure above this is a typo or a misread, so we keep the
+# text only rather than a wrong number.
+MAX_PLAUSIBLE_USD_YEAR = 5_000_000
+_UNITS_PER_USD = {"USD": 1, "EUR": 1, "GBP": 1, "CAD": 1.5, "AUD": 1.6, "INR": 100, "BRL": 6}
+_PER_YEAR = {"1 HOUR": 2080, "1 WEEK": 52, "1 MONTH": 12, "1 YEAR": 1}
 
 
 def rfc822_to_iso(value: Optional[str]) -> Optional[str]:
@@ -40,34 +53,74 @@ def rfc822_to_iso(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _amount(num: str, suffix: Optional[str]) -> Optional[float]:
+def _number(num: str) -> Optional[float]:
+    """'60.000' / '60,000' -> 60000 (a 3-digit group is thousands), '1.5' ->
+    1.5, '1.234,56' -> 1234.56. Anything else ambiguous -> None."""
+    if re.fullmatch(r"\d{1,2}(?:,\d{2})+,\d{3}", num):   # Indian grouping: 12,00,000
+        return float(num.replace(",", ""))
+    parts = re.split(r"([.,])", num)
+    out, decimal = parts[0], None
+    for i in range(1, len(parts), 2):
+        group = parts[i + 1]
+        last = i + 2 >= len(parts)
+        if len(group) == 3 and decimal is None:
+            out += group
+        elif last and decimal is None:
+            decimal = group
+        else:
+            return None
     try:
-        v = float(num.replace(",", ""))
+        return float(out + ("." + decimal if decimal else ""))
     except ValueError:
         return None
-    mult = {"k": 1e3, "m": 1e6}.get((suffix or "").lower(), 1.0)
-    return v * mult
+
+
+def _amount(num: str, suffix: Optional[str]) -> Optional[float]:
+    v = _number(num)
+    if v is None:
+        return None
+    return v * {"k": 1e3, "m": 1e6}.get((suffix or "").lower(), 1.0)
+
+
+def _currency(s: str) -> Optional[str]:
+    for m in _DOLLAR_PREFIX_RE.finditer(s):
+        if m.group(1).upper() not in _KNOWN_DOLLAR_PREFIXES:
+            return None            # MX$, NZ$, S$ ...: not USD, and not ours to guess
+    return next((code for sym, code in _CURRENCIES if sym in s.upper() or sym in s), None)
 
 
 def parse_salary_text(text: Optional[str]) -> Optional[Compensation]:
     """Best effort on strings like 'US$54k - US$90k' or '€60,000 per year'.
 
     Numbers are kept only when the currency is stated (a bare number would be
-    read as INR downstream); otherwise the text is kept as a summary with
-    is_estimate True, so nothing pretends to be a figure it isn't.
+    read as INR downstream) and the annualised figure is plausible; otherwise
+    the text is kept as a summary with is_estimate True, so nothing pretends
+    to be a figure it isn't.
     """
     if not text or not text.strip():
         return None
     s = text.strip()
-    cur = next((code for sym, code in _CURRENCIES if sym in s.upper() or sym in s), None)
-    amounts = [a for a in (_amount(n, k) for n, k in _AMOUNT_RE.findall(s)) if a]
-    if not amounts or cur is None:
-        return Compensation(summary=s, source="jobspresso", is_estimate=True)
+    summary_only = Compensation(summary=s, source="jobspresso", is_estimate=True)
+    cur = _currency(s)
+    matches = list(_AMOUNT_RE.finditer(s))[:2]
+    values = [_amount(m.group(1), m.group(2)) for m in matches]
+    if cur is None or not values or any(v is None for v in values):
+        return summary_only
+    # "60-80k": the trailing k/m on the last number of a range covers the range.
+    if len(matches) == 2 and matches[1].group(2) and not matches[0].group(2) \
+            and _RANGE_GAP_RE.fullmatch(s[matches[0].end():matches[1].start()]):
+        values[0] = _amount(matches[0].group(1), matches[1].group(2))
+    values = [v for v in values if v]
+    if not values:
+        return summary_only
     low = s.lower()
     interval = ("1 HOUR" if re.search(r"hour|/\s*hr\b|/\s*h\b", low) else
                 "1 MONTH" if "month" in low else
                 "1 WEEK" if "week" in low else "1 YEAR")
-    return Compensation(currency=cur, min_value=min(amounts[:2]), max_value=max(amounts[:2]),
+    cap = MAX_PLAUSIBLE_USD_YEAR * _UNITS_PER_USD.get(cur, 1)
+    if max(values) * _PER_YEAR[interval] > cap:
+        return summary_only
+    return Compensation(currency=cur, min_value=min(values), max_value=max(values),
                         interval=interval, summary=s, source="jobspresso", is_estimate=False)
 
 

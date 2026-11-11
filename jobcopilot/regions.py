@@ -25,7 +25,15 @@ _AND_RE = re.compile(r"\s+(?:and|&)\s+", re.I)
 
 # A token is time-zone text when it names a zone or talks about zones/overlap.
 # Upper-case-only abbreviations, so "et" / "pt" inside words don't match.
-_TZ_ABBR_RE = re.compile(r"\b(?:ET|PT|CT|MT|EST|EDT|PST|PDT|CST|CDT|MST|MDT|CET|CEST|EET|EEST|WET|BST|IST|AEST|AEDT|SGT|JST)\b")
+_TZ_ABBR_RE = re.compile(r"\b(?:EST|EDT|PST|PDT|CST|CDT|MST|MDT|CET|CEST|EET|EEST|WET|BST|IST|AEST|AEDT|SGT|JST)\b")
+# Two-letter zones double as US states / country codes ("Hartford, CT",
+# "Lisbon, PT", "Helena, MT"), so they only count as a zone next to another
+# zone cue, or when they are the whole field ("PT", "ET/PT").
+_TZ_WEAK_RE = re.compile(r"\b(?:ET|PT|CT|MT)\b")
+_TZ_CUE_RE = re.compile(r"\b(?:time|zones?|hours?|hrs?|overlap|utc|gmt)\b|[+\-−±]\s*\d|\+\s*/\s*-", re.I)
+_ANY_ABBR = r"(?:ET|PT|CT|MT|EST|EDT|PST|PDT|CST|CDT|MST|MDT|CET|CEST|EET|EEST|WET|BST|IST|AEST|AEDT|SGT|JST)"
+_ABBR_ONLY_RE = re.compile(rf"\s*{_ANY_ABBR}(?:\s*(?:[,/;|&]|\bor\b|\band\b)\s*{_ANY_ABBR})*\s*")
+_TRAILING_PAREN_RE = re.compile(r"^(?P<head>.*\S)\s*\((?P<inner>[^()]*)\)\s*$", re.S)
 _TZ_WORD_RE = re.compile(r"\b(?:utc|gmt|time\s*-?\s*zones?|timezones?)\b", re.I)
 _UTC_OFFSET_RE = re.compile(
     r"\b(?:utc|gmt)\s*([+\-−])\s*(\d{1,2})(?:[:.](\d{2}))?", re.I
@@ -100,13 +108,22 @@ def regions_from_list(values: Optional[Iterable[Any]]) -> list[str]:
     return out
 
 
-def is_timezone_text(token: Optional[str]) -> bool:
+def is_timezone_text(token: Optional[str], *, field: Optional[str] = None) -> bool:
     """True when a location token describes a time zone rather than a place
-    ('Time zone: CET (+/- 3 hours)', 'UTC-5 to UTC+1', 'EST overlap')."""
+    ('Time zone: CET (+/- 3 hours)', 'UTC-5 to UTC+1', 'EST overlap').
+
+    `field` is the whole location string the token came from (defaults to the
+    token): a bare ET/PT/CT/MT is a zone only with another cue in the token
+    or when the whole field is nothing but zone abbreviations.
+    """
     if not token:
         return False
-    return bool(_TZ_WORD_RE.search(token) or _TZ_ABBR_RE.search(token)
-                or re.search(r"\boverlap\b", token, re.I))
+    if _TZ_WORD_RE.search(token) or _TZ_ABBR_RE.search(token) or re.search(r"\boverlap\b", token, re.I):
+        return True
+    if _TZ_WEAK_RE.search(token):
+        whole = token if field is None else field
+        return bool(_TZ_CUE_RE.search(token) or _ABBR_ONLY_RE.fullmatch(whole))
+    return False
 
 
 def partition_location(text: Optional[str]) -> tuple[list[str], Optional[str]]:
@@ -117,15 +134,26 @@ def partition_location(text: Optional[str]) -> tuple[list[str], Optional[str]]:
     """
     if not text:
         return [], None
+    text = str(text)
     regions: list[str] = []
     tz: list[str] = []
     # Whole field first: "Time zone: CET (+/- 3 hours)" must not be split at ':'.
     if is_timezone_text(text) and not any(s in text for s in (";", "|", "\n")):
         pieces = [p.strip() for p in _split_outside_parens(text) if p.strip()]
-        if all(is_timezone_text(p) for p in pieces):
+        # Judge each piece by its text outside (...): "CET (+/- 3 hours)" is a
+        # zone, "India (IST)" is a place followed by a zone.
+        outside = [re.sub(r"\([^()]*\)", " ", p).strip() or p for p in pieces]
+        if all(is_timezone_text(o, field=text) for o in outside):
             return [], text.strip()
+    # Then a trailing zone in parentheses: "India (IST)", "Americas (UTC-8 to UTC-3)".
+    m = _TRAILING_PAREN_RE.match(text)
+    if m and m.group("inner").strip() and is_timezone_text(m.group("inner"), field=text) \
+            and not is_timezone_text(m.group("head"), field=text):
+        head_regions, head_tz = partition_location(m.group("head"))
+        tz_parts = [t for t in (head_tz, m.group("inner").strip()) if t]
+        return head_regions, "; ".join(tz_parts)
     for tok in split_regions(text):
-        (tz if is_timezone_text(tok) else regions).append(tok)
+        (tz if is_timezone_text(tok, field=text) else regions).append(tok)
     return regions, ("; ".join(tz) if tz else None)
 
 

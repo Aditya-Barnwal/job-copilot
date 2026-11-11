@@ -36,12 +36,14 @@ class FakeClient:
         self.api = api or {}       # url prefix -> json  or Exception
         self.denied = denied
         self.calls: list[str] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def is_denied(self, url: str) -> bool:
         return any(d in url for d in self.denied)
 
-    def get(self, url: str, **_: Any) -> _Resp:
+    def get(self, url: str, **kw: Any) -> _Resp:
         self.calls.append(url)
+        self.kwargs.append(kw)
         page = self.pages.get(url)
         if page is None:
             raise HttpConnectionError(f"no route to {url}")
@@ -292,3 +294,136 @@ def test_detected_rows_load_in_registry_connectors() -> None:
     for conn, ats in ((GemConnector, "gem"), (SmartRecruitersConnector, "smartrecruiters")):
         row = to_company_config(AtsResult(ats, slug="acme"), "Acme")
         assert conn.list_url(row["slug"]).count("acme") == 1
+
+
+# --------------------------------------------- ReDoS / untrusted input (safety-1)
+
+import time as _time  # noqa: E402
+
+_N = 2_000_000
+
+
+def _fill(unit: str) -> str:
+    return (unit * (_N // len(unit) + 1))[:_N]
+
+
+ADVERSARIAL = {
+    "word_run": "a" * _N,
+    "dashes": _fill("a-"),
+    "dots": _fill("a."),
+    "workday_prefix": _fill("a.wd1."),
+    "workday_long_label": _fill("a" * 63 + ".wd" + "1" * 50),
+    "workday_cxs": _fill("a.wd1.myworkdayjobs.com/wday/cxs/"),
+    "turbohire": _fill("a.turbohire.co"),
+    "gh_embed": _fill("boards.greenhouse.io/embed/job_board?"),
+    "open_a_tags": _fill("<a "),
+    "open_a_long": _fill("<a " + "x" * 2047),
+    "open_iframes": _fill("<iframe "),
+    "open_scripts": _fill("<script "),
+    "unclosed_apply": '"applyUrl":"' + "x" * _N,
+    "phenom": _fill('"refNum"' + " " * 20),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ADVERSARIAL))
+def test_patterns_are_linear_on_2mb_adversarial_input(name):
+    # Before the fix 'a' * 40_000 alone took ~20 s in _scan (quadratic backtracking).
+    text = ADVERSARIAL[name]
+    t0 = _time.perf_counter()
+    ats_detect._scan(text)
+    for rx in (ats_detect._IFRAME, ats_detect._SCRIPT, ats_detect._HREF, ats_detect._APPLY_URL):
+        rx.findall(text)
+    assert _time.perf_counter() - t0 < 1.0
+
+
+def test_detect_from_html_on_2mb_adversarial_page_is_fast():
+    page = "<html>" + ADVERSARIAL["workday_cxs"] + ADVERSARIAL["open_a_tags"]
+    t0 = _time.perf_counter()
+    detect_from_html(page, "https://careers.example.com/")
+    assert _time.perf_counter() - t0 < 1.0
+
+
+def test_bounded_patterns_still_find_real_boards():
+    html = ('<a class="btn primary" href="https://acme.wd5.myworkdayjobs.com/en-US/External">x</a>'
+            '<iframe title="jobs" src="https://boards.greenhouse.io/embed/job_board?utm=x&amp;for=acme"></iframe>')
+    wd, gh = html.split("</a>")
+    assert (detect_from_html(wd, "").tenant, detect_from_html(wd, "").site) == ("acme", "External")
+    assert detect_from_html(gh, "").slug == "acme"
+    assert ats_detect._IFRAME.findall(html) == [
+        "https://boards.greenhouse.io/embed/job_board?utm=x&amp;for=acme"]
+
+
+# --------------------------------------- slugs from untrusted HTML (safety-4)
+
+@pytest.mark.parametrize("html", [
+    '<a href="https://jobs.ashbyhq.com/..%2F..%2Fadmin">jobs</a>',
+    '<a href="https://jobs.ashbyhq.com/acme%2F..%2F..%3Fx%3D1">jobs</a>',
+    '<a href="https://jobs.ashbyhq.com/%2e%2e">jobs</a>',
+    '<a href="https://api.ashbyhq.com/posting-api/job-board/a%2Fb">jobs</a>',
+])
+def test_ashby_slug_that_would_change_the_api_path_is_refused(html):
+    r = detect_from_html(html, "https://careers.example.com/")
+    assert r.ats != "ashby" and r.slug is None
+
+
+def test_ashby_slug_with_dots_still_accepted():
+    r = detect_from_html('<a href="https://jobs.ashbyhq.com/acme.ai/123">x</a>', "")
+    assert (r.ats, r.slug) == ("ashby", "acme.ai")
+
+
+def test_verify_refuses_unsafe_ids_without_any_request():
+    client = FakeClient()
+    r = AtsResult("ashby", slug="../../admin", confidence=0.9)
+    ats_detect.verify_result(r, client)
+    assert client.calls == [] and not r.verified and r.confidence <= 0.2
+    r = AtsResult("workday", tenant="acme", wd_server="wd1", site="x/../../y", confidence=0.9)
+    ats_detect.verify_result(r, client)
+    assert client.calls == []
+
+
+def test_ashby_list_url_keeps_slug_in_one_segment():
+    from jobcopilot.connectors.ashby import AshbyConnector
+    base = "https://api.ashbyhq.com/posting-api/job-board/"
+    assert AshbyConnector.list_url("acme") == base + "acme"
+    assert AshbyConnector.list_url("a/../b?x=1") == base + "a%2F..%2Fb%3Fx%3D1"
+    for bad in ("", ".", ".."):
+        with pytest.raises(ValueError):
+            AshbyConnector.list_url(bad)
+
+
+# ------------------------------------------- fetch caps and budget (safety-2)
+
+def test_fetches_pass_size_and_time_caps():
+    page = '<iframe src="https://careers.example.com/frame"></iframe>'
+    frame = '<script src="/app.js"></script>'
+    client = FakeClient(pages={
+        "https://careers.example.com/": page,
+        "https://careers.example.com/frame": frame,
+        "https://careers.example.com/app.js": "nothing here",
+    })
+    detect("https://careers.example.com/", client=client, verify=False)
+    by_url = dict(zip(client.calls, client.kwargs))
+    html_kw = by_url["https://careers.example.com/"]
+    js_kw = by_url["https://careers.example.com/app.js"]
+    assert html_kw["max_bytes"] == ats_detect.MAX_HTML_BYTES
+    assert js_kw["max_bytes"] == ats_detect.MAX_JS_BYTES
+    assert all(0 < kw["deadline_sec"] <= ats_detect.FETCH_DEADLINE_SEC for kw in client.kwargs)
+
+
+def test_fetcher_stops_when_the_time_budget_is_spent():
+    now = [0.0]
+    client = FakeClient(pages={"https://a.example/": "x", "https://b.example/": "y"})
+    f = ats_detect._Fetcher(client, AtsResult(), clock=lambda: now[0])
+    assert f.get("https://a.example/") is not None
+    now[0] = ats_detect.DETECT_BUDGET_SEC + 1
+    assert f.get("https://b.example/") is None
+    assert client.calls == ["https://a.example/"]
+    assert "time budget" in f.result.evidence
+
+
+def test_too_large_page_is_a_note_not_a_crash():
+    from jobcopilot.http import ResponseTooLarge
+    client = FakeClient(pages={"https://careers.example.com/":
+                               ResponseTooLarge("https://careers.example.com/", 2_000_000)})
+    r = detect("https://careers.example.com/", client=client, verify=False)
+    assert r.ats is None and "ResponseTooLarge" in r.evidence

@@ -4,7 +4,8 @@ http:
   timeout_sec: 20
   default_rate_per_sec: 1.0      # per host
   max_retries: 3                 # 429 / 5xx only, honouring Retry-After
-  host_rates: {}                 # e.g. {"remoteok.com": 1.0}
+  host_rates:                    # requests/sec per host (subdomains inherit)
+    bangalorestartupmap.com: 0.2   # <= 1 request / 5 s, homepage included (D12)
   # Documented public APIs only, each with a reason. These skip the robots.txt
   # check but are still rate-limited. Robots results checked 2026-11-11:
   #   boards-api.greenhouse.io  200, Disallow: /embed/ only  -> /v1/boards allowed, no exemption
@@ -14,8 +15,8 @@ http:
   #   api.adzuna.com, jsearch.p.rapidapi.com  "Disallow: /"    -> NOT exempted; both are
   #     key-gated and unused today. Decide explicitly if you ever add keys.
   robots_exempt_hosts:
-    api.ashbyhq.com: "Ashby public Job Postings API (developers.ashbyhq.com) built for job boards; its robots.txt answers 401 so it cannot be read"
-    api.gem.com: "Gem public Job Board API (/job_board/v0/{slug}/job_posts) documented for career sites; its robots.txt answers 403 so it cannot be read. Exempted at the user's request 2026-11-11 (PromptQL)."
+    "api.ashbyhq.com/posting-api/job-board/": "Ashby public Job Postings API (developers.ashbyhq.com) built for job boards; its robots.txt answers 401 so it cannot be read"
+    "api.gem.com/job_board/v0/": "Gem public Job Board API (/job_board/v0/{slug}/job_posts) documented for career sites; its robots.txt answers 403 so it cannot be read. Exempted at the user's request 2026-11-11 (PromptQL)."
 
   # DO-NOT-AUTOMATE (docs/SOURCES.md): the HTTP client refuses these hosts and all
   # their subdomains outright, whoever the caller is. Link out to them instead.

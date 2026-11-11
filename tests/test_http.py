@@ -826,3 +826,167 @@ def test_ingest_reports_robots_unavailable_apart_from_disallow(monkeypatch, capl
     assert "robots.txt unavailable" in err and "will retry" in err
     assert "disallowed by robots.txt" in err
     assert "do-not-automate host" in err
+
+
+# ------------------------------------------- size and time caps (safety-2)
+
+class RawServer:
+    """One-shot 127.0.0.1 server whose handler writes raw bytes to the socket, for
+    bodies LocalServer can't produce (no Content-Length, trickled, gzip bombs)."""
+
+    def __init__(self, handler: Callable[[socket.socket], None]) -> None:
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.stop = threading.Event()
+        self.requests = 0
+
+        def run() -> None:
+            self.sock.settimeout(0.05)
+            while not self.stop.is_set():
+                try:
+                    conn, _ = self.sock.accept()
+                except OSError:
+                    continue
+                with conn:
+                    conn.settimeout(5)
+                    buf = b""
+                    while b"\r\n\r\n" not in buf:
+                        got = conn.recv(4096)
+                        if not got:
+                            break
+                        buf += got
+                    self.requests += 1
+                    try:
+                        handler(conn)
+                    except OSError:
+                        pass  # client hung up, which is the point of most tests
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def url(self, path: str = "/x") -> str:
+        return f"http://127.0.0.1:{self.sock.getsockname()[1]}{path}"
+
+    def close(self) -> None:
+        self.stop.set()
+        self.thread.join(2)
+        self.sock.close()
+
+
+def real_client(**overrides: Any) -> PoliteClient:
+    session = requests.Session()
+    session.trust_env = False
+    opts: dict[str, Any] = dict(user_agent=UA, timeout_sec=5, default_rate_per_sec=1000.0,
+                                max_retries=0, session=session, robots_exempt_hosts=EXEMPT)
+    opts.update(overrides)
+    return PoliteClient(**opts)
+
+
+def test_default_caps_are_set_and_leave_normal_bodies_alone(ft, server):
+    client = make_client(ft, robots_exempt_hosts=EXEMPT)
+    assert client.max_response_bytes == jhttp.DEFAULT_MAX_RESPONSE_BYTES == 64 * 1024 * 1024
+    assert client.request_deadline_sec == jhttp.DEFAULT_REQUEST_DEADLINE_SEC
+    body = b"x" * 5000
+    server.route("/big", (200, {}, body))
+    assert client.get(server.url("/big"), max_bytes=5000).content == body  # == limit is fine
+
+
+def test_oversized_content_length_rejected_before_reading(ft, server):
+    server.route("/huge", (200, {}, b"x" * 100_000))
+    client = make_client(ft, robots_exempt_hosts=EXEMPT)
+    with pytest.raises(jhttp.ResponseTooLarge) as err:
+        client.get(server.url("/huge"), max_bytes=1000)
+    assert err.value.size == 100_000 and err.value.limit == 1000
+    assert server.paths() == ["/huge"]  # not retried
+
+
+def test_body_without_length_is_cut_off_at_max_bytes():
+    def endless(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n")
+        for _ in range(2000):            # 128 MB if nobody stops reading
+            conn.sendall(b"a" * 65536)
+
+    srv = RawServer(endless)
+    try:
+        with pytest.raises(jhttp.ResponseTooLarge):
+            real_client().get(srv.url(), max_bytes=200_000)
+    finally:
+        srv.close()
+
+
+def test_gzip_bomb_is_capped_on_decoded_size():
+    import gzip
+    bomb = gzip.compress(b"\0" * (40 * 1024 * 1024))   # ~40 KB on the wire, 40 MB decoded
+
+    def send_bomb(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n"
+                     b"Content-Length: " + str(len(bomb)).encode() + b"\r\nConnection: close\r\n\r\n")
+        conn.sendall(bomb)
+
+    srv = RawServer(send_bomb)
+    try:
+        with pytest.raises(jhttp.ResponseTooLarge):
+            real_client().get(srv.url(), max_bytes=1_000_000)
+    finally:
+        srv.close()
+
+
+def test_deadline_stops_a_slow_trickle_body():
+    import time as _time
+
+    def trickle(conn: socket.socket) -> None:
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n")
+        for _ in range(1000):            # 1 byte / 20 ms: each read is well inside timeout_sec
+            conn.sendall(b"a")
+            _time.sleep(0.02)
+
+    srv = RawServer(trickle)
+    try:
+        t0 = _time.monotonic()
+        with pytest.raises(jhttp.RequestDeadlineExceeded):
+            real_client().get(srv.url(), deadline_sec=0.4)
+        assert _time.monotonic() - t0 < 2.0
+    finally:
+        srv.close()
+
+
+def test_deadline_covers_retry_waits(ft, server):
+    server.route("/busy", (429, {"Retry-After": "30"}, b""), (200, JSON, b"{}"))
+    client = make_client(ft, robots_exempt_hosts=EXEMPT)
+    with pytest.raises(jhttp.RequestDeadlineExceeded):
+        client.get(server.url("/busy"), deadline_sec=10)
+    assert server.paths() == ["/busy"]
+    assert client.get(server.url("/busy"), deadline_sec=100).status_code == 200
+
+
+# ------------------------------------- path-scoped robots exemption (safety-4)
+
+def test_exemption_with_path_prefix_covers_only_that_path(ft, server):
+    server.route("/robots.txt", (200, {}, b"User-agent: *\nDisallow: /\n"))
+    for p in ("/posting-api/job-board/acme", "/admin", "/posting-api/job-boardX"):
+        server.route(p, (200, JSON, b"{}"))
+    client = make_client(ft, robots_exempt_hosts={
+        "127.0.0.1/posting-api/job-board/": "public job board API only"})
+    assert client.get(server.url("/posting-api/job-board/acme")).status_code == 200
+    for outside in ("/admin", "/posting-api/job-boardX",
+                    "/posting-api/job-board/..%2F..%2Fadmin",
+                    "/posting-api/job-board/%2e%2e/%2e%2e/admin"):
+        with pytest.raises(RobotsDisallowed):
+            client.get(server.url(outside))
+    assert "/admin" not in server.paths()
+
+
+def test_host_only_exemption_still_covers_every_path(ft, server):
+    server.route("/robots.txt", (200, {}, b"User-agent: *\nDisallow: /\n"))
+    server.route("/anything/here", (200, JSON, b"{}"))
+    client = make_client(ft, robots_exempt_hosts={"127.0.0.1": "local test server"})
+    assert client.get(server.url("/anything/here")).status_code == 200
+    assert server.paths() == ["/anything/here"]
+
+
+@pytest.mark.parametrize("key", ["api.x.com/a/../b", "api.x.com/a?b", "api.x.com/%2e%2e/",
+                                 "/just/a/path", "api.x.com/a/./b"])
+def test_exemption_key_must_be_host_and_clean_path(ft, key):
+    with pytest.raises(ValueError):
+        make_client(ft, robots_exempt_hosts={key: "reason"})

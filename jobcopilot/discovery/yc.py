@@ -75,12 +75,14 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
         if resp.status_code == 304:
             co.put_source_state(SOURCE, db_path, last_run=now, last_ok=now, last_error=None)
             return {"source": SOURCE, "unchanged": True, "upserted": 0}
+        # a response without validators keeps the stored ones (as bsm.py does)
+        validators = {"etag": resp.headers.get("ETag") or state.get("etag"),
+                      "last_modified": resp.headers.get("Last-Modified") or state.get("last_modified")}
         body = resp.content
         digest = co.content_hash(body)
         if digest == state.get("content_hash") and not force:
             co.put_source_state(SOURCE, db_path, last_run=now, last_ok=now, last_error=None,
-                                etag=resp.headers.get("ETag"),
-                                last_modified=resp.headers.get("Last-Modified"))
+                                **validators)
             return {"source": SOURCE, "unchanged": True, "upserted": 0}
         rows = parse(resp.json())
     except (HttpError, ValueError) as exc:
@@ -97,8 +99,7 @@ def run(*, client: Optional[PoliteClient] = None, db_path: Any = None,
             failed += 1
             log.warning("yc-oss: skipped %r: %s", name, exc)
     tiers = co.recompute_tiers(db_path)
-    co.put_source_state(SOURCE, db_path, etag=resp.headers.get("ETag"),
-                        last_modified=resp.headers.get("Last-Modified"), content_hash=digest,
+    co.put_source_state(SOURCE, db_path, **validators, content_hash=digest,
                         last_run=now, last_ok=now, last_error=None, items=len(rows))
     log.info("yc-oss: %d companies upserted (%d failed)", len(rows) - failed, failed)
     return {"source": SOURCE, "unchanged": False, "upserted": len(rows) - failed,

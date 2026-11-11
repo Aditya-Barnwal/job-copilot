@@ -154,7 +154,14 @@ _LEGAL_SUFFIXES = (
     "incorporated", "inc", "llc", "llp", "ltd", "limited", "pvt", "private",
     "corp", "corporation", "co", "company", "gmbh", "ag", "sa", "bv", "plc",
     "pte", "pty", "holdings",
+    # Nordic / EU / US-benefit / Japanese forms ("Proxify AB", "Wolt Oy",
+    # "Celonis SE", "Posit Software, PBC", "Booking.com B.V.", "Mercari K.K.")
+    "ab", "se", "oy", "oyj", "pbc", "as", "asa", "sas", "srl", "spa", "kk", "nv",
+    "sarl", "bv",
 )
+# Dotted initialisms collapse to one word first, so "B.V." / "S.p.A." / "K.K."
+# match "bv" / "spa" / "kk" instead of splitting into single letters.
+_DOTTED_RE = re.compile(r"\b(?:[a-z]\.){2,}(?![a-z])|\b(?:[a-z]\.)+[a-z]\b")
 _PAREN_RE = re.compile(r"\([^)]*\)")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
@@ -174,6 +181,7 @@ def normalize_company_name(name: Optional[str]) -> str:
     s = "".join(ch for ch in s if not _ud.combining(ch)).lower()
     folded = _NON_ALNUM_RE.sub(" ", s).strip()
     s = _PAREN_RE.sub(" ", s)
+    s = _DOTTED_RE.sub(lambda m: m.group(0).replace(".", ""), s)
     words = _NON_ALNUM_RE.sub(" ", s).split()
     while len(words) > 1 and words[-1] in _LEGAL_SUFFIXES:
         words.pop()

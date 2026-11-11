@@ -31,6 +31,17 @@ linear time; fractional Crawl-delay is honoured.
                   so one blip doesn't block a host for a day in the long-lived server
 Hosts in `robots_exempt_hosts` (documented public APIs only, each with a
 reason) skip the robots check but are still rate-limited and still denylisted.
+A key may be a bare host ("api.example.com": whole host) or host plus path
+prefix ("api.example.com/public-api/": only paths at or under it, matched on
+segment boundaries after percent-decoding; any '.'/'..' segment or backslash in
+the path voids the exemption, so robots.txt decides as usual).
+
+Every response body is read here, eagerly and bounded: `max_bytes` (default
+`max_response_bytes`, 64 MiB) rejects an oversized Content-Length before reading
+and stops a body that grows past it (ResponseTooLarge); `deadline_sec` (default
+`request_deadline_sec`, 600 s) caps the wall-clock time of the whole logical
+request, redirects, retries and waits included (RequestDeadlineExceeded), on
+top of the per-socket-read `timeout_sec`.
 
 Logs and error messages carry `redact_url()` output only: Adzuna puts its API
 key in the query string, and requests' own exception text would leak it.
@@ -57,7 +68,10 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import http.client as http_client
+
 import requests
+import urllib3.exceptions as urllib3_exceptions
 from requests.structures import CaseInsensitiveDict
 
 from .config import DEFAULTS, ROOT
@@ -82,6 +96,15 @@ ROBOTS_RETRY_TTL_SEC = 600.0           # how long a transient robots failure blo
 RETRY_AFTER_MAX_SEC = 24 * 3600.0      # cap on any Retry-After / penalty, so a host can't wedge us
 CACHE_MAX_ENTRIES = 512                # in-memory LRU; the API server is long-lived
 CACHE_MAX_BODY = 25 * 1024 * 1024
+# Global body cap. The biggest legit payloads are single-call boards: Greenhouse
+# content=true ships entity-escaped HTML (~15-20 KB/job), so a 1,500-job board is
+# ~25-30 MB. 64 MiB leaves >2x headroom while still bounding memory.
+DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+# Whole-request wall clock. Longest legit path: 4 attempts x 20 s timeouts plus
+# 3 x max_wait_sec (120 s) of Retry-After waits = 440 s.
+DEFAULT_REQUEST_DEADLINE_SEC = 600.0
+ROBOTS_DEADLINE_SEC = 60.0             # per robots.txt attempt
+_READ_CHUNK = 64 * 1024
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # 429 and 503 mean "not processed", so they are safe to retry even for POST.
 _RETRY_ANY_METHOD = frozenset({429, 503})
@@ -154,6 +177,29 @@ class HttpConnectionError(HttpError, requests.ConnectionError):
 
 class InvalidJSON(HttpError):
     """get_json()/post_json() got a body that isn't JSON."""
+
+
+class ResponseTooLarge(HttpError):
+    """The body is (or announced itself as) bigger than `max_bytes`. The connection
+    was dropped; nothing past the limit was kept in memory."""
+
+    def __init__(self, url: str, limit: int, size: Optional[int] = None) -> None:
+        self.url, self.limit, self.size = url, limit, size
+        seen = f"Content-Length {size}" if size is not None else "body"
+        super().__init__(f"{seen} exceeds max_bytes={limit}: {url}")
+
+
+class RequestDeadlineExceeded(HttpError, requests.Timeout):
+    """The request (all hops, retries and waits) ran past its wall-clock deadline."""
+
+    def __init__(self, url: str, deadline_sec: Optional[float] = None) -> None:
+        self.url = url
+        self.deadline_sec = deadline_sec
+        super().__init__(f"deadline exceeded: {url}")
+
+
+class _BodyReadError(Exception):
+    """Internal: the connection broke while reading a body (retryable like a connect error)."""
 
 
 # ---------------------------------------------------------- small helpers
@@ -626,6 +672,7 @@ class PoliteClient:
         "user_agent", "timeout_sec", "default_rate_per_sec", "max_retries", "host_rates",
         "robots_exempt_hosts", "max_wait_sec", "backoff_base_sec", "backoff_max_sec",
         "robots_ttl_sec", "robots_retry_ttl_sec", "cache_dir", "denied_hosts",
+        "max_response_bytes", "request_deadline_sec",
     )
 
     def __init__(
@@ -645,6 +692,8 @@ class PoliteClient:
         robots_retry_ttl_sec: float = ROBOTS_RETRY_TTL_SEC,
         cache_dir: str | Path | None = None,
         record_dir: str | Path | None = None,
+        max_response_bytes: Optional[int] = DEFAULT_MAX_RESPONSE_BYTES,
+        request_deadline_sec: Optional[float] = DEFAULT_REQUEST_DEADLINE_SEC,
         session: Optional[requests.Session] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -665,7 +714,17 @@ class PoliteClient:
         self.host_rates = {_norm_host(str(h)): float(r) for h, r in (host_rates or {}).items()}
         if any(r <= 0 for r in self.host_rates.values()):
             raise ValueError("host_rates values must be > 0")
+        self.max_response_bytes = None if max_response_bytes is None else int(max_response_bytes)
+        self.request_deadline_sec = None if request_deadline_sec is None else float(request_deadline_sec)
+        if self.max_response_bytes is not None and self.max_response_bytes <= 0:
+            raise ValueError("max_response_bytes must be > 0")
+        if self.request_deadline_sec is not None and not self.request_deadline_sec > 0:
+            raise ValueError("request_deadline_sec must be > 0")
         self.robots_exempt_hosts = self._validate_exemptions(robots_exempt_hosts)
+        self._exempt_rules: dict[str, list[tuple[str, str]]] = {}
+        for key, reason in self.robots_exempt_hosts.items():
+            host, _, rest = key.partition("/")
+            self._exempt_rules.setdefault(host, []).append(("/" + rest if rest else "", reason))
         self.denied_hosts = self._validate_denied(denied_hosts)
 
         self.session = session or requests.Session()
@@ -702,16 +761,54 @@ class PoliteClient:
 
     @staticmethod
     def _validate_exemptions(raw: Optional[Mapping[str, str]]) -> dict[str, str]:
+        """{normalised "host" or "host/path/prefix/": reason}. A bad key raises:
+        a widened exemption must never come from a typo."""
         if raw is None:
             return {}
         if not isinstance(raw, Mapping):
             raise ValueError("robots_exempt_hosts must map host -> reason")
         out: dict[str, str] = {}
-        for host, reason in raw.items():
+        for key, reason in raw.items():
             if not isinstance(reason, str) or not reason.strip():
-                raise ValueError(f"robots_exempt_hosts[{host!r}] needs a reason string")
-            out[_norm_host(str(host))] = reason.strip()
+                raise ValueError(f"robots_exempt_hosts[{key!r}] needs a reason string")
+            text = str(key).strip()
+            if "://" in text:
+                parts = urllib.parse.urlsplit(text)
+                if parts.query or parts.fragment:
+                    raise ValueError(f"robots_exempt_hosts key {key!r} must be host[/path]")
+                host, path = parts.hostname or "", parts.path
+            else:
+                host, _, path = text.partition("/")
+                path = "/" + path if path else ""
+            host = _norm_host(host)
+            bad_path = any(c in path for c in "?#%\\") or any(
+                seg in (".", "..") for seg in path.split("/"))
+            if not host or "/" in host or bad_path:
+                raise ValueError(f"robots_exempt_hosts key {key!r} must be host[/path]")
+            if path.strip("/") == "":
+                path = ""
+            out[host + path] = reason.strip()
         return out
+
+    @staticmethod
+    def _path_under(url: str, prefix: str) -> bool:
+        """Is the URL's path `prefix` or below it (segment boundary, percent-decoded)?
+        Dot segments or backslashes anywhere in the path make the answer no."""
+        try:
+            path = urllib.parse.unquote(urllib.parse.urlsplit(url).path or "/")
+        except ValueError:
+            return False
+        if "\\" in path or any(seg in (".", "..") for seg in path.split("/")):
+            return False
+        base = prefix.rstrip("/")
+        return path == base or path.startswith(base + "/")
+
+    def _exemption(self, url: str, host: str) -> Optional[tuple[str, str]]:
+        """(matched key, reason) if robots.txt is not checked for this URL."""
+        for prefix, reason in self._exempt_rules.get(host, ()):
+            if not prefix or self._path_under(url, prefix):
+                return host + prefix, reason
+        return None
 
     @staticmethod
     def _validate_denied(raw: Any) -> frozenset[str]:
@@ -789,19 +886,31 @@ class PoliteClient:
         idempotent: Optional[bool] = None,
         allow_redirects: bool = True,
         raise_for_status: bool = True,
+        max_bytes: Optional[int] = None,
+        deadline_sec: Optional[float] = None,
     ) -> requests.Response:
         """Send one logical request. Redirects (GET/HEAD only) are followed here, not by
         requests, so every hop gets its own denylist check, robots check and rate limit.
         Once a hop leaves the original origin (another host, port, or an https -> http
-        downgrade), caller headers other than Accept / Accept-Language are dropped."""
+        downgrade), caller headers other than Accept / Accept-Language are dropped.
+
+        `max_bytes` / `deadline_sec` override the client's max_response_bytes /
+        request_deadline_sec for this call (see module docstring)."""
         method = method.upper()
+        if max_bytes is None:
+            max_bytes = self.max_response_bytes
+        if deadline_sec is None:
+            deadline_sec = self.request_deadline_sec
+        deadline_at = None if deadline_sec is None else self._clock() + float(deadline_sec)
+        limits = (max_bytes, deadline_at, deadline_sec)
         if idempotent is None:
             idempotent = method in _SAFE_METHODS
         target = _with_params(url, params)
         first = urllib.parse.urlsplit(target)
         hop_headers, hop_json, hop_data = headers, json, data
         for _hop in range(MAX_REDIRECTS + 1):
-            resp = self._send(method, target, hop_headers, hop_json, hop_data, timeout, idempotent)
+            resp = self._send(method, target, hop_headers, hop_json, hop_data, timeout, idempotent,
+                              limits)
             if not (allow_redirects and resp.is_redirect and method in ("GET", "HEAD")):
                 break
             nxt = self._redirect_target(target, resp)
@@ -831,7 +940,9 @@ class PoliteClient:
             raise HttpError(f"unusable redirect from {redact_url(current)}") from exc
 
     def _send(self, method: str, url: str, headers: Optional[Mapping[str, str]], json: Any,
-              data: Any, timeout: Optional[float], idempotent: bool) -> requests.Response:
+              data: Any, timeout: Optional[float], idempotent: bool,
+              limits: tuple[Optional[int], Optional[float], Optional[float]] = (None, None, None),
+              ) -> requests.Response:
         parts = urllib.parse.urlsplit(url)
         label = redact_url(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -855,15 +966,26 @@ class PoliteClient:
             if cached.last_modified:
                 send_headers["If-Modified-Since"] = cached.last_modified
 
+        max_bytes, deadline_at, deadline_sec = limits
         attempt = 0
         while True:
-            self._wait(bucket, label)
+            self._wait(bucket, label, deadline_at, deadline_sec)
+            per_read = timeout or self.timeout_sec
+            capped = False
+            if deadline_at is not None:
+                left = deadline_at - self._clock()
+                if left <= 0:
+                    raise RequestDeadlineExceeded(label, deadline_sec)
+                if left < per_read:
+                    per_read, capped = left, True
             try:
                 resp = self.session.request(
                     method, url, headers=send_headers, json=json, data=data,
-                    timeout=timeout or self.timeout_sec, allow_redirects=False,
+                    timeout=per_read, allow_redirects=False, stream=True,
                 )
             except (requests.ConnectionError, requests.Timeout) as exc:
+                if capped and isinstance(exc, requests.Timeout):
+                    raise RequestDeadlineExceeded(label, deadline_sec) from exc
                 if not idempotent or attempt >= self.max_retries:
                     raise HttpConnectionError(
                         f"{method} {label} failed after {attempt + 1} attempt(s): {type(exc).__name__}"
@@ -888,6 +1010,21 @@ class PoliteClient:
                     resp.close()
                     attempt += 1
                     continue
+            try:
+                self._read_body(resp, max_bytes, deadline_at, deadline_sec, label)
+            except _BodyReadError as exc:
+                cause = exc.__cause__ or exc
+                if not idempotent or attempt >= self.max_retries:
+                    raise HttpConnectionError(
+                        f"{method} {label} body read failed after {attempt + 1} attempt(s): "
+                        f"{type(cause).__name__}"
+                    ) from cause
+                delay = self._backoff(attempt)
+                log.info("%s %s: body read %s; retry %d/%d in %.1fs", method, label,
+                         type(cause).__name__, attempt + 1, self.max_retries, delay)
+                bucket.penalize(delay)
+                attempt += 1
+                continue
             break
 
         if cache_key is not None and resp.status_code == 200:
@@ -895,13 +1032,95 @@ class PoliteClient:
         log.debug("%s %s -> HTTP %d", method, label, resp.status_code)
         return resp
 
-    def _wait(self, bucket: TokenBucket, label: str) -> None:
+    def _wait(self, bucket: TokenBucket, label: str, deadline_at: Optional[float] = None,
+              deadline_sec: Optional[float] = None) -> None:
         delay = bucket.reserve()
         if delay > self.max_wait_sec:
             bucket.refund()
             raise RetryLater(label, delay)
+        if deadline_at is not None and self._clock() + delay >= deadline_at:
+            bucket.refund()
+            raise RequestDeadlineExceeded(label, deadline_sec)
         if delay > 0:
             self._sleep(delay)
+
+    def _read_body(self, resp: requests.Response, max_bytes: Optional[int],
+                   deadline_at: Optional[float], deadline_sec: Optional[float],
+                   label: str, *, truncate: bool = False) -> bytes:
+        """Read the whole body into resp._content, bounded in size and time.
+
+        Reads with read1() so each step returns after one socket read, and checks
+        the deadline between reads (the socket timeout is lowered to what is left).
+        Over `max_bytes`: ResponseTooLarge, or with truncate=True keep the first
+        max_bytes. Broken connections come back as _BodyReadError."""
+        if getattr(resp, "_content_consumed", False) or resp._content is not False:
+            body = resp.content or b""   # already in memory (preloading adapters, fakes)
+            if max_bytes is not None and len(body) > max_bytes:
+                if truncate:
+                    return body[:max_bytes]
+                resp.close()
+                raise ResponseTooLarge(label, max_bytes)
+            return body
+        length = (resp.headers.get("Content-Length") or "").strip()
+        if not truncate and max_bytes is not None and length.isdigit() and int(length) > max_bytes:
+            resp.close()
+            raise ResponseTooLarge(label, max_bytes, int(length))
+        raw = resp.raw
+        read1 = getattr(raw, "read1", None)
+        chunks = None if read1 is not None else resp.iter_content(_READ_CHUNK)
+        parts: list[bytes] = []
+        size = 0
+        try:
+            while True:
+                if deadline_at is not None:
+                    left = deadline_at - self._clock()
+                    if left <= 0:
+                        raise RequestDeadlineExceeded(label, deadline_sec)
+                    self._lower_socket_timeout(raw, left)
+                try:
+                    data = (read1(_READ_CHUNK, decode_content=True) if read1 is not None
+                            else next(chunks, b""))  # type: ignore[arg-type]
+                except (requests.RequestException, OSError, ValueError,
+                        urllib3_exceptions.HTTPError, http_client.HTTPException) as exc:
+                    if deadline_at is not None and self._clock() >= deadline_at:
+                        raise RequestDeadlineExceeded(label, deadline_sec) from exc
+                    raise _BodyReadError() from exc
+                if not data:
+                    break
+                size += len(data)
+                if max_bytes is not None and size > max_bytes:
+                    if truncate:
+                        parts.append(data[:max_bytes - (size - len(data))])
+                        break
+                    raise ResponseTooLarge(label, max_bytes)
+                parts.append(data)
+        except (ResponseTooLarge, RequestDeadlineExceeded, _BodyReadError):
+            resp.close()
+            raise
+        body = b"".join(parts)
+        resp._content, resp._content_consumed = body, True  # type: ignore[attr-defined]
+        if truncate:
+            resp.close()
+        else:
+            try:
+                raw.release_conn()
+            except Exception:  # noqa: BLE001 — best effort; the body is already in memory
+                pass
+        return body
+
+    @staticmethod
+    def _lower_socket_timeout(raw: Any, left: float) -> None:
+        """Best effort: make the next socket read give up when the deadline does.
+        urllib3 resets the timeout when the connection is reused."""
+        sock = getattr(getattr(raw, "connection", None), "sock", None)
+        if sock is None:
+            return
+        try:
+            current = sock.gettimeout()
+            if current is None or left < current:
+                sock.settimeout(max(0.001, left))
+        except (OSError, AttributeError):
+            pass
 
     @staticmethod
     def _retryable(status: int, idempotent: bool) -> bool:
@@ -980,13 +1199,14 @@ class PoliteClient:
 
     def _check_robots(self, url: str, label: str, origin: str, host: str,
                       bucket: TokenBucket) -> None:
-        reason = self.robots_exempt_hosts.get(host)
-        if reason is not None:
+        exempt = self._exemption(url, host)
+        if exempt is not None:
+            key, reason = exempt
             with self._lock:
-                first = host not in self._exempt_logged
-                self._exempt_logged.add(host)
+                first = key not in self._exempt_logged
+                self._exempt_logged.add(key)
             if first:
-                log.info("robots.txt not checked for %s (exempt: %s)", host, reason)
+                log.info("robots.txt not checked for %s (exempt: %s)", key, reason)
             return
         rules = self._robots_for(origin, host, bucket)
         if not rules.allows(url):
@@ -1032,6 +1252,7 @@ class PoliteClient:
                 return blocked(f"robots.txt redirects to do-not-automate host {denied}", False)
 
             self._wait(hop_bucket, redact_url(url))  # RetryLater propagates; nothing is cached
+            robots_deadline = self._clock() + ROBOTS_DEADLINE_SEC
             retry_delay: Optional[float] = None
             try:
                 resp = self.session.get(
@@ -1051,7 +1272,12 @@ class PoliteClient:
                         hop_bucket = self._bucket(_norm_host(urllib.parse.urlsplit(url).hostname or ""))
                         continue
                     if 200 <= status < 300:
-                        body = self._read_limited(resp, ROBOTS_MAX_BYTES)
+                        try:
+                            body = self._read_body(resp, ROBOTS_MAX_BYTES, robots_deadline,
+                                                   ROBOTS_DEADLINE_SEC, redact_url(url),
+                                                   truncate=True)
+                        except _BodyReadError as exc:
+                            raise requests.ConnectionError("robots.txt body read failed") from exc
                         robots = RobotsTxt(body.decode("utf-8-sig", errors="replace"), self.user_agent)
                         return verdict(robots, True, "disallowed by robots.txt")
                     if status in (401, 403):
@@ -1075,17 +1301,6 @@ class PoliteClient:
             log.info("%s for %s; retry %d/%d in %.1fs", failure, origin, attempt + 1, retries, retry_delay)
             hop_bucket.penalize(retry_delay)
             attempt += 1
-
-    @staticmethod
-    def _read_limited(resp: requests.Response, limit: int) -> bytes:
-        chunks: list[bytes] = []
-        size = 0
-        for chunk in resp.iter_content(64 * 1024):
-            chunks.append(chunk)
-            size += len(chunk)
-            if size >= limit:
-                break
-        return b"".join(chunks)[:limit]
 
     def _apply_robots_rate(self, origin: str, host: str, bucket: TokenBucket,
                            rules: _RobotsRules) -> None:

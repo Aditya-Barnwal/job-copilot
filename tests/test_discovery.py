@@ -110,7 +110,7 @@ def test_bsm_run_diff_logic_and_spacing():
     t = iter(range(0, 1000, 1))
     out = bsm.run(client=client, delay_sec=5, sleep=sleeps.append, clock=lambda: float(next(t)))
     assert out["upserted"] == 5 and out["pages_fetched"] == 3 and out["deferred"] == 0
-    assert all(s >= 3.9 for s in sleeps) and len(sleeps) == 2          # >= 5 s apart
+    assert all(s >= 3.9 for s in sleeps) and len(sleeps) == 3          # >= 5 s apart, homepage too
     assert not any("/api/" in u for u, _ in client.calls)
     rp = co.get_company("razorpay.com")
     assert (rp["ats"], rp["ats_slug"]) == ("greenhouse", "razorpaysoftwareprivatelimited")
@@ -193,3 +193,183 @@ def test_cli_tiers_prints_counts(capsys):
     co.upsert_company("Google")
     assert cli_main(["tiers"]) == 0
     assert '"brand": 1' in capsys.readouterr().out
+
+
+# ------------------------------------------------- Phase 1 review regressions
+
+def test_yc_keeps_stored_validators_when_response_lacks_them():   # logic-10
+    url = "https://yc-oss.github.io/api/companies/hiring.json"
+    body = (FIX / "yc_oss_hiring.json").read_bytes()
+    yc.run(client=FakeClient({url: body}), url=url)
+    assert co.get_source_state("yc-oss")["etag"] == 'W/"v1"'
+
+    class NoValidators(FakeClient):
+        def get(self, url, headers=None, **_):
+            self.calls.append((url, dict(headers or {})))
+            return _resp(200, self.routes[url])
+    yc.run(client=NoValidators({url: body}), url=url)               # same hash
+    assert co.get_source_state("yc-oss")["etag"] == 'W/"v1"'
+    yc.run(client=NoValidators({url: b"[]"}), url=url)              # changed body
+    assert co.get_source_state("yc-oss")["etag"] == 'W/"v1"'
+
+
+def test_bsm_hint_updates_the_homepage_row_not_a_phantom():   # logic-4
+    rid = co.upsert_company("Razorpay Software Pvt Ltd", website="https://razorpay.com",
+                            signal_source="yc-oss")
+    bsm.run(client=_bsm_client(), delay_sec=0, sleep=lambda s: None)
+    assert co.get_company("Razorpay") is None                          # no phantom "Razorpay" row
+    rows = [c for c in co.list_companies() if "razorpay" in c["normalized_name"]]
+    assert [c["id"] for c in rows] == [rid]
+    assert rows[0]["ats_slug"] == "razorpaysoftwareprivatelimited"
+
+
+def test_bsm_first_company_page_is_spaced_from_homepage():   # safety-6
+    client, sleeps = _bsm_client(), []
+    t = iter(range(0, 1000, 1))
+    bsm.run(client=client, delay_sec=5, sleep=sleeps.append, clock=lambda: float(next(t)))
+    assert len(sleeps) == 3 and all(s > 0 for s in sleeps)       # homepage -> page 1 too
+    from jobcopilot import config
+    assert config.sources()["http"]["host_rates"]["bangalorestartupmap.com"] <= 0.2
+
+
+def _seed_bsm_state(pending: dict) -> None:
+    co.put_source_state("bsm", etag='W/"v1"', content_hash="x",
+                        state={"hashes": {}, "pending": pending, "names": {}})
+
+
+def test_bsm_refuses_unsafe_slugs_and_api_urls():   # safety-7
+    assert bsm.company_url(HOME, "razorpay") == HOME + "company/razorpay"
+    for bad in ("../api/roles", "a/b", "Razorpay", "-x", "x?y=1", "", "a%2fb"):
+        assert bsm.company_url(HOME, bad) is None, bad
+    assert bsm.company_url("https://bangalorestartupmap.com/api/", "x") is None
+    _seed_bsm_state({"../api/roles": "h1", "ok-slug": "h2"})
+    client = _bsm_client()
+    bsm.run(client=client, delay_sec=0, sleep=lambda s: None)
+    assert not any("/api/" in u for u, _ in client.calls)
+    assert any(u.endswith("/company/ok-slug") for u, _ in client.calls)
+
+
+def test_bsm_pending_oldest_first_and_failures_dropped():   # logic-5
+    _seed_bsm_state({"zzz-old": {"hash": "h", "since": 100.0, "attempts": 0},
+                     "aaa-new": {"hash": "h", "since": 200.0, "attempts": 0}})
+    client = _bsm_client()          # neither slug has a route -> 404
+    out = bsm.run(client=client, max_company_pages=1, delay_sec=0, sleep=lambda s: None)
+    pages = [u for u, _ in client.calls if "/company/" in u]
+    assert pages == [HOME + "company/zzz-old"]                   # oldest first, not alphabetical
+    assert out["dropped"] == 1                                    # 404 -> dropped, not retried
+    pend = co.get_source_state("bsm")["state"]["pending"]
+    assert set(pend) == {"aaa-new"}
+
+    class Flaky(FakeClient):
+        def get(self, url, headers=None, **kw):
+            if "/company/" in url:
+                self.calls.append((url, {}))
+                from jobcopilot.http import HttpConnectionError
+                raise HttpConnectionError("timeout")
+            return super().get(url, headers, **kw)
+    flaky, t0 = Flaky(_bsm_client().routes), 1_000_000.0
+    for i in range(10):
+        bsm.run(client=flaky, delay_sec=0, sleep=lambda s: None, now=t0 + i * 7 * 86400)
+    tries = [u for u, _ in flaky.calls if u.endswith("/company/aaa-new")]
+    assert 1 <= len(tries) <= bsm.MAX_PAGE_ATTEMPTS
+    assert "aaa-new" not in co.get_source_state("bsm")["state"]["pending"]
+
+
+# ------------------------------------------------------------- ATS detect
+
+class FakeResult:
+    def __init__(self, **kw):
+        base = dict(ats=None, slug=None, tenant=None, wd_server=None, site=None, region=None,
+                    confidence=0.0, evidence="", verified=False, job_count=None)
+        base.update(kw)
+        self.__dict__.update(base)
+
+
+def test_detect_step_writes_results_and_respects_caps():   # logic-7
+    from jobcopilot.discovery import detect as det
+    a = co.upsert_company("Alpha", website="https://alpha.io", funding_stage="Public")
+    b = co.upsert_company("Beta", website="https://beta.io", yc_batch="W24")
+    c = co.upsert_company("Gamma", website="https://gamma.io", funding_stage="Seed")   # unknown
+    d = co.upsert_company("Delta", website="https://delta.io", yc_batch="W23",
+                          ats="lever", ats_slug="delta", ats_confidence=1.0)          # verified
+    e = co.upsert_company("Eps", yc_batch="S22")                                       # no URL
+    co.recompute_tiers()
+    seen: list[str] = []
+
+    def fake(url, *, client=None, verify=True):
+        assert verify is True
+        seen.append(url)
+        if "alpha" in url:
+            return FakeResult(ats="greenhouse", slug="alpha", confidence=0.85, verified=True,
+                              evidence="link; verified 12 jobs", job_count=12)
+        return FakeResult(ats="ashby", slug="beta", confidence=0.7, evidence="detail link")
+
+    out = det.run(detector=fake, limit=40, now=1000.0)
+    assert sorted(seen) == ["https://alpha.io", "https://beta.io"] and out["checked"] == 2
+    ra, rb = co.get_company("alpha.io"), co.get_company("beta.io")
+    assert (ra["ats"], ra["ats_slug"], ra["ats_confidence"]) == ("greenhouse", "alpha", 1.0)
+    assert (rb["ats"], rb["ats_confidence"]) == ("ashby", 0.7)
+    assert ra["ats_checked_at"] == rb["ats_checked_at"] == 1000.0 and rb["ats_evidence"]
+    assert co.get_company("gamma.io")["ats_checked_at"] is None
+    # re-run within 14 days -> nothing re-checked; after 14 days Beta (still unverified) is
+    seen.clear()
+    assert det.run(detector=fake, now=1000.0 + 86400)["checked"] == 0
+    assert det.run(detector=fake, now=1000.0 + 15 * 86400, limit=1)["checked"] == 1
+    assert seen == ["https://beta.io"]
+
+    # one failing detection never aborts the run
+    co.upsert_company("Zeta", website="https://zeta.io", yc_batch="W21")
+    co.recompute_tiers()
+
+    def boom(url, **_):
+        raise RuntimeError("x")
+    out = det.run(detector=boom, now=1000.0 + 40 * 86400)
+    assert out["errors"] >= 1 and co.get_company("zeta.io")["ats_checked_at"] is not None
+
+
+def test_cli_has_detect_step(monkeypatch):
+    from jobcopilot.discovery import detect as det
+    monkeypatch.setattr(det, "run", lambda **kw: {"checked": 0, "limit": kw.get("limit")})
+    assert cli_main(["detect"]) == 0
+
+
+# ---------------------------------------------------------- funding (more)
+
+def test_funding_bad_llm_output_never_aborts(monkeypatch, tmp_path):   # logic-8
+    now = datetime.now(timezone.utc)
+    items = [{"title": f"T{i}", "link": f"https://e.x/{i}", "description": "",
+              "pub_date": format_datetime(now - timedelta(days=5))} for i in range(6)]
+    monkeypatch.setattr(funding, "FEEDS", ["https://feed.example/rss"])
+    monkeypatch.setattr(funding, "_parse_rss", lambda url: items)
+    recs = iter([
+        ["not", "a", "dict"],
+        {"company": "Nully", "stage": None, "amount_usd": "lots", "investors": [None, "Accel"],
+         "sector": "tech"},
+        {"company": "Bstage", "stage": 3, "amount_usd": None, "investors": None, "sector": "tech"},
+        {"company": {"x": 1}, "stage": "series b"},
+        {"company": "Goodco", "stage": "Series B", "amount_usd": "25000000",
+         "investors": ["Sequoia", None], "sector": "fintech"},
+        None,
+    ])
+    monkeypatch.setattr(funding, "_ask_llm", lambda t, d: next(recs))
+    out = funding.run(out_path=tmp_path / "d.yaml")
+    assert out["qualified"] == 1 and out["recorded"] == 1
+    g = co.get_company("Goodco")
+    assert g["tier"] == "funded" and g["investors"] == ["Sequoia"]
+
+
+def test_funding_name_only_match_must_be_unambiguous():   # logic-3
+    co.upsert_company("Atlas", website="https://atlas.so", signal_source="yc-oss")
+    co.upsert_company("Atlas", website="https://atlashq.in", signal_source="bsm", funding_stage="Seed")
+    co.upsert_company("Solo", website="https://solo.dev", signal_source="bsm", funding_stage="Seed")
+    funding.record_companies([
+        {"name": "Atlas", "stage": "series b", "investors": ["Accel"], "sector": "tech"},
+        {"name": "Solo", "stage": "series b", "investors": ["Accel"], "sector": "tech"},
+    ])
+    assert "funding-rss" not in co.get_company("atlas.so")["signal_sources"]
+    assert "funding-rss" not in co.get_company("atlashq.in")["signal_sources"]
+    assert co.get_company("atlas.so")["tier"] != "funded"
+    assert co.get_company("atlashq.in")["tier"] != "funded"
+    sep = [c for c in co.list_companies() if c["normalized_name"].startswith("atlas#funding")]
+    assert len(sep) == 1 and "funding-rss" in sep[0]["signal_sources"]
+    assert "funding-rss" in co.get_company("solo.dev")["signal_sources"]   # unambiguous: merged

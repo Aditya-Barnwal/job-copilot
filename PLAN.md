@@ -156,7 +156,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - no personal data appears in `git ls-files`
   - the facts file validates
 
-### Phase 1: New sources ◐ (built; review pending)
+### Phase 1: New sources ☑
 - ☐ Connectors, each with a module, fixture, parse test and rate limit:
 
   | Connector | Endpoint / note |
@@ -366,3 +366,14 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
   - **Himalayas:** robots.txt forbids paging, so page 1 per query only.
   - **Tests:** 537 green, PII clean.
   - **Next:** Phase 1 review → fixes → mark ☑ → Phase 1b (many more sources).
+- 2026-11-12: **Phase 1 done.** The 3-lens review found 24 issues (4 high), all fixed with regression tests.
+  - **Company matching:** shared hosts (Play Store etc.) are never identity domains; companies removed from config stop being ingested; common-word brands need a domain match; IT-services firms can't pass as brands.
+  - **Detector safety:** linear-time regexes; response size and deadline caps in the HTTP client; validated slugs; path-scoped robots exemptions.
+  - **Dedupe:** country-aware remote buckets (no US-only listing merged into an India role); purge never deletes a still-listed job.
+  - **Parsing:** Jobspresso salary parser fixed ("monthly" was read as "million"); region and time-zone parsing.
+  - **Discovery:** ATS detection is now a discovery step, so YC and Bangalore Startup Map companies become ingest targets.
+  - **Verification:** 633 tests green. Live ingest: 5,453 raw → 495 passed, 786 jobs stored. RemoteOK was briefly unreachable and handled as transient.
+  - **Backlog:**
+    - quote and validate config slugs in the Greenhouse / Lever / SmartRecruiters / Gem connectors (Ashby done) (P1b)
+    - add `max_response_bytes` / `request_deadline_sec` to config defaults (P1b)
+    - Postman board 404 (P1b)

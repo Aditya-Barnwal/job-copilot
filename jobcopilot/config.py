@@ -53,6 +53,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "max_retries": 3,
             "host_rates": {},            # {"api.example.com": 0.2}
             "robots_exempt_hosts": {},   # {"host": "reason"} — documented public APIs only
+            # DO-NOT-AUTOMATE hosts (+ subdomains): refused by the client outright.
+            "denied_hosts": ["workatastartup.com", "ycombinator.com", "linkedin.com",
+                             "naukri.com", "indeed.com", "wellfound.com", "glassdoor.com"],
         },
         "boards": {},                    # per-board on/off + options (Phase 1)
     },

@@ -55,10 +55,18 @@ the whole bullet pending and losing the rest, the clause becomes a `claim`:
         pending_until: phase-3b
         pending_reason: "..."
 
-`text` is an exact span of the owner's text (and `variants[base]`, defaulting to
-`text`, a span of the owner's variant for that base). A claim on a header may
-instead list `tech:` items of its tech line. `usable_facts()` cuts every claim
-that isn't confirmed out of the line, so the owner stays usable without it.
+`text` is a non-empty span that occurs exactly once in the owner's text (and
+`variants[base]`, defaulting to `text`, exactly once in the owner's variant for
+that base). Claims on one fact must not overlap. A claim on a header may
+instead list `tech:` items of its tech line; if the header's text also names
+such an item, a text claim must cover it there too. `usable_facts()` cuts
+every claim that isn't confirmed out of the text, every variant, the header's
+structured fields and its tech line, so the owner stays usable without it.
+
+`usable_facts()` fails closed: a fact whose open claim can't be cut exactly
+(span missing or ambiguous, a cut across a header field, a required field
+left empty, a pending tech item still in the text) is left out entirely, and
+`validate()` reports why. Duplicate YAML keys make the file unloadable.
 
 CLI
 ---
@@ -71,6 +79,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 import logging
 import os
 import re
@@ -143,6 +152,9 @@ class Fact:
     kind: str = ""
     parent: str = ""
     where: str = field(default="", repr=False, compare=False)
+    # True when the loader hit a type error in this fact's own fields (e.g. a
+    # `claims:` that isn't a list of mappings): it is never usable.
+    malformed: bool = field(default=False, repr=False, compare=False)
 
     @property
     def confirmed(self) -> bool:
@@ -337,11 +349,17 @@ class _Reader:
             section=section, kind=kind, where=where,
         )
 
+    def mark(self, fact: Fact, start: int) -> Fact:
+        """Flag `fact` if reading its own fields added errors since `start`."""
+        fact.malformed = len(self.errors) > start
+        return fact
+
     def bullets(self, raw: dict, where: str, section: str, parent: str) -> list[Fact]:
         out = []
         for w, b in self.mapping_list(raw.get("bullets"), f"{where}.bullets"):
+            start = len(self.errors)
             kw = self.common(b, w, section, "bullet")
-            out.append(Fact(parent=parent, **kw))
+            out.append(self.mark(Fact(parent=parent, **kw), start))
         return out
 
 
@@ -360,36 +378,41 @@ def parse(data: Any, path: Path | None = None) -> ResumeFacts:
                     phone=_s(p.get("phone")), location=_s(p.get("location")),
                     links=r.strdict(p, "links", "person"))
 
-    education = [
-        Education(**r.common(e, w, "education", "education"),
-                  institution=_s(e.get("institution")), degree=_s(e.get("degree")),
-                  start=_s(e.get("start")), end=_s(e.get("end")),
-                  grade=_s(e.get("grade")), location=_s(e.get("location")))
-        for w, e in r.mapping_list(data.get("education"), "education")
-    ]
+    education = []
+    for w, e in r.mapping_list(data.get("education"), "education"):
+        start = len(errors)
+        education.append(r.mark(
+            Education(**r.common(e, w, "education", "education"),
+                      institution=_s(e.get("institution")), degree=_s(e.get("degree")),
+                      start=_s(e.get("start")), end=_s(e.get("end")),
+                      grade=_s(e.get("grade")), location=_s(e.get("location"))), start))
     experience = []
     for w, e in r.mapping_list(data.get("experience"), "experience"):
-        role = Role(**r.common(e, w, "experience", "role"),
-                    company=_s(e.get("company")), title=_s(e.get("title")),
-                    location=_s(e.get("location")), start=_s(e.get("start")),
-                    end=_s(e.get("end")), link=_s(e.get("link")))
+        start = len(errors)
+        role = r.mark(Role(**r.common(e, w, "experience", "role"),
+                           company=_s(e.get("company")), title=_s(e.get("title")),
+                           location=_s(e.get("location")), start=_s(e.get("start")),
+                           end=_s(e.get("end")), link=_s(e.get("link"))), start)
         role.bullets = r.bullets(e, w, "experience", role.id)
         experience.append(role)
     projects = []
     for w, e in r.mapping_list(data.get("projects"), "projects"):
-        proj = Project(**r.common(e, w, "projects", "project"), name=_s(e.get("name")),
-                       tech=r.strlist(e, "tech", w), link=_s(e.get("link")))
+        start = len(errors)
+        proj = r.mark(Project(**r.common(e, w, "projects", "project"), name=_s(e.get("name")),
+                              tech=r.strlist(e, "tech", w), link=_s(e.get("link"))), start)
         proj.bullets = r.bullets(e, w, "projects", proj.id)
         projects.append(proj)
-    research = [
-        Research(**r.common(e, w, "research", "research"),
-                 research_kind=_s(e.get("kind")).lower())
-        for w, e in r.mapping_list(data.get("research"), "research")
-    ]
+    research = []
+    for w, e in r.mapping_list(data.get("research"), "research"):
+        start = len(errors)
+        research.append(r.mark(Research(**r.common(e, w, "research", "research"),
+                                        research_kind=_s(e.get("kind")).lower()), start))
     hackathons = []
     for w, e in r.mapping_list(data.get("hackathons"), "hackathons"):
-        hack = Hackathon(**r.common(e, w, "hackathons", "hackathon"), name=_s(e.get("name")),
-                         event=_s(e.get("event")), tech=r.strlist(e, "tech", w))
+        start = len(errors)
+        hack = r.mark(Hackathon(**r.common(e, w, "hackathons", "hackathon"),
+                                name=_s(e.get("name")), event=_s(e.get("event")),
+                                tech=r.strlist(e, "tech", w)), start)
         hack.bullets = r.bullets(e, w, "hackathons", hack.id)
         hackathons.append(hack)
 
@@ -400,8 +423,11 @@ def parse(data: Any, path: Path | None = None) -> ResumeFacts:
         raw_skills = {}
     for cat, items in raw_skills.items():
         cat = _s(cat)
-        skills[cat] = [Skill(**r.common(s, w, "skills", "skill"), category=cat)
-                       for w, s in r.mapping_list(items, f"skills.{cat}")]
+        skills[cat] = []
+        for w, s in r.mapping_list(items, f"skills.{cat}"):
+            start = len(errors)
+            skills[cat].append(r.mark(Skill(**r.common(s, w, "skills", "skill"), category=cat),
+                                      start))
 
     facts = ResumeFacts(schema_version=data.get("schema_version"), person=person,
                         education=education, experience=experience, projects=projects,
@@ -411,23 +437,59 @@ def parse(data: Any, path: Path | None = None) -> ResumeFacts:
     return facts
 
 
+class _DuplicateKeyError(yaml.constructor.ConstructorError):
+    def __init__(self, key: Any, mark: Any):
+        super().__init__(None, None, "found duplicate key", mark)
+        self.key = key
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate mapping keys. Plain YAML keeps the last
+    one silently, so a second `claims:` would drop a pending claim unnoticed."""
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        if isinstance(node, yaml.MappingNode):
+            seen: set = set()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue            # `<<: *anchor` then an override is legitimate
+                key = self.construct_object(key_node, deep=deep)
+                try:
+                    dup = key in seen
+                except TypeError:       # unhashable; SafeLoader reports it itself
+                    continue
+                if dup:
+                    raise _DuplicateKeyError(key, key_node.start_mark)
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _yaml_pos(e: yaml.YAMLError) -> str:
+    mark = getattr(e, "problem_mark", None)
+    return f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+
+
 def _read_yaml(path: Path) -> Any:
     if not path.exists():
         raise FactsError(f"{path}: not found")
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return yaml.safe_load(fh)
+            return yaml.load(fh, Loader=_StrictLoader)  # noqa: S506 — SafeLoader subclass
+    except _DuplicateKeyError as e:
+        # Name the key only when it looks like a schema key, never résumé text.
+        k = e.key if isinstance(e.key, str) and re.fullmatch(r"[A-Za-z_][\w.-]{0,40}", e.key) else ""
+        raise FactsError(f"{path}: duplicate key{f' `{k}`' if k else ''}{_yaml_pos(e)}; "
+                         f"YAML would keep only the last one") from None
     except yaml.YAMLError as e:
         # The YAML error message quotes the offending line, which can be résumé
         # text — report the position only.
-        mark = getattr(e, "problem_mark", None)
-        pos = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-        raise FactsError(f"{path}: invalid YAML{pos}") from None
+        raise FactsError(f"{path}: invalid YAML{_yaml_pos(e)}") from None
 
 
 def load(path: Path | str | None = None) -> ResumeFacts:
     """Load resume_facts.yaml into typed objects. Raises FactsError only when the
-    file is missing or unparseable; content problems are left for validate()."""
+    file is missing, unparseable or has a duplicate mapping key (ambiguous: there
+    is no telling which value was meant); content problems are left for validate()."""
     p = Path(path) if path else default_facts_path()
     return parse(_read_yaml(p), path=p)
 
@@ -474,10 +536,87 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _has_term(haystack: str, term: str) -> bool:
-    """Whole-term, case-insensitive match ('C' must not match 'CI/CD')."""
-    pat = r"(?<![A-Za-z0-9])" + re.escape(_norm(term)) + r"(?![A-Za-z0-9])"
-    return re.search(pat, _norm(haystack), re.IGNORECASE) is not None
+def _has_term(haystack: str, term: str, *, ignore_case: bool = True) -> bool:
+    """Whole-term match. Letters, digits, `+ # %` and a `.` inside a token are
+    term characters, so 'C' matches neither 'CI/CD', 'C++' nor 'C#', 'NET' not
+    'ASP.NET', and '50%' not '150%'; a sentence-final '.' still ends a term."""
+    t = _norm(term)
+    if not t:
+        return False
+    pat = (r"(?<![A-Za-z0-9+#%.])" + re.escape(t)
+           + r"(?![A-Za-z0-9+#%])(?!\.[A-Za-z0-9])")
+    return re.search(pat, _norm(haystack), re.IGNORECASE if ignore_case else 0) is not None
+
+
+# Claim spans are matched on normalised whitespace but cut from the original
+# text, so nothing outside a cut is rewritten.
+
+Span = tuple[int, int]
+
+
+def _find_all(text: str, span: str) -> list[Span]:
+    """Every (start, end) where `span` occurs in `text`, overlapping ones too;
+    any run of whitespace in `span` matches any run in `text`."""
+    s = _norm(span)
+    if not s:
+        return []
+    pat = r"\s+".join(re.escape(tok) for tok in s.split(" "))
+    return [(m.start(), m.start() + len(m.group(1)))
+            for m in re.finditer(f"(?=({pat}))", text)]
+
+
+def _merge(spans: list[Span]) -> list[Span]:
+    """Union of spans: overlapping or touching ones become one."""
+    out: list[Span] = []
+    for s, e in sorted(spans):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _seam(left: str, right: str) -> str:
+    """Join the text either side of a cut, tidying only the characters at the
+    seam: whitespace, a separator left dangling, an emptied '()'."""
+    lt, rt = left.rstrip(), right.lstrip()
+    spaced = lt != left or rt != right
+    while lt.endswith("(") and rt.startswith(")"):
+        nl, nr = lt[:-1], rt[1:]
+        spaced = spaced or nl != nl.rstrip() or nr != nr.lstrip()
+        lt, rt = nl.rstrip(), nr.lstrip()
+    if not lt:
+        return re.sub(r"^[,;:]+\s*", "", rt)
+    if not rt:
+        return re.sub(r"\s*[,;:]+$", "", lt)
+    if rt[0] in ",.;:!?)]":
+        return re.sub(r"\s*[,;:]+$", "", lt) + rt
+    if lt[-1] in "([":
+        return lt + rt
+    return lt + (" " if spaced else "") + rt
+
+
+def _cut_spans(text: str, spans: list[Span]) -> str:
+    """Remove the union of `spans` from `text`; text away from the seams is
+    returned exactly as it was."""
+    merged = _merge(spans)
+    if not merged:
+        return text
+    pieces, prev = [], 0
+    for s, e in merged:
+        pieces.append(text[prev:s])
+        prev = e
+    pieces.append(text[prev:])
+    out = pieces[0]
+    for p in pieces[1:]:
+        out = _seam(out, p)
+    return out
+
+
+def _cut(text: str, span: str) -> str | None:
+    """`text` without `span`, or None unless `span` occurs exactly once."""
+    found = _find_all(text, span)
+    return _cut_spans(text, found) if len(found) == 1 else None
 
 
 def _check_status(label: str, obj: Fact | Claim, errors: list[str]) -> None:
@@ -508,34 +647,66 @@ def _check_id(label: str, ident: str, seen: dict[str, str], errors: list[str],
 
 def _check_claims(f: Fact, label: str, seen: dict[str, str], errors: list[str]) -> None:
     tech = getattr(f, "tech", None)
+    owner = f.id or label
+    # Located spans per wording (None = `text`, else a variant base), for the
+    # overlap check below.
+    located: dict[str | None, list[tuple[Span, str]]] = {}
+
+    def locate(cl: str, where: str | None, text: str, span: str, missing: str,
+               what: str) -> None:
+        found = _find_all(text, span)
+        if not found:
+            errors.append(f"{cl}: {missing}")
+        elif len(found) > 1:
+            errors.append(f"{cl}: claim occurs {len(found)} times in {what}; it must occur "
+                          f"exactly once (include more context)")
+        else:
+            located.setdefault(where, []).append((found[0], cl))
+
     for i, c in enumerate(f.claims):
         cl = c.id or f"{label}.claims[{i}]"
         _check_id(cl, c.id, seen, errors, prefix=f.id)
         _check_status(cl, c, errors)
         if bool(c.text) == bool(c.tech):
             errors.append(f"{cl}: a claim needs exactly one of `text` or `tech`")
+        if c.variants and not c.text:
+            errors.append(f"{cl}: `variants` needs a `text` span (a tech claim can't have them)")
+        for base, span in c.variants.items():
+            if base not in f.variants:
+                errors.append(f"{cl}: variant '{base}' but {owner} has no '{base}' variant")
+            if not span:
+                errors.append(f"{cl}: claim variant '{base}' is empty; give the exact span "
+                              f"of the '{base}' wording")
         if c.text:
-            if _norm(c.text) not in _norm(f.text):
-                errors.append(f"{cl}: claim text is not an exact span of {f.id or label}'s text")
-            for base in c.variants:
-                if base not in f.variants:
-                    errors.append(f"{cl}: variant '{base}' but {f.id or label} has no "
-                                  f"'{base}' variant")
+            locate(cl, None, f.text, c.text,
+                   f"claim text is not an exact span of {owner}'s text", f"{owner}'s text")
             for base, vtext in f.variants.items():
                 span = c.variants.get(base, c.text)
-                if _norm(span) not in _norm(vtext):
-                    errors.append(f"{cl}: claim is not an exact span of the '{base}' variant "
-                                  f"(add claims.variants.{base})")
+                if span:
+                    locate(cl, base, vtext, span,
+                           f"claim is not an exact span of the '{base}' variant "
+                           f"(add claims.variants.{base})", f"the '{base}' variant")
         for t in c.tech:
             if tech is None:
                 errors.append(f"{cl}: `tech` claim on a fact without a tech line")
                 break
             if t not in tech:
-                errors.append(f"{cl}: tech '{t}' is not in {f.id or label}'s tech line")
+                errors.append(f"{cl}: tech '{t}' is not in {owner}'s tech line")
+
+    for where, items in located.items():
+        what = f"{owner}'s text" if where is None else f"the '{where}' variant"
+        reach: tuple[int, str] | None = None        # furthest end so far, and its claim
+        for (s, e), cl in sorted(items):
+            if reach and s < reach[0]:
+                errors.append(f"{cl}: overlaps claim {reach[1]} in {what}; claims must not "
+                              f"overlap (merge them into one)")
+            if not reach or e > reach[0]:
+                reach = (e, cl)
 
 
 def _check_fact(f: Fact, known: tuple[str, ...], seen: dict[str, str],
                 errors: list[str]) -> None:
+    start = len(errors)
     label = f.id or f.where
     _check_id(f.where if not f.id else f.id, f.id, seen, errors,
               prefix=f.parent if f.kind == "bullet" else "")
@@ -556,38 +727,50 @@ def _check_fact(f: Fact, known: tuple[str, ...], seen: dict[str, str],
         if not vtext:
             errors.append(f"{label}: variant '{base}' is empty")
 
-    texts = " \n ".join(f.all_texts())
     for m in f.metrics:
         if not re.search(r"\d", m):
             errors.append(f"{label}: metric '{m}' has no number in it")
-        elif _norm(m) not in _norm(texts):
+        elif not any(_has_term(t, m, ignore_case=False) for t in f.all_texts()):
             errors.append(f"{label}: metric '{m}' does not appear in its text")
-    tech_line = " , ".join(getattr(f, "tech", []))
     for tag in f.skills:
-        if not _has_term(texts + " , " + tech_line, tag):
+        if not _mentions(f, tag):
             errors.append(f"{label}: skill tag '{tag}' does not appear in its text")
 
     _check_claims(f, label, seen, errors)
     _check_header_fields(f, label, errors)
+    if len(errors) == start:
+        # Statically fine; now make sure the usable view can be built, so a
+        # fact usable_facts() would leave out is never a silent omission.
+        try:
+            _build_usable(f, None)
+        except _Unusable as e:
+            errors.append(f"{label}: not usable for tailoring: {e}")
+
+
+def _mentions(f: Fact, term: str) -> bool:
+    """`term` appears as a whole term in the text, a variant or the tech line."""
+    return any(_has_term(t, term) for t in [*f.all_texts(), *getattr(f, "tech", [])])
+
+
+def _header_fields(f: Fact) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(required fields, fields that must appear in `text`) for a header fact."""
+    if isinstance(f, Education):
+        return ("institution", "degree"), ("institution", "degree", "start", "end", "grade",
+                                           "location")
+    if isinstance(f, Role):
+        return ("company", "title", "start"), ("company", "title", "location", "start", "end")
+    if isinstance(f, (Project, Hackathon)):
+        return ("name",), ("name", "event")
+    return (), ()
 
 
 def _check_header_fields(f: Fact, label: str, errors: list[str]) -> None:
     """Structured fields are what templates render; they must say what `text`
     says, or confirming the text would not confirm what gets printed."""
-    required: tuple[str, ...] = ()
-    in_text: tuple[str, ...] = ()
-    if isinstance(f, Education):
-        required, in_text = ("institution", "degree"), ("institution", "degree", "start",
-                                                         "end", "grade", "location")
-    elif isinstance(f, Role):
-        required, in_text = ("company", "title", "start"), ("company", "title", "location",
-                                                            "start", "end")
-    elif isinstance(f, (Project, Hackathon)):
-        required, in_text = ("name",), ("name", "event")
-    elif isinstance(f, Research):
-        if f.research_kind not in RESEARCH_KINDS:
-            errors.append(f"{label}: kind '{f.research_kind or '(missing)'}' must be one of "
-                          f"{', '.join(RESEARCH_KINDS)}")
+    required, in_text = _header_fields(f)
+    if isinstance(f, Research) and f.research_kind not in RESEARCH_KINDS:
+        errors.append(f"{label}: kind '{f.research_kind or '(missing)'}' must be one of "
+                      f"{', '.join(RESEARCH_KINDS)}")
     for name in required:
         if not getattr(f, name, ""):
             errors.append(f"{label}: `{name}` is required")
@@ -675,70 +858,156 @@ def validate_bases(bases: dict[str, Base], facts: ResumeFacts) -> list[str]:
 
 # --------------------------------------------------------------------------- usable view
 
-def _cut(text: str, span: str) -> str:
-    """Remove `span` from `text` and tidy the punctuation it leaves behind."""
-    text, span = _norm(text), _norm(span)
-    i = text.find(span)
-    if not span or i < 0:
-        return text
-    out = text[:i] + " " + text[i + len(span):]
-    out = re.sub(r"\s+", " ", out)
-    out = re.sub(r"\s+([,.;:)])", r"\1", out)
-    out = re.sub(r"\(\s+", "(", out)
-    out = re.sub(r"[,;:]+([,.;)])", r"\1", out)
-    return out.strip()
+class _Unusable(Exception):
+    """An open claim can't be cut out exactly, so the fact must not be used.
+    Messages name claim ids and field names only, never résumé text."""
 
 
-def _usable_copy(f: Fact, base: str | None) -> Fact | None:
-    g = copy.deepcopy(f)
-    dropped = [c for c in g.claims if c.status != "confirmed"]
-    for c in dropped:
+def _locate_once(text: str, span: str, what: str) -> Span:
+    found = _find_all(text, span)
+    if len(found) != 1:
+        raise _Unusable(f"{what} occurs {len(found)} times; it must occur exactly once")
+    return found[0]
+
+
+def _cut_header_fields(g: Fact, text: str, cuts: list[Span]) -> None:
+    """Apply the cuts made to `text` to the structured fields templates print.
+    A cut inside a field is applied to it; a field inside a cut is emptied; a
+    cut across a field boundary, or into a field that `text` repeats, is
+    ambiguous and raises. Every field must still appear in the cut `g.text`."""
+    required, in_text = _header_fields(g)
+    merged = _merge(cuts)
+    for name in in_text:
+        value = getattr(g, name, "")
+        if not value:
+            continue
+        found = _find_all(text, value)
+        if not found:
+            raise _Unusable(f"`{name}` does not appear in its text")
+        hit = [(s, e) for s, e in merged if any(s < b and a < e for a, b in found)]
+        if hit:
+            if len(found) > 1:
+                raise _Unusable(f"a claim that isn't confirmed cuts into `{name}`, which "
+                                f"occurs more than once in its text")
+            a, b = found[0]
+            if any(s <= a and b <= e for s, e in hit):
+                value = ""
+            elif all(a <= s and e <= b for s, e in hit):
+                value = _norm(_cut_spans(text[a:b], [(s - a, e - a) for s, e in hit]))
+            else:
+                raise _Unusable(f"a claim that isn't confirmed cuts across `{name}`; make the "
+                                f"claim lie inside the field or cover it whole")
+            setattr(g, name, value)
+        if value and not _find_all(g.text, value):
+            raise _Unusable(f"`{name}` no longer appears in its text once claims are cut")
+    for name in required:
+        if not getattr(g, name, ""):
+            raise _Unusable(f"`{name}` would be empty once claims that aren't confirmed are cut")
+
+
+def _build_usable(f: Fact, base: str | None) -> Fact | None:
+    """A copy of `f` with every claim that isn't confirmed cut out of its text,
+    variants, structured fields and tech line; None if no text is left.
+    Raises _Unusable when that can't be done exactly (fail closed)."""
+    g = copy.deepcopy(dataclasses.replace(f, bullets=[]) if hasattr(f, "bullets") else f)
+    open_claims = [c for c in g.claims if c.status != "confirmed"]
+    text_cuts: list[Span] = []
+    variant_cuts: dict[str, list[Span]] = {b: [] for b in g.variants}
+    pending_tech: list[str] = []
+    for c in open_claims:
+        cid = c.id or "(no id)"
+        if not c.text and not c.tech:
+            raise _Unusable(f"claim {cid} has neither `text` nor `tech`")
+        if any(not v for v in c.variants.values()) or (c.variants and not c.text):
+            raise _Unusable(f"claim {cid} has a variant span that can't be cut")
         if c.text:
-            g.text = _cut(g.text, c.text)
-            g.variants = {b: _cut(v, c.variants.get(b, c.text)) for b, v in g.variants.items()}
-        if c.tech and hasattr(g, "tech"):
-            g.tech = [t for t in g.tech if t not in c.tech]
+            text_cuts.append(_locate_once(g.text, c.text, f"claim {cid}"))
+            for b, v in g.variants.items():
+                variant_cuts[b].append(_locate_once(v, c.variants.get(b, c.text),
+                                                    f"claim {cid} in the '{b}' variant"))
+        for t in c.tech:
+            if t not in getattr(g, "tech", ()):
+                raise _Unusable(f"tech '{t}' of claim {cid} is not in the tech line")
+            pending_tech.append(t)
+
+    original = g.text
+    g.text = _cut_spans(original, text_cuts)
+    g.variants = {b: _cut_spans(v, variant_cuts[b]) for b, v in g.variants.items()}
+    for c in open_claims:          # a seam must not have rebuilt a cut span
+        if c.text and (_find_all(g.text, c.text) or any(
+                _find_all(v, c.variants.get(b, c.text)) for b, v in g.variants.items())):
+            raise _Unusable(f"claim {c.id or '(no id)'} still occurs once cut")
+    _cut_header_fields(g, original, text_cuts)
+    if pending_tech:
+        g.tech = [t for t in g.tech if t not in pending_tech]
+        for t in dict.fromkeys(pending_tech):
+            if any(_has_term(x, t) for x in g.all_texts()):
+                raise _Unusable(f"tech '{t}' isn't confirmed but its text still names it; "
+                                f"add a text claim with the same status that covers it")
     g.claims = [c for c in g.claims if c.status == "confirmed"]
+
     if base:
         g.text = g.text_for(base)
         g.variants = {}
     if not g.text:
         return None
-    texts = " \n ".join(g.all_texts())
-    tech_line = " , ".join(getattr(g, "tech", []))
-    g.metrics = [m for m in g.metrics if _norm(m) in _norm(texts)]
-    g.skills = [t for t in g.skills if _has_term(texts + " , " + tech_line, t)]
+    g.metrics = [m for m in g.metrics
+                 if any(_has_term(t, m, ignore_case=False) for t in g.all_texts())]
+    g.skills = [t for t in g.skills if _mentions(g, t)]
     return g
 
 
 def usable_facts(facts: ResumeFacts, base: str | None = None) -> list[Fact]:
     """Confirmed facts only — never pending or unconfirmed — as copies with every
-    non-confirmed claim cut out of the text and tech line.
+    claim that isn't confirmed cut out of the text, variants, header fields and
+    tech line.
 
-    A bullet is usable only if its header is confirmed too (an unconfirmed
-    employer or title would otherwise be printed above it). With `base`, keeps
-    only facts that base contains and uses that base's wording as `text`.
-    Headers' `bullets` are filtered the same way.
+    Fails closed: a fact is left out (and `validate()` says why) when it is
+    malformed, its id is missing or shared, or an open claim can't be cut
+    exactly. A bullet is usable only if its header is usable for the same
+    `base` (an unconfirmed employer or title would otherwise be printed above
+    it). With `base`, keeps only facts that base contains and uses that base's
+    wording as `text`. Headers' `bullets` are filtered the same way. Render a
+    tech line with `ordered_tech()`, which drops tech that isn't confirmed
+    from a base's `tech_order`.
     """
-    by_id = facts.by_id()
+    ids = Counter(f.id for f in facts.facts())
     out: list[Fact] = []
     usable: dict[str, Fact] = {}
+    originals: dict[str, Fact] = {}
     for f in facts.facts():
-        if not f.confirmed:
+        if not f.confirmed or f.malformed or not f.id or ids[f.id] > 1:
             continue
-        if f.parent and not (by_id.get(f.parent) and by_id[f.parent].confirmed):
+        if f.kind == "bullet" and f.parent not in usable:
             continue
         if base and base not in f.sources:
             continue
-        g = _usable_copy(f, base)
+        try:
+            g = _build_usable(f, base)
+        except _Unusable as e:
+            log.debug("fact %s left out: %s", f.id, e)
+            continue
         if g is None:
             continue
         usable[g.id] = g
+        originals[g.id] = f
         out.append(g)
     for g in out:
         if hasattr(g, "bullets"):
-            g.bullets = [usable[b.id] for b in g.bullets if b.id in usable]
+            g.bullets = [usable[b.id] for b in originals[g.id].bullets
+                         if b.id in usable and usable[b.id].parent == g.id]
     return out
+
+
+def ordered_tech(fact: Fact, base: Base | None = None) -> list[str]:
+    """The tech line to print: `base.tech_order` for this fact, keeping only
+    items still in `fact.tech` (a usable copy has unconfirmed items removed)."""
+    tech = list(getattr(fact, "tech", []))
+    order = base.tech_order.get(fact.id) if base else None
+    if not order:
+        return tech
+    out = [t for t in order if t in tech]
+    return out + [t for t in tech if t not in out]
 
 
 # --------------------------------------------------------------------------- CLI

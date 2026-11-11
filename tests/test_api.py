@@ -7,6 +7,10 @@ supplies a fake reply.
 """
 from __future__ import annotations
 
+import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -129,6 +133,82 @@ def test_meta_summary_shape(client):
                         "version_count": 0}
 
 
+APP_JS = Path(server_app.STATIC_DIR) / "app.js"
+INDEX_HTML = Path(server_app.STATIC_DIR) / "index.html"
+NODE = shutil.which("node")
+
+
+def _js_function(src: str, name: str) -> str:
+    m = re.search(rf"^function {name}\(.*?^}}\n", src, re.S | re.M)
+    assert m, f"function {name} not found in app.js"
+    return m.group(0)
+
+
+def test_security_headers_on_ui_static_and_api(client):
+    # Review finding #2: no CSP meant an attribute-injection XSS could exfiltrate
+    # the profile and self-confirm /approve. A strict CSP is the backstop.
+    for method, path in (("GET", "/"), ("GET", "/static/app.js"),
+                         ("GET", "/api/meta"), ("POST", "/api/jobs/nope/status")):
+        r = client.request(method, path, json={"status": "new"} if method == "POST" else None)
+        csp = r.headers.get("content-security-policy", "")
+        directives = {d.split()[0]: d.split()[1:] for d in csp.split(";") if d.strip()}
+        assert directives.get("default-src") == ["'self'"], (path, csp)
+        assert directives.get("script-src") == ["'self'"]
+        assert directives.get("connect-src") == ["'self'"]
+        assert directives.get("img-src") == ["'self'", "data:"]
+        assert directives.get("style-src") == ["'self'"]
+        assert directives.get("object-src") == ["'none'"]
+        assert directives.get("frame-ancestors") == ["'none'"]
+        assert "unsafe-" not in csp
+        assert r.headers.get("x-content-type-options") == "nosniff"
+        assert r.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_ui_is_compatible_with_strict_csp():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html), "inline <script>"
+    assert not re.search(r"\son[a-z]+\s*=", html, re.I), "inline event handler"
+    assert not re.search(r"\sstyle\s*=", html, re.I), "inline style attribute"
+    js = APP_JS.read_text(encoding="utf-8")
+    assert not re.search(r"\sstyle\s*=\s*[\"']", js), "inline style attribute in markup"
+    assert not re.search(r"\son[a-z]+\s*=\s*[\"']", js), "inline event handler in markup"
+
+
+def test_ui_builds_every_link_through_link_html():
+    src = APP_JS.read_text(encoding="utf-8")
+    outside = src.replace(_js_function(src, "linkHtml"), "")
+    assert not re.search(r"href\s*=\s*[\"']", outside), "raw href= outside linkHtml()"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_ui_escaping_and_http_only_links():
+    src = APP_JS.read_text(encoding="utf-8")
+    fns = "\n".join(_js_function(src, n) for n in ("escapeHtml", "safeHttpUrl", "linkHtml"))
+    script = fns + """
+globalThis.window = { location: { href: "http://127.0.0.1:8000/" } };
+console.log(JSON.stringify({
+  esc: escapeHtml(`x" autofocus onfocus='alert(1)' <b>&`),
+  bad: ["javascript:alert(1)", "  JaVaScRiPt:alert(1)", "java\tscript:alert(1)",
+        "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)", "", null]
+        .map(safeHttpUrl),
+  https: safeHttpUrl("https://boards.example.com/jobs/1?a=1&b=2"),
+  rel: safeHttpUrl("/api/resume-versions/3/download"),
+  badLink: linkHtml("javascript:alert(1)", "open posting", 'target="_blank"'),
+  goodLink: linkHtml('https://x.example/a"b', "open", 'target="_blank"'),
+}));
+"""
+    r = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["esc"] == "x&quot; autofocus onfocus=&#39;alert(1)&#39; &lt;b&gt;&amp;"
+    assert out["bad"] == [None] * 7
+    assert out["https"] == "https://boards.example.com/jobs/1?a=1&b=2"
+    assert out["rel"] == "http://127.0.0.1:8000/api/resume-versions/3/download"
+    assert "<a" not in out["badLink"] and "href" not in out["badLink"]
+    assert "open posting" in out["badLink"]
+    assert out["goodLink"].startswith('<a href="https://x.example/a%22b"')
+
+
 def test_ui_does_not_hide_senior_roles_by_default():
     html = (Path(server_app.STATIC_DIR) / "index.html").read_text(encoding="utf-8")
     tag = next(line for line in html.splitlines() if 'id="f-hide-senior"' in line)
@@ -248,14 +328,87 @@ def test_approve_missing_text_is_400(client):
     assert approve(client, key, tailored_text=["not", "a", "string"]).status_code == 400
 
 
-def test_approve_reuse_path_unchanged(client):
+def _version(text: str) -> int:
+    return store.add_version("v", None, None, None, text, "/tmp/never-read.pdf", [], 0.0)
+
+
+def test_approve_reuse_of_grounded_version_succeeds(client):
     key = seed_job()
-    vid = store.add_version("v", None, None, None, "t", "/tmp/never-read.pdf", [], 0.0)
+    store.set_resume(ORIGINAL, "resume.txt")
+    vid = _version(CLEAN)
     r = approve(client, key, reuse_version_id=vid)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "mode": "reuse", "version_id": vid,
                         "pdf_path": "/tmp/never-read.pdf"}
     assert store.get_job(key)["status"] == "ready"
+    assert store.get_job(key)["applied_version_id"] == vid
+
+
+def test_approve_reuse_regrounds_against_current_resume(client):
+    # Review finding #4: a stored version (e.g. approved against an older
+    # resume, or a v1 version from before the server gate) must pass the same
+    # gate as fresh text before it is linked to a job.
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    vid = _version(FABRICATED)
+    r = approve(client, key, reuse_version_id=vid)
+    assert r.status_code == 409, r.text
+    payload = r.json()
+    assert payload["grounding"]["clean"] is False
+    assert payload["unconfirmed"] == {"inserted_unsupported": ["kubernetes"],
+                                      "unsupported_skills": ["terraform"]}
+    job = store.get_job(key)
+    assert job["status"] == "new" and not job["applied_version_id"]
+
+
+def test_approve_reuse_with_every_flag_confirmed_succeeds(client):
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    vid = _version(FABRICATED)
+    confirmed = {"inserted_unsupported": ["kubernetes"], "unsupported_skills": ["terraform"]}
+    r = approve(client, key, reuse_version_id=vid, confirmed_flags=confirmed)
+    assert r.status_code == 200, r.text
+    assert store.get_job(key)["applied_version_id"] == vid
+
+
+@pytest.mark.parametrize("bad", ["yes", ["kubernetes"], {"inserted_unsupported": "kubernetes"}])
+def test_approve_reuse_malformed_confirmation_fails_closed(client, bad):
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    r = approve(client, key, reuse_version_id=_version(FABRICATED), confirmed_flags=bad)
+    assert r.status_code == 409
+    assert store.get_job(key)["status"] == "new"
+
+
+def test_approve_reuse_without_stored_resume_is_400(client):
+    key = seed_job()
+    r = approve(client, key, reuse_version_id=_version(CLEAN))
+    assert r.status_code == 400
+    assert "resume" in r.json()["detail"]
+    assert store.get_job(key)["status"] == "new"
+
+
+@pytest.mark.parametrize("text", ["", "   ", None])
+def test_approve_reuse_of_version_without_text_fails_closed(client, text):
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    r = approve(client, key, reuse_version_id=_version(text))
+    assert r.status_code == 409, r.text
+    assert store.get_job(key)["status"] == "new"
+
+
+@pytest.mark.parametrize("bad_id", ["abc", 1.5, [1], {"id": 1}, True])
+def test_approve_reuse_bad_version_id_is_400(client, bad_id):
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    r = approve(client, key, reuse_version_id=bad_id)
+    assert r.status_code == 400, r.text
+
+
+def test_approve_reuse_unknown_version_is_404(client):
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    assert approve(client, key, reuse_version_id=999).status_code == 404
 
 
 def test_approve_unknown_job_is_404(client):

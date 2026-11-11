@@ -51,33 +51,29 @@ def tailor_job(key: str, body: Optional[dict] = Body(default=None)):
     return result
 
 
-@router.post("/api/jobs/{key}/approve")
-def approve_job(key: str, body: dict = Body(...)):
-    job = store.get_job(key)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+def _parse_version_id(raw) -> int:
+    # bool is an int subclass; True must not silently mean version 1.
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise HTTPException(status_code=400, detail="reuse_version_id must be an integer")
+    try:
+        return int(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="reuse_version_id must be an integer")
 
-    reuse_id = body.get("reuse_version_id")
-    if reuse_id is not None:
-        version = store.get_version(int(reuse_id))
-        if not version:
-            raise HTTPException(status_code=404, detail="version not found")
-        store.link_job_version(key, int(reuse_id))
-        store.set_status(key, "ready")
-        return {"ok": True, "mode": "reuse", "version_id": version["id"],
-                "pdf_path": version["pdf_path"]}
 
-    tailored_text = body.get("tailored_text")
-    if not isinstance(tailored_text, str) or not tailored_text.strip():
-        raise HTTPException(status_code=400, detail="missing tailored_text or reuse_version_id")
+def _grounding_gate(key: str, job: dict, text: str, body: dict) -> Optional[JSONResponse]:
+    """Server-side grounding gate (F4), shared by fresh approval and reuse.
 
+    Recomputed here on the exact text being linked to the job, against the
+    CURRENT stored resume, so skipping or editing the browser-side check — or
+    reusing a version approved against an older resume — can't get fabricated
+    content attached to an application. Returns the 409 response to send, or
+    None when the text is clean or every flag is explicitly confirmed.
+    """
     approved = body.get("approved_keywords") or []
     if not isinstance(approved, list):
         raise HTTPException(status_code=400, detail="approved_keywords must be a list")
 
-    # Grounding gate (F4). Recomputed here on the exact text being saved, so
-    # skipping or editing the browser-side check can't get fabricated content
-    # into a version.
     resume = store.get_resume()
     if not resume or not resume.get("text"):
         raise HTTPException(
@@ -86,23 +82,61 @@ def approve_job(key: str, body: dict = Body(...)):
         )
     grounding = check_grounding(
         original_resume=resume["text"],
-        tailored_text=tailored_text,
+        tailored_text=text,
         job_missing_keywords=job.get("missing_keywords") or [],
         user_approved_keywords={str(k) for k in approved},
     )
-    if not grounding["clean"]:
-        unconfirmed = unconfirmed_flags(grounding, body.get("confirmed_flags"))
-        if unconfirmed:
-            log.info("approve blocked key=%s unconfirmed_flags=%d",
-                     key, sum(len(v) for v in unconfirmed.values()))
+    if grounding["clean"]:
+        return None
+    unconfirmed = unconfirmed_flags(grounding, body.get("confirmed_flags"))
+    if unconfirmed:
+        log.info("approve blocked key=%s unconfirmed_flags=%d",
+                 key, sum(len(v) for v in unconfirmed.values()))
+        return JSONResponse(status_code=409, content={
+            "detail": ("Grounding check flagged content that is not in your stored "
+                       "resume. Confirm every flagged item or edit the text, then "
+                       "approve again."),
+            "grounding": grounding,
+            "unconfirmed": unconfirmed,
+        })
+    log.info("approve key=%s grounding flags confirmed by user", key)
+    return None
+
+
+@router.post("/api/jobs/{key}/approve")
+def approve_job(key: str, body: dict = Body(...)):
+    job = store.get_job(key)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    reuse_id = body.get("reuse_version_id")
+    if reuse_id is not None:
+        vid = _parse_version_id(reuse_id)
+        version = store.get_version(vid)
+        if not version:
+            raise HTTPException(status_code=404, detail="version not found")
+        text = version.get("tailored_text")
+        if not isinstance(text, str) or not text.strip():
+            # Nothing to re-check against the current resume: fail closed.
             return JSONResponse(status_code=409, content={
-                "detail": ("Grounding check flagged content that is not in your stored "
-                           "resume. Confirm every flagged item or edit the text, then "
-                           "approve again."),
-                "grounding": grounding,
-                "unconfirmed": unconfirmed,
+                "detail": ("This stored version has no text to check against your "
+                           "current resume. Tailor a fresh version instead."),
             })
-        log.info("approve key=%s grounding flags confirmed by user", key)
+        blocked = _grounding_gate(key, job, text, body)
+        if blocked is not None:
+            return blocked
+        store.link_job_version(key, vid)
+        store.set_status(key, "ready")
+        return {"ok": True, "mode": "reuse", "version_id": version["id"],
+                "pdf_path": version["pdf_path"]}
+
+    tailored_text = body.get("tailored_text")
+    if not isinstance(tailored_text, str) or not tailored_text.strip():
+        raise HTTPException(status_code=400, detail="missing tailored_text or reuse_version_id")
+
+    blocked = _grounding_gate(key, job, tailored_text, body)
+    if blocked is not None:
+        return blocked
 
     required = job.get("required_keywords") or []
     new_have = scoring.extract_keywords(tailored_text)

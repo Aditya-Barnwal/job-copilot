@@ -112,8 +112,103 @@ def _v1_baseline(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "jobs", "yoe_is_preferred", "INTEGER DEFAULT 0")
 
 
+def _v2_sources_companies(conn: sqlite3.Connection) -> None:
+    """Phase 1: multi-source jobs, company records with tier signals, source state.
+
+    - jobs gains the fields boards provide (apply link, region / time-zone
+      restrictions, attribution, expiry) plus `canonical_key` for cross-source
+      dedupe and `company_id` linking to `companies`.
+    - job_sources keeps EVERY place a job was seen (a role on Himalayas and on
+      the company's Ashby board is one job with two sources) — needed for
+      attribution and for per-source apply-link rules (docs/SOURCES.md).
+    - companies holds ATS detection results and tier signals (brand / funded /
+      unknown / excluded) with the evidence for each, so a hard filter can
+      always explain itself.
+    - source_state remembers ETags and health per source for polite,
+      diff-based refreshes (e.g. Bangalore Startup Map once a day).
+    """
+    for col, decl in (
+        ("canonical_key", "TEXT"),
+        ("apply_url", "TEXT"),
+        ("region_restrictions", "TEXT"),      # JSON list[str], e.g. ["India", "APAC"]
+        ("timezone_restrictions", "TEXT"),    # JSON list[float] of UTC offsets
+        ("tz_requirement_text", "TEXT"),      # free-text TZ requirement as posted
+        ("attribution_name", "TEXT"),         # e.g. "Himalayas"
+        ("attribution_url", "TEXT"),          # followable link back to the source listing
+        ("expires_at", "TEXT"),
+        ("company_id", "INTEGER"),
+    ):
+        add_column_if_missing(conn, "jobs", col, decl)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_canonical ON jobs(canonical_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_company_id ON jobs(company_id)")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS job_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_key TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        url TEXT,
+        apply_url TEXT,
+        attribution_name TEXT,
+        attribution_url TEXT,
+        first_seen REAL,
+        last_seen REAL,
+        UNIQUE(source, external_id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_sources_job ON job_sources(job_key)")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        domain TEXT,
+        website TEXT,
+        careers_url TEXT,
+        ats TEXT,                 -- greenhouse | lever | ashby | workday | smartrecruiters | gem | manual | ...
+        ats_slug TEXT,
+        ats_tenant TEXT,
+        ats_wd_server TEXT,
+        ats_site TEXT,
+        ats_region TEXT,          -- e.g. 'eu' for EU-hosted Greenhouse boards
+        ats_confidence REAL,
+        ats_evidence TEXT,        -- how detection decided (for debugging)
+        ats_checked_at REAL,
+        tier TEXT DEFAULT 'unknown',   -- brand | funded | unknown | excluded
+        tier_reasons TEXT,        -- JSON list of human-readable reasons with sources
+        funding_stage TEXT,
+        investors TEXT,           -- JSON list
+        yc_batch TEXT,
+        yc_top_company INTEGER DEFAULT 0,
+        team_size INTEGER,
+        sector TEXT,
+        hq_location TEXT,
+        signal_sources TEXT,      -- JSON list, e.g. ["config", "yc-oss", "bsm"]
+        apply_channel TEXT,       -- ats | waas | email | manual
+        enabled INTEGER DEFAULT 1,
+        notes TEXT,
+        first_seen REAL,
+        last_seen REAL,
+        updated_at REAL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_companies_tier ON companies(tier)")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS source_state (
+        source TEXT PRIMARY KEY,
+        etag TEXT,
+        last_modified TEXT,
+        content_hash TEXT,
+        last_run REAL,
+        last_ok REAL,
+        last_error TEXT,
+        items INTEGER,
+        state TEXT                -- JSON, source-specific (e.g. per-company hashes)
+    )""")
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
+    (2, "sources_companies", _v2_sources_companies),
 ]
 
 

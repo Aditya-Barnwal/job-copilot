@@ -388,3 +388,290 @@ def test_module_entrypoint_exit_codes(tmp_path):
     fail = subprocess.run([sys.executable, "-m", "jobcopilot.facts", "check", str(bad)],
                           cwd=ROOT, capture_output=True, text=True)
     assert fail.returncode == 1
+
+
+# --------------------------------------------------------------------------- fail-closed regressions
+# Review findings #13 #14 #18 #19 #20 #21 #22 #29 #30: usable_facts() must never
+# return wording from an unconfirmed/pending claim, and validate() must say why
+# a fact was left out.
+
+def usable_ids(d: dict, base: str | None = None) -> dict[str, F.Fact]:
+    return {f.id: f for f in F.usable_facts(F.parse(copy.deepcopy(d)), base=base)}
+
+
+def widget_b1(d: dict) -> dict:
+    return d["projects"][0]["bullets"][0]
+
+
+def test_claim_span_occurring_twice_is_rejected_and_fact_dropped(data):   # 13
+    b = widget_b1(data)
+    b["text"] = ("Built a FastAPI chat backend on AWS ECS that answers 5 kinds of widget "
+                 "question; autoscaled on AWS ECS.")
+    del b["variants"]
+    b["skills"] = ["FastAPI"]
+    b["claims"][0]["text"] = "AWS ECS"
+    assert has_error(errors_for(data), "proj.widgetbot.b1.ecs", "2 times")
+    u = usable_ids(data)
+    assert "proj.widgetbot.b1" not in u
+    assert all("ECS" not in f.text for f in u.values() if f.id.startswith("proj.widgetbot"))
+
+
+def test_claim_variant_span_occurring_twice_is_rejected(data):            # 13
+    b = widget_b1(data)
+    b["variants"]["ml_ai"] += " Also deployed on AWS ECS."
+    b["claims"][0]["variants"] = {"ml_ai": "deployed on AWS ECS"}
+    assert has_error(errors_for(data), "proj.widgetbot.b1.ecs", "'ml_ai' variant", "2 times")
+    assert "proj.widgetbot.b1" not in usable_ids(data, base="ml_ai")
+
+
+@pytest.mark.parametrize("empty", ["", None])
+def test_empty_or_null_claim_variant_is_rejected_and_fact_dropped(data, empty):   # 14
+    widget_b1(data)["claims"][0]["variants"] = {"ml_ai": empty}
+    assert has_error(errors_for(data), "proj.widgetbot.b1.ecs", "'ml_ai'", "empty")
+    for base in (None, "ml_ai", "backend_sde"):
+        u = usable_ids(data, base)
+        assert "proj.widgetbot.b1" not in u, base
+
+
+def test_empty_claim_text_never_validates(data):                          # 14
+    c = widget_b1(data)["claims"][0]
+    c["text"] = None
+    assert has_error(errors_for(data), "proj.widgetbot.b1.ecs", "exactly one")
+    assert "proj.widgetbot.b1" not in usable_ids(data)
+
+
+DUP_CLAIMS_YAML = """\
+schema_version: 1
+person: {name: Alex Example}
+projects:
+  - id: proj.w
+    name: W
+    text: "W"
+    sources: [backend_sde]
+    status: confirmed
+    bullets:
+      - id: proj.w.b1
+        text: "Built a FastAPI chat backend with a Redis cache; deployed on AWS ECS."
+        sources: [backend_sde]
+        status: confirmed
+        claims:
+          - {id: proj.w.b1.ecs, text: "; deployed on AWS ECS", status: pending,
+             pending_until: phase-3b, pending_reason: not yet}
+        claims:
+          - {id: proj.w.b1.redis, text: " with a Redis cache", status: confirmed}
+"""
+
+
+def test_duplicate_yaml_keys_are_rejected(tmp_path, capsys):              # 18
+    p = tmp_path / "resume_facts.yaml"
+    p.write_text(DUP_CLAIMS_YAML, encoding="utf-8")
+    with pytest.raises(F.FactsError, match=r"duplicate key .*line 17"):
+        F.load(p)
+    assert F.main(["check", str(p)]) == 1
+    err = capsys.readouterr().err
+    assert "duplicate key" in err and "Redis" not in err and "ECS" not in err
+
+
+def test_duplicate_keys_in_bases_file_are_rejected(tmp_path):            # 18
+    p = tmp_path / "bases.yaml"
+    p.write_text("bases:\n  a: {roles: [x]}\n  a: {roles: [y]}\n", encoding="utf-8")
+    with pytest.raises(F.FactsError, match="duplicate key"):
+        F.load_bases(p)
+
+
+def test_yaml_merge_keys_are_not_duplicates(tmp_path):
+    p = tmp_path / "bases.yaml"
+    p.write_text("x: &d {roles: [a], pdf: a.pdf}\nbases:\n  b:\n    <<: *d\n    pdf: b.pdf\n",
+                 encoding="utf-8")
+    assert F.load_bases(p)["b"].pdf == "b.pdf"
+
+
+def role_with_pending_title(d: dict, span: str = "Senior") -> dict:
+    r = d["experience"][0]
+    r["text"] = "Acme Widgets Inc. | Springfield | Senior Software Engineer | Jan 2024 – Present"
+    r["title"] = "Senior Software Engineer"
+    r["claims"] = [{"id": "exp.acme.senior", "text": span, "status": "pending",
+                    "pending_until": "phase-3", "pending_reason": "not official yet"}]
+    return r
+
+
+def test_pending_claim_is_cut_from_header_fields_too(data):               # 19
+    role_with_pending_title(data)
+    assert errors_for(data) == []
+    acme = usable_ids(data)["exp.acme"]
+    assert "Senior" not in acme.text and acme.title == "Software Engineer"
+    assert acme.text == "Acme Widgets Inc. | Springfield | Software Engineer | Jan 2024 – Present"
+
+
+def test_claim_across_a_header_field_boundary_drops_the_header(data):     # 19
+    role_with_pending_title(data, span="Springfield | Senior")
+    assert has_error(errors_for(data), "exp.acme", "`title`")
+    u = usable_ids(data)
+    assert "exp.acme" not in u and "exp.acme.b1" not in u
+
+
+def test_claim_emptying_a_required_header_field_drops_the_header(data):   # 19
+    role_with_pending_title(data, span="Senior Software Engineer")
+    assert has_error(errors_for(data), "exp.acme", "`title`")
+    assert "exp.acme" not in usable_ids(data)
+
+
+def test_header_field_not_in_text_is_never_usable(data):                 # 19 / 21
+    data["experience"][0]["title"] = "Senior Software Engineer"
+    assert has_error(errors_for(data), "exp.acme", "`title` does not appear")
+    u = usable_ids(data)
+    assert "exp.acme" not in u and "exp.acme.b1" not in u
+
+
+def test_overlapping_claims_are_rejected_and_cut_as_a_union(data):        # 20
+    b = widget_b1(data)
+    b["text"] = ("Built a FastAPI chat backend that answers 5 kinds of widget question, "
+                 "deployed on AWS ECS with Terraform.")
+    del b["variants"]
+    b["skills"] = ["FastAPI"]
+    pend = {"status": "pending", "pending_until": "phase-3b", "pending_reason": "x"}
+    b["claims"] = [{"id": "proj.widgetbot.b1.ecs", "text": "AWS ECS", **pend},
+                   {"id": "proj.widgetbot.b1.tf", "text": ", deployed on AWS ECS with Terraform",
+                    **pend}]
+    assert has_error(errors_for(data), "proj.widgetbot.b1.ecs", "proj.widgetbot.b1.tf", "overlap")
+    text = F._build_usable(F.parse(data).by_id()["proj.widgetbot.b1"], None).text
+    assert text == "Built a FastAPI chat backend that answers 5 kinds of widget question."
+
+
+def test_usable_fails_closed_when_claim_span_drifts(data):                # 21
+    b = widget_b1(data)
+    b["text"] = b["text"].replace("deployed on", "deployed to")
+    errs = errors_for(data)
+    assert has_error(errs, "proj.widgetbot.b1.ecs", "span")
+    assert "proj.widgetbot.b1" not in usable_ids(data)
+
+
+def test_usable_fails_closed_when_tech_claim_item_drifts(data):           # 21
+    data["projects"][0]["tech"] = ["Python", "FastAPI", "Docker", "ECS"]
+    assert has_error(errors_for(data), "proj.widgetbot.tech_ecs", "'AWS ECS'")
+    u = usable_ids(data)
+    assert "proj.widgetbot" not in u and "proj.widgetbot.b1" not in u
+
+
+def test_bullets_need_their_header_usable_for_the_same_base(data):        # 21
+    data["experience"][0]["sources"] = ["backend_sde"]
+    for b in data["experience"][0]["bullets"]:
+        b["sources"] = ["backend_sde"] if b["id"] == "exp.acme.b3" else ["backend_sde", "ml_ai"]
+    data["experience"][0]["bullets"][1]["variants"] = {}
+    u = usable_ids(data, base="ml_ai")
+    assert "exp.acme" not in u
+    assert not [i for i in u if i.startswith("exp.acme.")]
+
+
+def test_bullet_of_a_header_without_id_is_not_usable(data):               # 21
+    data["experience"][0]["id"] = ""
+    assert not [i for i in usable_ids(data) if i.startswith("exp.acme")]
+
+
+def test_duplicated_ids_are_never_usable(data):                            # 21
+    data["skills"]["languages"][1]["id"] = "skill.python"
+    u = usable_ids(data)
+    assert "skill.python" not in u
+
+
+def test_malformed_claims_block_drops_the_fact(data):                     # 21
+    widget_b1(data)["claims"] = "; deployed on AWS ECS"
+    assert has_error(errors_for(data), "claims", "must be a list")
+    assert "proj.widgetbot.b1" not in usable_ids(data)
+    widget_b1(data)["claims"] = ["; deployed on AWS ECS"]
+    assert has_error(errors_for(data), "claims[0]", "mapping")
+    assert "proj.widgetbot.b1" not in usable_ids(data)
+
+
+def test_pending_tech_in_header_text_is_rejected_and_dropped(data):       # 22
+    p = data["projects"][0]
+    p["text"] = "WidgetBot — Example Chat Assistant | Python, FastAPI, Docker, AWS ECS"
+    p["skills"] = ["Docker", "AWS ECS"]
+    assert has_error(errors_for(data), "proj.widgetbot", "'Docker'", "text")
+    u = usable_ids(data)
+    assert "proj.widgetbot" not in u and "proj.widgetbot.b1" not in u
+
+
+def test_pending_tech_covered_by_a_text_claim_is_cut(data):               # 22
+    p = data["projects"][0]
+    p["text"] = "WidgetBot — Example Chat Assistant | Python, FastAPI, Docker, AWS ECS"
+    p["claims"].append({"id": "proj.widgetbot.tech_text", "text": ", Docker, AWS ECS",
+                        "status": "pending", "pending_until": "phase-3b", "pending_reason": "x"})
+    assert errors_for(data) == []
+    w = usable_ids(data)["proj.widgetbot"]
+    assert w.text == "WidgetBot — Example Chat Assistant | Python, FastAPI"
+    assert w.tech == ["Python", "FastAPI"]
+
+
+def test_ordered_tech_keeps_only_usable_items(bases):                     # 22
+    w = {f.id: f for f in F.usable_facts(F.load(EXAMPLE), base="ml_ai")}["proj.widgetbot"]
+    assert F.ordered_tech(w, bases["ml_ai"]) == ["Python", "FastAPI"]
+    full = F.load(EXAMPLE).by_id()["proj.widgetbot"]
+    assert F.ordered_tech(full, bases["ml_ai"]) == ["Python", "Docker", "AWS ECS", "FastAPI"]
+    assert F.ordered_tech(w, None) == ["Python", "FastAPI"]
+
+
+def test_cut_only_tidies_the_seam(data):                                   # 29
+    b = widget_b1(data)
+    b["text"] = ("Built a chat backend in .NET (C#) that answers 5 kinds of widget question ;  "
+                 "really ; deployed on AWS ECS.")
+    del b["variants"]
+    b["skills"] = [".NET", "C#"]
+    assert errors_for(data) == []
+    b1 = usable_ids(data)["proj.widgetbot.b1"]
+    assert b1.text == ("Built a chat backend in .NET (C#) that answers 5 kinds of widget question ;  "
+                       "really.")
+    assert b1.skills == [".NET", "C#"]
+
+
+def test_cut_tidies_both_sides_of_the_seam():
+    assert F._cut("AWS (Lambda, ECS)", ", ECS") == "AWS (Lambda)"
+    assert F._cut("AWS (ECS) and S3", "ECS") == "AWS and S3"
+    assert F._cut("Go, Python, Rust.", "Rust") == "Go, Python."
+    assert F._cut("Lead Senior Engineer", "Senior") == "Lead Engineer"
+    assert F._cut("x", "y") is None and F._cut("a b a b", "a b") is None
+
+
+def test_skill_terms_treat_plus_hash_dot_as_term_characters(data):        # 30
+    b = data["experience"][0]["bullets"][0]
+    b["text"] = "Rewrote the C++ pricing engine in ASP.NET, improving throughput by 150%."
+    b["skills"] = ["C", "NET"]
+    b["metrics"] = ["50%"]
+    errs = errors_for(data)
+    assert has_error(errs, "exp.acme.b1", "skill tag 'C'")
+    assert has_error(errs, "exp.acme.b1", "skill tag 'NET'")
+    assert has_error(errs, "exp.acme.b1", "metric '50%'")
+    b1 = usable_ids(data)["exp.acme.b1"]
+    assert b1.skills == [] and b1.metrics == []
+
+
+def test_terms_still_match_at_sentence_end_and_with_separators():
+    assert F._has_term("Built it in Go.", "Go")
+    assert F._has_term("Used C/C++ and C#.", "C") and F._has_term("Used C/C++.", "C++")
+    assert F._has_term("Ported to Node.js.", "Node.js")
+    assert not F._has_term("Ported to Node.js.", "Node")
+    assert F._has_term("GPA: 3.7", "3.7") and not F._has_term("GPA: 13.7", "3.7")
+    assert not F._has_term("GPA: 3.75", "3.7")
+    assert F._has_term("by 50%.", "50%") and not F._has_term("by 150%.", "50%")
+    assert not F._has_term("500+ users", "500") and F._has_term("500+ users", "500+")
+    assert not F._has_term("in C#", "C") and not F._has_term("CI/CD", "C")
+
+
+def test_tech_claim_with_variant_spans_is_rejected_and_dropped(data):     # 14 / 21
+    p = data["projects"][0]
+    p["variants"] = {"ml_ai": "WidgetBot — Example Chat Assistant on ECS"}
+    p["claims"][0]["variants"] = {"ml_ai": " on ECS"}
+    assert has_error(errors_for(data), "proj.widgetbot.tech_ecs", "`variants` needs a `text`")
+    assert "proj.widgetbot" not in usable_ids(data, base="ml_ai")
+
+
+def test_validate_reports_every_fact_usable_facts_leaves_out():
+    # Fail-closed omissions are never silent: a valid file loses no confirmed fact
+    # except for an untrusted header or text that is entirely pending.
+    facts = F.load(EXAMPLE)
+    assert F.validate(facts) == []
+    u = {f.id for f in F.usable_facts(facts)}
+    for f in facts.facts():
+        header = facts.by_id().get(f.parent)
+        if f.confirmed and (not header or header.confirmed):
+            assert f.id in u, f.id

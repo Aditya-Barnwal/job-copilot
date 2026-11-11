@@ -16,4 +16,15 @@ http:
   robots_exempt_hosts:
     api.ashbyhq.com: "Ashby public Job Postings API (developers.ashbyhq.com) built for job boards; its robots.txt answers 401 so it cannot be read"
 
+  # DO-NOT-AUTOMATE (docs/SOURCES.md): the HTTP client refuses these hosts and all
+  # their subdomains outright, whoever the caller is. Link out to them instead.
+  denied_hosts:
+    - workatastartup.com
+    - ycombinator.com
+    - linkedin.com
+    - naukri.com
+    - indeed.com
+    - wellfound.com
+    - glassdoor.com
+
 boards: {}                       # Phase 1: per-board on/off + options

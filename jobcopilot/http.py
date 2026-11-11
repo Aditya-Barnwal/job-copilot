@@ -3,6 +3,8 @@
 Politeness only holds if it can't be skipped, so every network call a
 connector makes goes through `PoliteClient`, which:
 
+  * refuses DO-NOT-AUTOMATE hosts (`denied_hosts`, plus every subdomain) with
+    `HostDenied` before any network I/O, on every redirect hop too;
   * sends the honest User-Agent from config/sources.yaml (callers can't override it);
   * rate-limits per host with a token bucket, slowing further when robots.txt
     sets Crawl-delay / Request-rate;
@@ -11,16 +13,24 @@ connector makes goes through `PoliteClient`, which:
   * retries only 429 / 5xx / connection errors, honouring Retry-After, with
     exponential backoff + jitter; other 4xx are never retried;
   * revalidates GETs with ETag / Last-Modified and serves the cached body on 304;
+  * follows redirects itself (GET/HEAD), so each hop is checked; caller headers
+    such as API keys are dropped once a redirect leaves the original origin;
   * writes response bodies to $JOBCOPILOT_RECORD_DIR so test fixtures can be
     built from real traffic.
 
-robots.txt handling (RFC 9309, conservative where it is vague):
-  2xx             parse; longest matching rule wins, ties go to Allow, `*`/`$` honoured
-  401 / 403       disallow-all (stdlib behaviour; an auth wall is not consent)
+robots.txt handling (RFC 9309, conservative where it is vague). Our own parser,
+not urllib.robotparser: BOM stripped; every group naming our exact product
+token is merged (else every `*` group); blank lines don't end a group; longest
+match on percent-decoded paths wins, ties go to Allow; `*` / `$` are matched in
+linear time; fractional Crawl-delay is honoured.
+  2xx             parse (first 500 KiB)
+  3xx             followed (up to 5 hops, each hop checked against denied_hosts)
+  401 / 403       disallow-all, cached for robots_ttl_sec (an auth wall is not consent)
   other 4xx       no robots file, so allow all (404 / 410 are the usual case)
-  429 / 5xx / net unreachable: disallow-all for this process, with a warning
+  429 / 5xx / net retried, then disallow-all for robots_retry_ttl_sec (10 min),
+                  so one blip doesn't block a host for a day in the long-lived server
 Hosts in `robots_exempt_hosts` (documented public APIs only, each with a
-reason) skip the robots check but are still rate-limited.
+reason) skip the robots check but are still rate-limited and still denylisted.
 
 Logs and error messages carry `redact_url()` output only: Adzuna puts its API
 key in the query string, and requests' own exception text would leak it.
@@ -31,19 +41,21 @@ import hashlib
 import itertools
 import json as _json
 import logging
+import math
 import os
 import random
 import re
+import secrets
 import threading
 import time
 import urllib.parse
-import urllib.robotparser
 from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Optional
 
 import requests
 from requests.structures import CaseInsensitiveDict
@@ -54,8 +66,20 @@ log = logging.getLogger("jobcopilot.http")
 
 RECORD_ENV = "JOBCOPILOT_RECORD_DIR"
 DEFAULT_USER_AGENT: str = DEFAULTS["sources"]["http"]["user_agent"]
+# Always refused, whatever config says: config can add hosts, never remove these
+# (non-negotiable 3, D10; docs/SOURCES.md). Pinned here as well as in config
+# DEFAULTS so the floor can't disappear with a config edit.
+BUILTIN_DENIED_HOSTS: tuple[str, ...] = tuple(dict.fromkeys((
+    "workatastartup.com", "ycombinator.com", "linkedin.com", "naukri.com",
+    "indeed.com", "wellfound.com", "glassdoor.com",
+    *DEFAULTS.get("sources", {}).get("http", {}).get("denied_hosts", ()),
+)))
 MAX_REDIRECTS = 5
 ROBOTS_MAX_BYTES = 500 * 1024          # RFC 9309 §2.5: parse at least 500 KiB
+ROBOTS_MAX_REDIRECTS = 5               # RFC 9309 §2.3.1.2
+ROBOTS_MAX_RETRIES = 2                 # per robots.txt fetch, on 429 / 5xx / network errors
+ROBOTS_RETRY_TTL_SEC = 600.0           # how long a transient robots failure blocks a host
+RETRY_AFTER_MAX_SEC = 24 * 3600.0      # cap on any Retry-After / penalty, so a host can't wedge us
 CACHE_MAX_ENTRIES = 512                # in-memory LRU; the API server is long-lived
 CACHE_MAX_BODY = 25 * 1024 * 1024
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -67,6 +91,10 @@ _SECRET_PARAMS = frozenset({
     "auth", "secret", "client_secret", "password", "signature", "sig",
 })
 _UNCACHED_HEADERS = ("set-cookie", "content-encoding", "content-length", "transfer-encoding")
+# Caller headers that may follow a redirect to another origin; everything else
+# (API keys, Authorization, Cookie, ...) is dropped at that point.
+_REDIRECT_SAFE_HEADERS = frozenset({"accept", "accept-language"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 # ----------------------------------------------------------------- errors
@@ -85,7 +113,18 @@ class RobotsDisallowed(HttpError):
 
 
 class RobotsUnavailable(RobotsDisallowed):
-    """robots.txt couldn't be read (network, 5xx, 401/403), so the host is treated as disallowed."""
+    """robots.txt couldn't be read (network, 429/5xx, 401/403), so the host is treated
+    as disallowed. `transient` is True for network / 429 / 5xx failures, which are
+    retried after `robots_retry_ttl_sec` rather than the full robots TTL."""
+
+    def __init__(self, url: str, reason: str = "robots.txt unavailable", *,
+                 transient: bool = False) -> None:
+        self.transient = transient
+        super().__init__(url, reason)
+
+
+class HostDenied(RobotsDisallowed):
+    """The host (or a parent domain) is on the DO-NOT-AUTOMATE list. Nothing was sent."""
 
 
 class RetryLater(HttpError):
@@ -147,22 +186,66 @@ def _with_params(url: str, params: Optional[Mapping[str, Any]]) -> str:
     return requests.Request("GET", url, params=params).prepare().url or url
 
 
+def _norm_host(host: str) -> str:
+    """Lowercase, no trailing dot: one name per host for buckets, robots and denylist."""
+    return host.strip().lower().rstrip(".")
+
+
+def _port(parts: urllib.parse.SplitResult) -> int:
+    """Explicit or default port; -1 if the port is unparseable."""
+    try:
+        return parts.port or _DEFAULT_PORTS.get(parts.scheme, -1)
+    except ValueError:
+        return -1
+
+
+def _origin(parts: urllib.parse.SplitResult) -> str:
+    """Normalised scheme://host[:port] (default port and trailing dot dropped, no userinfo)."""
+    host = _norm_host(parts.hostname or "")
+    if ":" in host:
+        host = f"[{host}]"
+    port = _port(parts)
+    if port < 0:
+        raise ValueError("bad port")
+    suffix = "" if port == _DEFAULT_PORTS.get(parts.scheme) else f":{port}"
+    return f"{parts.scheme}://{host}{suffix}"
+
+
+def _same_trust(a: urllib.parse.SplitResult, b: urllib.parse.SplitResult) -> bool:
+    """May headers meant for `a` follow a redirect to `b`? Same host, and either the
+    same scheme and port or a plain http -> https upgrade on default ports."""
+    if _norm_host(a.hostname or "") != _norm_host(b.hostname or ""):
+        return False
+    if a.scheme == b.scheme:
+        return _port(a) == _port(b) != -1
+    return a.scheme == "http" and b.scheme == "https" and _port(a) == 80 and _port(b) == 443
+
+
 def parse_retry_after(value: Optional[str], now: float) -> Optional[float]:
-    """Seconds to wait from a Retry-After header (delta-seconds or HTTP-date), or None."""
+    """Seconds to wait from a Retry-After header, or None.
+
+    RFC 9110: delta-seconds (digits only) or an HTTP-date. Anything else (`inf`,
+    `nan`, `1e400`, `-5`, `5.5`) is treated as absent, so the caller falls back to
+    backoff; the result is capped at RETRY_AFTER_MAX_SEC.
+    """
     if not value:
         return None
     value = value.strip()
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        pass
+    if value.isascii() and value.isdigit():
+        return min(float(int(value)), RETRY_AFTER_MAX_SEC)
+    if value[:1].isdigit() or value[:1] in "+-.":
+        return None  # numeric-looking but not delta-seconds
     try:
         when = parsedate_to_datetime(value)
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, when.timestamp() - now)
+    try:
+        delta = when.timestamp() - now
+    except (OverflowError, OSError, ValueError):
+        return None
+    return min(max(0.0, delta), RETRY_AFTER_MAX_SEC)
 
 
 # ------------------------------------------------------------ rate limits
@@ -206,7 +289,11 @@ class TokenBucket:
             self._tokens = min(self._burst, self._tokens + 1.0)
 
     def penalize(self, seconds: float) -> None:
-        """Make the next reservation wait at least `seconds` (Retry-After / backoff)."""
+        """Make the next reservation wait at least `seconds` (Retry-After / backoff).
+        Capped at RETRY_AFTER_MAX_SEC: the bucket can never go into infinite debt."""
+        if not math.isfinite(seconds) or seconds > RETRY_AFTER_MAX_SEC:
+            seconds = RETRY_AFTER_MAX_SEC
+        seconds = max(0.0, seconds)
         with self._lock:
             self._refill(self._clock())
             self._tokens = min(self._tokens, 1.0 - seconds * self._rate)
@@ -221,46 +308,163 @@ class TokenBucket:
 
 # ------------------------------------------------------------- robots.txt
 
-def _robots_target(url: str) -> str:
-    """Path+query quoted the same way robotparser quotes rule paths."""
-    p = urllib.parse.urlparse(urllib.parse.unquote(url))
-    target = urllib.parse.urlunparse(("", "", p.path, p.params, p.query, ""))
-    return urllib.parse.quote(target) or "/"
+_UA_KEYS = frozenset({"user-agent", "useragent", "user agent"})
+_ALLOW_KEYS = frozenset({"allow"})
+# Misspellings are honoured (as Google does): reading more Disallow lines is the safe side.
+_DISALLOW_KEYS = frozenset({"disallow", "dissallow", "dissalow", "disalow", "diasllow", "disallaw"})
+_CRAWL_DELAY_KEYS = frozenset({"crawl-delay", "crawldelay", "crawl delay"})
+_REQUEST_RATE_KEYS = frozenset({"request-rate", "requestrate", "request rate"})
+_GROUP_KEYS = _ALLOW_KEYS | _DISALLOW_KEYS | _CRAWL_DELAY_KEYS | _REQUEST_RATE_KEYS
+_TOKEN_RE = re.compile(r"[A-Za-z_-]+")
+_DECIMAL_RE = re.compile(r"(?:\d+(?:\.\d*)?|\.\d+)\Z")
+_REQUEST_RATE_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*([smh]?)\Z", re.IGNORECASE)
+_EOL_RE = re.compile(r"\r\n|\r|\n")
+_UNIT_SEC = {"": 1, "s": 1, "m": 60, "h": 3600}
 
 
-def _rule_matches(rule_path: str, target: str) -> bool:
-    # robotparser stores rules percent-quoted, so `*` is %2A and `$` is %24.
-    anchored = rule_path.endswith("%24")
-    core = rule_path[:-3] if anchored else rule_path
-    pattern = ".*".join(re.escape(part) for part in core.split("%2A"))
-    return re.match(pattern + ("$" if anchored else ""), target) is not None
+def product_token(user_agent: str) -> str:
+    """'job-copilot/2.0 (personal ...)' -> 'job-copilot' (RFC 9309 §2.2.1), lowercased."""
+    m = _TOKEN_RE.match(user_agent.strip())
+    return m.group(0).lower() if m else ""
+
+
+def _agent_of(value: str) -> str:
+    """The product token a `User-agent:` line names: '*', a lowercased token, or ''."""
+    v = value.strip()
+    if v[:1] == "*" and (len(v) == 1 or v[1].isspace()):
+        return "*"
+    return product_token(v)
+
+
+def _robots_target(url: str) -> bytes:
+    """Path (never empty) plus '?query', percent-decoded to octets."""
+    parts = urllib.parse.urlsplit(url)
+    target = parts.path or "/"
+    if parts.query or "?" in url.split("#", 1)[0]:
+        target += "?" + parts.query
+    return urllib.parse.unquote_to_bytes(target)
+
+
+@dataclass(frozen=True)
+class _RobotsRule:
+    allow: bool
+    parts: tuple[bytes, ...]   # literal pieces between `*` wildcards, percent-decoded
+    anchored: bool             # the rule ended in `$`
+    length: int                # decoded octets (a wildcard or `$` counts 1): longest wins
+
+    @classmethod
+    def parse(cls, allow: bool, value: str) -> Optional["_RobotsRule"]:
+        if not value:
+            return None  # `Disallow:` with no path disallows nothing
+        if value[0] not in "/*":
+            value = "/" + value
+        anchored = value.endswith("$")
+        if anchored:
+            value = value[:-1]
+        pieces = value.split("*")  # split before decoding, so %2A stays a literal '*'
+        parts = tuple(urllib.parse.unquote_to_bytes(p) for p in pieces)
+        length = sum(len(p) for p in parts) + len(pieces) - 1 + int(anchored)
+        return cls(allow, parts, anchored, length)
+
+    def matches(self, target: bytes) -> bool:
+        """Greedy leftmost match of each literal piece: linear, never backtracks."""
+        first, last = self.parts[0], self.parts[-1]
+        if not target.startswith(first):
+            return False
+        if len(self.parts) == 1:
+            return len(target) == len(first) if self.anchored else True
+        pos = len(first)
+        for piece in self.parts[1:-1]:
+            i = target.find(piece, pos)
+            if i < 0:
+                return False
+            pos = i + len(piece)
+        if self.anchored:
+            return len(target) - len(last) >= pos and target.endswith(last)
+        return target.find(last, pos) >= 0
+
+
+class RobotsTxt:
+    """A robots.txt reduced to the rules that apply to one product token (RFC 9309)."""
+
+    def __init__(self, text: str, user_agent: str) -> None:
+        token = product_token(user_agent)
+        groups: list[tuple[set[str], list[tuple[str, str]]]] = []
+        members: Optional[list[tuple[str, str]]] = None
+        collecting_agents = False
+        for raw in _EOL_RE.split(text.lstrip("﻿")):
+            line = raw.split("#", 1)[0]
+            if ":" not in line:
+                continue  # blank lines and junk don't end a group
+            key, value = line.split(":", 1)
+            key = " ".join(key.split()).lower()
+            value = value.strip()
+            if key in _UA_KEYS:
+                if not collecting_agents:
+                    members = []
+                    groups.append((set(), members))
+                    collecting_agents = True
+                groups[-1][0].add(_agent_of(value))
+            elif key in _GROUP_KEYS:
+                collecting_agents = False
+                if members is not None:  # lines before any User-agent belong to no group
+                    members.append((key, value))
+            # Sitemap and unknown keys are ignored and don't end the agent list.
+
+        own = [m for agents, m in groups if token and token in agents]
+        chosen = own or [m for agents, m in groups if "*" in agents]
+        self.matched = "own" if own else ("*" if chosen else "none")
+        self.rules: list[_RobotsRule] = []
+        delays: list[float] = []
+        rates: list[float] = []
+        for group in chosen:
+            for key, value in group:
+                if key in _ALLOW_KEYS or key in _DISALLOW_KEYS:
+                    rule = _RobotsRule.parse(key in _ALLOW_KEYS, value)
+                    if rule is not None:
+                        self.rules.append(rule)
+                elif key in _CRAWL_DELAY_KEYS:
+                    if _DECIMAL_RE.match(value):
+                        d = float(value)
+                        if math.isfinite(d) and d > 0:
+                            delays.append(d)
+                elif key in _REQUEST_RATE_KEYS:
+                    m = _REQUEST_RATE_RE.match(value)
+                    if m:
+                        n, secs = int(m.group(1)), int(m.group(2)) * _UNIT_SEC[m.group(3).lower()]
+                        if n > 0 and secs > 0:
+                            rates.append(n / secs)
+        self.crawl_delay: Optional[float] = max(delays) if delays else None
+        self.request_rate: Optional[float] = min(rates) if rates else None
+
+    def allows(self, url: str) -> bool:
+        """Longest matching rule wins; on a tie Allow wins; no match means allowed."""
+        target = _robots_target(url)
+        best, verdict = -1, True
+        for rule in self.rules:
+            if rule.length >= best and rule.matches(target):
+                if rule.length > best or rule.allow:
+                    best, verdict = rule.length, rule.allow
+        return verdict
+
+    def max_rate(self) -> Optional[float]:
+        """Requests per second this file asks for (Crawl-delay / Request-rate), if any."""
+        rates = [r for r in (1.0 / self.crawl_delay if self.crawl_delay else None,
+                             self.request_rate) if r]
+        return min(rates) if rates else None
 
 
 @dataclass
 class _RobotsRules:
-    parser: Optional[urllib.robotparser.RobotFileParser]
+    robots: Optional[RobotsTxt]   # None: a blanket verdict (see allow_all)
     allow_all: bool
     unavailable: bool
+    transient: bool
     reason: str
-    fetched_at: float
+    expires_at: float
 
-    def allows(self, user_agent: str, url: str) -> bool:
-        """RFC 9309 matching: the stdlib's can_fetch uses first-match and
-        ignores wildcards, which would let `Allow: /` override `Disallow: /private/`."""
-        if self.parser is None:
-            return self.allow_all
-        rp = self.parser
-        entry = next((e for e in rp.entries if e.applies_to(user_agent)), rp.default_entry)
-        if entry is None:
-            return True
-        target = _robots_target(url)
-        best_len, verdict = -1, True
-        for rule in entry.rulelines:
-            if _rule_matches(rule.path, target):
-                n = len(rule.path)
-                if n > best_len or (n == best_len and rule.allowance):
-                    best_len, verdict = n, rule.allowance
-        return verdict
+    def allows(self, url: str) -> bool:
+        return self.robots.allows(url) if self.robots is not None else self.allow_all
 
 
 # ---------------------------------------------------------- response cache
@@ -366,12 +570,15 @@ class _Recorder:
 
     Request bodies and headers are never written: they are where keys and
     (one day) personal data would live, and fixtures end up in a public repo.
+    File names carry the pid and a per-instance random tag, and files are opened
+    with O_EXCL, so two clients (or processes) never overwrite each other.
     """
 
     def __init__(self, root: Path, wallclock: Callable[[], float]) -> None:
         self.root = root
         self._wallclock = wallclock
         self._counter = itertools.count(1)
+        self._tag = secrets.token_hex(3)
         self._lock = threading.Lock()
 
     def write(self, method: str, url: str, resp: requests.Response) -> None:
@@ -381,8 +588,14 @@ class _Recorder:
         ctype = resp.headers.get("Content-Type", "")
         ext = next((e for k, e in _EXT_BY_TYPE if k in ctype.lower()), ".bin")
         stamp = datetime.fromtimestamp(self._wallclock(), tz=timezone.utc)
-        stem = f"{stamp:%Y%m%dT%H%M%SZ}-{n:04d}-{method.lower()}-{_slug(parts.path) or 'root'}"
-        host_dir = self.root / _slug(parts.netloc)
+        stem = (f"{stamp:%Y%m%dT%H%M%SZ}-{n:04d}-p{os.getpid()}{self._tag}-"
+                f"{method.lower()}-{_slug(parts.path) or 'root'}")
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        host = _norm_host(parts.hostname or "")  # never netloc: it can hold user:password
+        host_dir = self.root / (_slug(host + (f"_{port}" if port else "")) or "unknown-host")
         meta = {
             "method": method,
             "url": redact_url(url),
@@ -396,8 +609,10 @@ class _Recorder:
         }
         try:
             host_dir.mkdir(parents=True, exist_ok=True)
-            (host_dir / (stem + ext)).write_bytes(resp.content)
-            (host_dir / (stem + ".meta.json")).write_text(_json.dumps(meta, indent=1), encoding="utf-8")
+            with open(host_dir / (stem + ext), "xb") as fh:
+                fh.write(resp.content)
+            with open(host_dir / (stem + ".meta.json"), "x", encoding="utf-8") as fh:
+                fh.write(_json.dumps(meta, indent=1))
         except OSError as exc:
             log.warning("record mode: could not write %s: %s", stem, exc)
 
@@ -410,7 +625,7 @@ class PoliteClient:
     CONFIG_KEYS = (
         "user_agent", "timeout_sec", "default_rate_per_sec", "max_retries", "host_rates",
         "robots_exempt_hosts", "max_wait_sec", "backoff_base_sec", "backoff_max_sec",
-        "robots_ttl_sec", "cache_dir",
+        "robots_ttl_sec", "robots_retry_ttl_sec", "cache_dir", "denied_hosts",
     )
 
     def __init__(
@@ -422,10 +637,12 @@ class PoliteClient:
         max_retries: int = 3,
         host_rates: Optional[Mapping[str, float]] = None,
         robots_exempt_hosts: Optional[Mapping[str, str]] = None,
+        denied_hosts: Optional[Iterable[str]] = None,
         max_wait_sec: float = 120.0,
         backoff_base_sec: float = 1.0,
         backoff_max_sec: float = 60.0,
         robots_ttl_sec: float = 24 * 3600.0,
+        robots_retry_ttl_sec: float = ROBOTS_RETRY_TTL_SEC,
         cache_dir: str | Path | None = None,
         record_dir: str | Path | None = None,
         session: Optional[requests.Session] = None,
@@ -442,12 +659,14 @@ class PoliteClient:
         self.backoff_base_sec = float(backoff_base_sec)
         self.backoff_max_sec = float(backoff_max_sec)
         self.robots_ttl_sec = float(robots_ttl_sec)
+        self.robots_retry_ttl_sec = min(float(robots_retry_ttl_sec), self.robots_ttl_sec)
         if self.default_rate_per_sec <= 0:
             raise ValueError("default_rate_per_sec must be > 0")
-        self.host_rates = {str(h).lower(): float(r) for h, r in (host_rates or {}).items()}
+        self.host_rates = {_norm_host(str(h)): float(r) for h, r in (host_rates or {}).items()}
         if any(r <= 0 for r in self.host_rates.values()):
             raise ValueError("host_rates values must be > 0")
         self.robots_exempt_hosts = self._validate_exemptions(robots_exempt_hosts)
+        self.denied_hosts = self._validate_denied(denied_hosts)
 
         self.session = session or requests.Session()
         self.session.headers["User-Agent"] = self.user_agent
@@ -455,9 +674,10 @@ class PoliteClient:
         self._rng = rng or random.Random()
 
         self._lock = threading.Lock()
-        self._buckets: dict[str, TokenBucket] = {}
-        self._robots: dict[str, _RobotsRules] = {}
+        self._buckets: dict[str, TokenBucket] = {}            # by normalised host
+        self._robots: dict[str, _RobotsRules] = {}            # by normalised origin
         self._robots_locks: dict[str, threading.Lock] = {}
+        self._robots_rates: dict[str, dict[str, float]] = {}  # host -> origin -> req/s
         self._exempt_logged: set[str] = set()
         self._cache = _ConditionalCache(Path(cache_dir) if cache_dir else None)
 
@@ -490,8 +710,42 @@ class PoliteClient:
         for host, reason in raw.items():
             if not isinstance(reason, str) or not reason.strip():
                 raise ValueError(f"robots_exempt_hosts[{host!r}] needs a reason string")
-            out[str(host).lower()] = reason.strip()
+            out[_norm_host(str(host))] = reason.strip()
         return out
+
+    @staticmethod
+    def _validate_denied(raw: Any) -> frozenset[str]:
+        """BUILTIN_DENIED_HOSTS plus the configured list. Bad entries raise ValueError:
+        a client that can't tell which hosts are off limits must not be built."""
+        if raw is None:
+            items: list[Any] = []
+        elif isinstance(raw, str):
+            items = [raw]
+        elif isinstance(raw, Mapping):
+            items = list(raw.keys())
+        elif isinstance(raw, Iterable):
+            items = list(raw)
+        else:
+            raise ValueError("denied_hosts must be a list of host names")
+        out: set[str] = set()
+        for item in (*BUILTIN_DENIED_HOSTS, *items):
+            if not isinstance(item, str):
+                raise ValueError(f"denied_hosts entry {item!r} is not a host name")
+            h = item.strip()
+            if "://" in h:
+                h = urllib.parse.urlsplit(h).hostname or ""
+            h = _norm_host(h)
+            if h.startswith("*."):
+                h = h[2:]
+            h = h.lstrip(".")
+            try:
+                h = h.encode("idna").decode("ascii")
+            except UnicodeError:
+                raise ValueError(f"denied_hosts entry {item!r} is not a host name") from None
+            if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", h):
+                raise ValueError(f"denied_hosts entry {item!r} is not a host name")
+            out.add(h)
+        return frozenset(out)
 
     # ------------------------------------------------------------ public API
 
@@ -517,6 +771,11 @@ class PoliteClient:
     def close(self) -> None:
         self.session.close()
 
+    def is_denied(self, url_or_host: str) -> bool:
+        """True if the URL's host (or a bare host name) is on the do-not-automate list."""
+        host = urllib.parse.urlsplit(url_or_host).hostname if "://" in url_or_host else url_or_host
+        return self._denied_match(_norm_host(host or "")) is not None
+
     def request(
         self,
         method: str,
@@ -532,17 +791,27 @@ class PoliteClient:
         raise_for_status: bool = True,
     ) -> requests.Response:
         """Send one logical request. Redirects (GET/HEAD only) are followed here, not by
-        requests, so every hop gets its own robots check and rate limit."""
+        requests, so every hop gets its own denylist check, robots check and rate limit.
+        Once a hop leaves the original origin (another host, port, or an https -> http
+        downgrade), caller headers other than Accept / Accept-Language are dropped."""
         method = method.upper()
         if idempotent is None:
             idempotent = method in _SAFE_METHODS
         target = _with_params(url, params)
+        first = urllib.parse.urlsplit(target)
+        hop_headers, hop_json, hop_data = headers, json, data
         for _hop in range(MAX_REDIRECTS + 1):
-            resp = self._send(method, target, headers, json, data, timeout, idempotent)
+            resp = self._send(method, target, hop_headers, hop_json, hop_data, timeout, idempotent)
             if not (allow_redirects and resp.is_redirect and method in ("GET", "HEAD")):
                 break
-            target = urllib.parse.urljoin(target, resp.headers["Location"])
+            nxt = self._redirect_target(target, resp)
             resp.close()
+            if not _same_trust(first, urllib.parse.urlsplit(nxt)):
+                if hop_headers:
+                    hop_headers = {k: v for k, v in hop_headers.items()
+                                   if k.lower() in _REDIRECT_SAFE_HEADERS}
+                hop_json = hop_data = None
+            target = nxt
         else:
             raise HttpError(f"more than {MAX_REDIRECTS} redirects: {redact_url(url)}")
         if self._recorder is not None:
@@ -553,15 +822,27 @@ class PoliteClient:
 
     # -------------------------------------------------------------- internals
 
+    def _redirect_target(self, current: str, resp: requests.Response) -> str:
+        """Absolute, canonical next URL (an empty path becomes '/', the host IDNA-encoded)."""
+        location = self.session.get_redirect_target(resp) or resp.headers.get("Location", "")
+        try:
+            return _with_params(urllib.parse.urljoin(current, location), None)
+        except (requests.RequestException, ValueError) as exc:
+            raise HttpError(f"unusable redirect from {redact_url(current)}") from exc
+
     def _send(self, method: str, url: str, headers: Optional[Mapping[str, str]], json: Any,
               data: Any, timeout: Optional[float], idempotent: bool) -> requests.Response:
         parts = urllib.parse.urlsplit(url)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise HttpError(f"unsupported URL: {redact_url(url)}")
-        origin = f"{parts.scheme}://{parts.netloc}".lower()
-        host = parts.hostname.lower()
         label = redact_url(url)
-        bucket = self._bucket(origin, host)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise HttpError(f"unsupported URL: {label}")
+        host = _norm_host(parts.hostname)
+        self._check_denied(host, label)  # before any I/O, robots.txt included
+        try:
+            origin = _origin(parts)
+        except ValueError:
+            raise HttpError(f"unsupported URL: {label}") from None
+        bucket = self._bucket(host)
         self._check_robots(url, label, origin, host, bucket)
 
         send_headers: CaseInsensitiveDict = CaseInsensitiveDict(headers or {})
@@ -666,6 +947,21 @@ class PoliteClient:
 
     # ------------------------------------------------------ hosts and robots
 
+    def _denied_match(self, host: str) -> Optional[str]:
+        """The denylist entry `host` equals or is a subdomain of (label boundary), if any."""
+        labels = host.split(".")
+        for i in range(len(labels)):
+            suffix = ".".join(labels[i:])
+            if suffix in self.denied_hosts:
+                return suffix
+        return None
+
+    def _check_denied(self, host: str, label: str) -> None:
+        entry = self._denied_match(host)
+        if entry is not None:
+            log.warning("refusing %s: %s is on the do-not-automate list (denied_hosts)", label, entry)
+            raise HostDenied(label, f"do-not-automate host ({entry}) refused")
+
     def _rate_for(self, host: str) -> float:
         """Exact host first, then the longest `.suffix` key (e.g. ".myworkdayjobs.com")."""
         if host in self.host_rates:
@@ -674,11 +970,12 @@ class PoliteClient:
                     if k.startswith(".") and (host.endswith(k) or host == k[1:])]
         return self.host_rates[max(suffixes, key=len)] if suffixes else self.default_rate_per_sec
 
-    def _bucket(self, origin: str, host: str) -> TokenBucket:
+    def _bucket(self, host: str) -> TokenBucket:
+        """One bucket per host name, whatever the scheme or port (D7: per-host limits)."""
         with self._lock:
-            bucket = self._buckets.get(origin)
+            bucket = self._buckets.get(host)
             if bucket is None:
-                bucket = self._buckets[origin] = TokenBucket(self._rate_for(host), clock=self._clock)
+                bucket = self._buckets[host] = TokenBucket(self._rate_for(host), clock=self._clock)
             return bucket
 
     def _check_robots(self, url: str, label: str, origin: str, host: str,
@@ -686,74 +983,122 @@ class PoliteClient:
         reason = self.robots_exempt_hosts.get(host)
         if reason is not None:
             with self._lock:
-                first = origin not in self._exempt_logged
-                self._exempt_logged.add(origin)
+                first = host not in self._exempt_logged
+                self._exempt_logged.add(host)
             if first:
                 log.info("robots.txt not checked for %s (exempt: %s)", host, reason)
             return
         rules = self._robots_for(origin, host, bucket)
-        if not rules.allows(self.user_agent, url):
-            err = RobotsUnavailable if rules.unavailable else RobotsDisallowed
-            raise err(label, rules.reason)
+        if not rules.allows(url):
+            if rules.unavailable:
+                raise RobotsUnavailable(label, rules.reason, transient=rules.transient)
+            raise RobotsDisallowed(label, rules.reason)
 
     def _robots_for(self, origin: str, host: str, bucket: TokenBucket) -> _RobotsRules:
         with self._lock:
             lock = self._robots_locks.setdefault(origin, threading.Lock())
-        with lock:  # one fetch per host even when threads race
+        with lock:  # one fetch per origin even when threads race
             rules = self._robots.get(origin)
-            if rules is None or self._clock() - rules.fetched_at > self.robots_ttl_sec:
-                rules = self._robots[origin] = self._fetch_robots(origin, host, bucket)
+            if rules is None or self._clock() >= rules.expires_at:
+                rules = self._robots[origin] = self._fetch_robots(origin, bucket)
+                self._apply_robots_rate(origin, host, bucket, rules)
             return rules
 
-    def _fetch_robots(self, origin: str, host: str, bucket: TokenBucket) -> _RobotsRules:
-        robots_url = origin + "/robots.txt"
-        now = self._clock()
+    def _fetch_robots(self, origin: str, bucket: TokenBucket) -> _RobotsRules:
+        """GET <origin>/robots.txt (redirects followed here, each hop denylist-checked)
+        and turn the answer into a verdict; see the table in the module docstring."""
 
-        def blanket(allow: bool, reason: str, unavailable: bool) -> _RobotsRules:
-            return _RobotsRules(None, allow, unavailable, reason, now)
+        def verdict(robots: Optional[RobotsTxt], allow: bool, reason: str, *,
+                    unavailable: bool = False, transient: bool = False) -> _RobotsRules:
+            ttl = self.robots_retry_ttl_sec if transient else self.robots_ttl_sec
+            return _RobotsRules(robots, allow, unavailable, transient, reason, self._clock() + ttl)
 
-        try:
-            self._wait(bucket, robots_url)
-            resp = self.session.get(
-                robots_url, timeout=self.timeout_sec, allow_redirects=True,
-                headers={"User-Agent": self.user_agent, "Accept": "text/plain, */*;q=0.5"},
-            )
-        except RetryLater:
-            raise
-        except requests.RequestException as exc:
-            log.warning("robots.txt unreachable for %s (%s); treating host as disallowed for this run",
-                        origin, type(exc).__name__)
-            return blanket(False, f"robots.txt unreachable ({type(exc).__name__})", True)
+        def blocked(reason: str, transient: bool) -> _RobotsRules:
+            ttl = self.robots_retry_ttl_sec if transient else self.robots_ttl_sec
+            log.warning("%s for %s; treating host as disallowed for the next %.0f min",
+                        reason, origin, ttl / 60)
+            return verdict(None, False, reason, unavailable=True, transient=transient)
 
-        status = resp.status_code
-        try:
-            if 200 <= status < 300:
-                text = resp.content[:ROBOTS_MAX_BYTES].decode("utf-8", errors="replace")
-                rp = urllib.robotparser.RobotFileParser(robots_url)
-                rp.parse(text.splitlines())
-                self._apply_robots_rate(origin, host, bucket, rp)
-                return _RobotsRules(rp, True, False, "disallowed by robots.txt", now)
-            if status in (401, 403) or status == 429 or status >= 500:
-                log.warning("robots.txt for %s answered HTTP %d; treating host as disallowed for this run",
-                            origin, status)
-                return blanket(False, f"robots.txt answered HTTP {status}", True)
-            if 400 <= status < 500:
-                log.info("no robots.txt for %s (HTTP %d); all paths allowed", origin, status)
-                return blanket(True, "", False)
-            log.warning("robots.txt for %s: unexpected HTTP %d; treating host as disallowed", origin, status)
-            return blanket(False, f"robots.txt answered HTTP {status}", True)
-        finally:
-            resp.close()
+        url, hop_bucket = origin + "/robots.txt", bucket
+        retries = min(self.max_retries, ROBOTS_MAX_RETRIES)
+        attempt = redirects = 0
+        while True:
+            hop = urllib.parse.urlsplit(url)
+            hop_host = _norm_host(hop.hostname or "")
+            if hop.scheme not in ("http", "https") or not hop_host:
+                return blocked("robots.txt redirected to an unsupported URL", True)
+            denied = self._denied_match(hop_host)
+            if denied is not None:
+                return blocked(f"robots.txt redirects to do-not-automate host {denied}", False)
+
+            self._wait(hop_bucket, redact_url(url))  # RetryLater propagates; nothing is cached
+            retry_delay: Optional[float] = None
+            try:
+                resp = self.session.get(
+                    url, timeout=self.timeout_sec, allow_redirects=False, stream=True,
+                    headers={"User-Agent": self.user_agent, "Accept": "text/plain, */*;q=0.5"},
+                )
+                try:
+                    status = resp.status_code
+                    if resp.is_redirect:
+                        redirects += 1
+                        if redirects > ROBOTS_MAX_REDIRECTS:
+                            return blocked(f"robots.txt: more than {ROBOTS_MAX_REDIRECTS} redirects", True)
+                        try:
+                            url = self._redirect_target(url, resp)
+                        except HttpError:
+                            return blocked("robots.txt: unusable redirect", True)
+                        hop_bucket = self._bucket(_norm_host(urllib.parse.urlsplit(url).hostname or ""))
+                        continue
+                    if 200 <= status < 300:
+                        body = self._read_limited(resp, ROBOTS_MAX_BYTES)
+                        robots = RobotsTxt(body.decode("utf-8-sig", errors="replace"), self.user_agent)
+                        return verdict(robots, True, "disallowed by robots.txt")
+                    if status in (401, 403):
+                        return blocked(f"robots.txt answered HTTP {status}", False)
+                    if 400 <= status < 500 and status != 429:
+                        log.info("no robots.txt for %s (HTTP %d); all paths allowed", origin, status)
+                        return verdict(None, True, "")
+                    failure = f"robots.txt answered HTTP {status}"
+                    if status == 429 or (500 <= status < 600 and status not in _NEVER_RETRY_5XX):
+                        retry_delay = self._retry_delay(resp, attempt)
+                    else:
+                        return blocked(failure, True)  # 1xx, 3xx without Location, 501, 505 ...
+                finally:
+                    resp.close()
+            except requests.RequestException as exc:  # connect, timeout, broken body ...
+                failure = f"robots.txt unreachable ({type(exc).__name__})"
+                retry_delay = self._backoff(attempt)
+
+            if attempt >= retries:
+                return blocked(failure, True)
+            log.info("%s for %s; retry %d/%d in %.1fs", failure, origin, attempt + 1, retries, retry_delay)
+            hop_bucket.penalize(retry_delay)
+            attempt += 1
+
+    @staticmethod
+    def _read_limited(resp: requests.Response, limit: int) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in resp.iter_content(64 * 1024):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= limit:
+                break
+        return b"".join(chunks)[:limit]
 
     def _apply_robots_rate(self, origin: str, host: str, bucket: TokenBucket,
-                           rp: urllib.robotparser.RobotFileParser) -> None:
-        rate = self._rate_for(host)
-        delay = rp.crawl_delay(self.user_agent)
-        if delay:
-            rate = min(rate, 1.0 / float(delay))
-        req_rate = rp.request_rate(self.user_agent)
-        if req_rate and req_rate.requests > 0 and req_rate.seconds > 0:
-            rate = min(rate, req_rate.requests / req_rate.seconds)
+                           rules: _RobotsRules) -> None:
+        """Bucket rate = the slowest of the configured rate and every cached robots.txt
+        on this host (http and https share one bucket but have their own robots.txt)."""
+        asked = rules.robots.max_rate() if rules.robots is not None else None
+        with self._lock:
+            per_origin = self._robots_rates.setdefault(host, {})
+            if asked:
+                per_origin[origin] = asked
+            else:
+                per_origin.pop(origin, None)
+            rate = min([self._rate_for(host), *per_origin.values()])
         if rate != bucket.rate:
             log.info("robots.txt for %s sets the pace: %.3g req/s", origin, rate)
             bucket.set_rate(rate)

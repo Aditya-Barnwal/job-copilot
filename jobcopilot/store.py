@@ -11,6 +11,7 @@ bound at import time once let a test write into the real DB, and it made
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -173,19 +174,27 @@ def _decode_keywords(row: dict) -> dict:
 
 # fit_score = 0.5·match + 0.5·ATS% (or match alone when ATS is unknown). The
 # SQL twin below lets `min_score` filter on the number the UI actually shows;
-# keep the two in sync.
-_FIT_SQL = (
-    "ROUND(CASE WHEN match_score IS NOT NULL AND ats_coverage IS NOT NULL "
+# keep the two in sync. Both round with the SAME rule — floor(x·10 + 0.5) / 10
+# on IEEE doubles — because Python's round() is half-to-even and SQLite's
+# ROUND() is half-away-from-zero, which disagreed on values like 62.25.
+# Scores are never negative, so this is plain half-up rounding.
+_FIT_RAW_SQL = (
+    "(CASE WHEN match_score IS NOT NULL AND ats_coverage IS NOT NULL "
     "THEN 0.5 * match_score + 0.5 * (ats_coverage * 100.0) "
-    "ELSE match_score END, 1)"
+    "ELSE match_score END)"
 )
+_FIT_SQL = f"(CAST({_FIT_RAW_SQL} * 10.0 + 0.5 AS INTEGER) / 10.0)"
+
+
+def _round1(x: float) -> float:
+    return math.floor(x * 10.0 + 0.5) / 10.0
 
 
 def _fit_score(ms: Optional[float], ats: Optional[float]) -> Optional[float]:
     if ms is not None and ats is not None:
-        return round(0.5 * ms + 0.5 * (ats * 100.0), 1)
+        return _round1(0.5 * ms + 0.5 * (ats * 100.0))
     if ms is not None:
-        return round(ms, 1)
+        return _round1(ms)
     return None
 
 

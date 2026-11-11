@@ -141,24 +141,31 @@ def available_models(provider: Optional[str] = None) -> list[str]:
     return [m.id for m in client.models.list().data]
 
 
-def resolve_model(provider: str, configured: str) -> str:
-    """`configured` may be a comma-separated candidate list. Pick first available."""
+def resolve_models(provider: str, configured: str) -> list[str]:
+    """`configured` may be a comma-separated candidate list. Return the
+    candidates that are available, in the configured order (all of them when
+    the provider can't be listed, e.g. offline)."""
     candidates = [c.strip() for c in (configured or "").split(",") if c.strip()]
     if not candidates:
         raise RuntimeError(f"no model configured for {provider}")
     if provider == "anthropic":
-        return candidates[0]
+        return candidates
     try:
         avail = set(available_models(provider))
     except Exception:
-        return candidates[0]  # can't list (offline?) → just try the first
-    for c in candidates:
-        if c in avail:
-            return c
-    raise RuntimeError(
-        f"No configured model available for {provider}. "
-        f"Tried {candidates}. Available: {sorted(avail)[:15]}"
-    )
+        return candidates  # can't list (offline?) → just try them in order
+    usable = [c for c in candidates if c in avail]
+    if not usable:
+        raise RuntimeError(
+            f"No configured model available for {provider}. "
+            f"Tried {candidates}. Available: {sorted(avail)[:15]}"
+        )
+    return usable
+
+
+def resolve_model(provider: str, configured: str) -> str:
+    """First available model from the configured candidate list."""
+    return resolve_models(provider, configured)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -200,13 +207,45 @@ def _complete_one(provider: str, system: str, user: str,
         raise RuntimeError(f"{cfg['api_key_env']} not set for provider {provider}")
 
     configured = os.getenv(cfg["model_env"], cfg["default_model"])
-    model = resolve_model(provider, configured)
+    models = resolve_models(provider, configured)
 
+    # Free tiers rate-limit per model, so a 429 / 5xx / truncation on one model
+    # moves on to the next configured model before giving up on the provider.
+    errors: list[str] = []
+    last_exc: Exception | None = None
+    for model in models:
+        try:
+            return _call_model(provider, cfg, api_key, model, system, user,
+                               temperature, max_tokens)
+        except Exception as exc:  # noqa: BLE001
+            if _is_auth_error(exc):
+                raise  # a bad key won't work for the next model either
+            log.warning("llm %s/%s failed: %s", provider, model, exc)
+            errors.append(f"{model}: {exc}")
+            last_exc = exc
+    if len(errors) == 1 and last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"all {provider} models failed — " + " | ".join(errors)) from last_exc
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.S | re.I)
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    return getattr(exc, "status_code", None) in (401, 403)
+
+
+def _call_model(provider: str, cfg: dict, api_key: Optional[str], model: str,
+                system: str, user: str, temperature: float, max_tokens: int) -> str:
     kwargs: dict = {}
     if _is_reasoning_model(model):
         max_tokens = max(max_tokens, _REASONING_TOKEN_FLOOR)
         if provider == "groq":
-            kwargs["reasoning_effort"] = os.getenv("GROQ_REASONING_EFFORT", "low")
+            if model.lower().startswith(("openai/gpt-oss", "gpt-oss")):
+                kwargs["reasoning_effort"] = os.getenv("GROQ_REASONING_EFFORT", "low")
+            else:
+                # qwen3 / deepseek-r1: keep reasoning out of the answer text.
+                kwargs["extra_body"] = {"reasoning_format": "hidden"}  # Groq-only param
 
     try:
         from openai import OpenAI
@@ -230,7 +269,9 @@ def _complete_one(provider: str, system: str, user: str,
         raise
 
     choice = resp.choices[0]
-    content = choice.message.content or ""
+    # Some models (qwen3, deepseek-r1 via Ollama) inline their reasoning; it
+    # must never reach parse_json (its braces derail the JSON salvage).
+    content = _THINK_RE.sub("", choice.message.content or "")
     if not content.strip() and getattr(choice, "finish_reason", None) == "length":
         raise LLMTruncated(
             f"{provider}/{model} used all {max_tokens} tokens before answering "

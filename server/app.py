@@ -11,7 +11,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -47,6 +47,33 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="job-copilot", lifespan=lifespan)
+
+# Browser hardening. The UI renders scraped job data and model output, so a
+# strict CSP is the backstop if escaping ever misses a spot: scripts, styles
+# and fetches only from this origin, no inline script or style attributes, no
+# plugins, no framing. FastAPI's own /docs and /redoc pages load Swagger/ReDoc
+# from a CDN, so they get every header except the CSP.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; style-src 'self'; object-src 'none'; "
+    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+)
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+_CSP_EXEMPT_PREFIXES = ("/docs", "/redoc")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if not request.url.path.startswith(_CSP_EXEMPT_PREFIXES):
+        response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    return response
+
 
 for _router in (meta.router, ingest.router, jobs.router, profile.router, tailor.router):
     app.include_router(_router)

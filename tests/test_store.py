@@ -73,10 +73,14 @@ def _job(external_id: str, title: str = "Backend Engineer", seniority_high: bool
 
 # --- migrations ----------------------------------------------------------
 
+def _ALL_STEPS() -> list[tuple[int, str]]:
+    return [(v, n) for v, n, _ in migrations.MIGRATIONS]
+
+
 def test_fresh_db_migrates_to_latest(tmp_path):
     db = tmp_path / "fresh.db"
     assert store.init_db(db) == migrations.latest_version()
-    assert _versions_applied(db) == [(1, "baseline")]
+    assert _versions_applied(db) == _ALL_STEPS()
     cols = _columns(db, "jobs")
     assert {"min_yoe_required", "yoe_is_preferred", "match_score", "status"} <= cols
     assert _columns(db, "meta") == {"k", "v"}
@@ -87,7 +91,7 @@ def test_legacy_db_without_schema_version_upgrades_preserving_rows(tmp_path):
     _seed_legacy(db)
     assert "min_yoe_required" not in _columns(db, "jobs")
 
-    assert store.init_db(db) == 1
+    assert store.init_db(db) == migrations.latest_version()
 
     assert {"min_yoe_required", "yoe_is_preferred"} <= _columns(db, "jobs")
     job = store.get_job("gh:Foo:1", db_path=db)
@@ -110,7 +114,8 @@ def test_pre_migrations_db_with_all_columns_is_stamped_not_rebuilt(tmp_path):
         conn.execute("UPDATE jobs SET min_yoe_required = 3")
         before = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'jobs'").fetchone()[0]
 
-    assert store.init_db(db) == 1
+    # The v1 baseline only stamps such a DB; later steps are additive by design.
+    assert migrations.migrate(db, migrations.MIGRATIONS[:1]) == 1
 
     with sqlite3.connect(db) as conn:
         after = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'jobs'").fetchone()[0]
@@ -122,7 +127,7 @@ def test_migrate_is_idempotent_and_applies_new_steps_once(tmp_path):
     db = tmp_path / "idem.db"
     store.init_db(db)
     store.init_db(db)
-    assert _versions_applied(db) == [(1, "baseline")]
+    assert _versions_applied(db) == _ALL_STEPS()
 
     calls: list[int] = []
 
@@ -130,9 +135,9 @@ def test_migrate_is_idempotent_and_applies_new_steps_once(tmp_path):
         calls.append(1)
         migrations.add_column_if_missing(conn, "jobs", "tier", "TEXT")
 
-    steps = [*migrations.MIGRATIONS, (2, "add_tier", _v2)]
-    assert migrations.migrate(db, steps) == 2
-    assert migrations.migrate(db, steps) == 2
+    steps = [*migrations.MIGRATIONS, (migrations.latest_version() + 1, "add_tier", _v2)]
+    assert migrations.migrate(db, steps) == migrations.latest_version() + 1
+    assert migrations.migrate(db, steps) == migrations.latest_version() + 1
     assert calls == [1]
     assert "tier" in _columns(db, "jobs")
 
@@ -146,8 +151,8 @@ def test_failing_step_rolls_back_ddl_and_version(tmp_path):
         raise RuntimeError("step failed")
 
     with pytest.raises(RuntimeError):
-        migrations.migrate(db, [*migrations.MIGRATIONS, (2, "boom", _boom)])
-    assert _versions_applied(db) == [(1, "baseline")]
+        migrations.migrate(db, [*migrations.MIGRATIONS, (migrations.latest_version() + 1, "boom", _boom)])
+    assert _versions_applied(db) == _ALL_STEPS()
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'half_done'").fetchone() is None
@@ -231,3 +236,18 @@ def test_hide_senior_high_only_when_asked():
     store.upsert_jobs([_job("jr"), _job("sr", title="Staff Engineer", seniority_high=True)])
     assert {r["external_id"] for r in store.list_jobs()} == {"jr", "sr"}
     assert {r["external_id"] for r in store.list_jobs(hide_senior_high=True)} == {"jr"}
+
+
+def test_fit_score_rounding_matches_sql_filter(tmp_path):
+    """Python display value and SQL min_score filter must round identically
+    (62.5 match + 0.62 ATS -> exactly 62.25 -> shown 62.3, filter 62.3 keeps it)."""
+    import sqlite3 as _sq
+    db = tmp_path / "round.db"
+    store.init_db(db)
+    with _sq.connect(db) as c:
+        c.execute("INSERT INTO jobs(key, source, company, title, match_score, ats_coverage) "
+                  "VALUES ('k1', 'greenhouse', 'Acme', 'SWE', 62.5, 0.62)")
+    job = store.get_job("k1", db_path=db)
+    assert job["fit_score"] == 62.3
+    assert [r["key"] for r in store.list_jobs(min_score=62.3, db_path=db)] == ["k1"]
+    assert store.list_jobs(min_score=62.4, db_path=db) == []

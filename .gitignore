@@ -7,6 +7,17 @@ __pycache__/
 # Runtime data + secrets — never committed (repo is public)
 data/
 .env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+
+# Personal documents (résumés, CVs). Test fixtures may hold sample PDFs.
+*.pdf
+*.doc
+*.docx
+!tests/fixtures/**/*.pdf
 jobs.jsonl
 discovered_companies.yaml
 

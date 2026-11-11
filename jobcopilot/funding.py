@@ -38,7 +38,8 @@ log = logging.getLogger("jobcopilot.funding")
 FEEDS = [
     "https://inc42.com/feed/",
     "https://entrackr.com/feed/",
-    "https://www.ycombinator.com/blog/rss",
+    # No ycombinator.com feed: YC's terms ban automated access to all its
+    # subdomains (docs/SOURCES.md). YC companies come from the yc-oss dataset.
 ]
 
 

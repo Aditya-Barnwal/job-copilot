@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from .connectors import REGISTRY
-from .http import RobotsDisallowed
+from .http import HostDenied, RobotsDisallowed, RobotsUnavailable
 from .filters import (
     FilterConfig,
     DEFAULT_TARGET_ROLES,
@@ -174,10 +174,28 @@ def ingest(
                 company_jobs = connector.parse(raw, company)
             else:
                 company_jobs = connector.fetch(company)
+        # Nothing was sent in any of the next three cases; the run carries on (D7).
+        except HostDenied as exc:
+            # Config points a company at a DO-NOT-AUTOMATE host: link out to it instead.
+            print(f"  · denied {company['name']:<16} (do-not-automate host; {exc})", file=sys.stderr)
+            log.warning("skip company=%s connector=%s reason=denied_host exc=%s",
+                        company.get("name"), connector_name, exc)
+            continue
+        except RobotsUnavailable as exc:
+            # robots.txt couldn't be read, so the host is treated as disallowed. That is a
+            # failure to report, not the site saying no.
+            when = ("will retry in a few minutes" if exc.transient
+                    else "will retry when the robots cache expires")
+            print(f"  · error  {company['name']:<16} (robots.txt unavailable, host treated as "
+                  f"disallowed; {when}: {exc})", file=sys.stderr)
+            log.error("error company=%s connector=%s reason=robots_unavailable transient=%s exc=%s",
+                      company.get("name"), connector_name, exc.transient, exc)
+            continue
         except RobotsDisallowed as exc:
             # Not a failure: the site asked crawlers not to fetch this, so we don't.
-            print(f"  · skip   {company['name']:<16} (robots.txt: {exc})", file=sys.stderr)
-            log.info("skip company=%s reason=robots exc=%s", company.get("name"), exc)
+            print(f"  · skip   {company['name']:<16} ({exc})", file=sys.stderr)
+            log.info("skip company=%s connector=%s reason=robots_disallowed exc=%s",
+                     company.get("name"), connector_name, exc)
             continue
         except Exception as exc:  # noqa: BLE001
             print(f"  · error  {company['name']:<16} ({type(exc).__name__}: {exc})", file=sys.stderr)

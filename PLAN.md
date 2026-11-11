@@ -124,7 +124,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 
 ☐ todo · ◐ in progress · ☑ done. Every phase ends the same way: tests green → app runs → commit on `v2` → this file updated → a ≤10-line summary to you.
 
-### Phase 0: Foundations & fixes ☐
+### Phase 0: Foundations & fixes ☑
 - ☐ Branch `v2`.
 - ☐ `Makefile` with `setup`, `dev`, `test`, `daily`, `schedule-install` / `schedule-uninstall`, `smoke-live`.
 - ☐ `requirements.txt` + `requirements-dev.txt`.
@@ -329,3 +329,19 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
     - Postman's Greenhouse board now returns 404 (P1, ATS detection)
     - `funding.py` recency fix F12 (P1)
   - Then start Phase 1.
+- 2026-11-11: **Phase 0 done.** A 3-lens review found 31 issues (4 high); every one was reproduced with a failing test, then fixed.
+  - **Highlights:**
+    - grounding now catches base-form verbs, title inflation and spelled-out numbers
+    - the reuse path is re-grounded server-side
+    - an RFC 9309 robots parser replaces the stdlib one (it failed open on BOM / duplicate groups)
+    - DO-NOT-AUTOMATE host denylist inside the HTTP client
+    - credential headers are dropped on cross-origin redirects
+    - `usable_facts()` fails closed
+    - strict CSP + http(s)-only links in the UI
+    - the PII guard covers documents, databases, name and links, bare mobiles and API keys
+    - per-model fallback within Groq
+  - **Verification:** 402 tests green, PII clean, live ingest OK (4,318 raw → 330 passed), real DB migrated to schema v2.
+  - **Backlog added:**
+    - `tailor.suggest` / `apply-pack` should re-ground stored versions too (P3)
+    - facts unknown-key check and `absent_in:` (P3)
+    - `/api/ingest` response should list robots-blocked companies (P5)

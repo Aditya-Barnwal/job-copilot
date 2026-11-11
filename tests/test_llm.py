@@ -29,7 +29,7 @@ def _install_fake_openai(monkeypatch, completions: _FakeCompletions) -> None:
             self.chat = types.SimpleNamespace(completions=completions)
 
     monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(llm, "resolve_model", lambda provider, configured: configured.split(",")[0])
+    monkeypatch.setattr(llm, "resolve_models", lambda provider, configured: [m.strip() for m in configured.split(",")])
 
 
 def test_provider_chain_parses_env(monkeypatch):
@@ -113,3 +113,45 @@ def test_missing_key_is_clear(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="GROQ_API_KEY not set"):
         llm.complete("s", "u")
+
+
+class _SeqCompletions:
+    """Fails for the models listed in `fail`, answers for the rest."""
+    def __init__(self, fail: dict):
+        self.fail, self.calls = fail, []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        exc = self.fail.get(kwargs["model"])
+        if exc:
+            raise exc
+        msg = types.SimpleNamespace(content="<think>{not json}</think>\nOK from " + kwargs["model"])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason="stop")])
+
+
+def _rate_limited():
+    e = RuntimeError("429 rate limit"); e.status_code = 429; return e
+
+
+def test_next_model_tried_on_rate_limit_and_think_stripped(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b,qwen/qwen3.8-27b")
+    fake = _SeqCompletions({"openai/gpt-oss-120b": _rate_limited()})
+    _install_fake_openai(monkeypatch, fake)
+    assert llm.complete("s", "u") == "OK from qwen/qwen3.8-27b"
+    assert [c["model"] for c in fake.calls] == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+    assert fake.calls[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in fake.calls[1] and fake.calls[1]["extra_body"] == {"reasoning_format": "hidden"}
+
+
+def test_auth_error_does_not_try_other_models(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_bad")
+    monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b,openai/gpt-oss-20b")
+    e = RuntimeError("401 invalid key"); e.status_code = 401
+    fake = _SeqCompletions({"openai/gpt-oss-120b": e})
+    _install_fake_openai(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="401"):
+        llm.complete("s", "u")
+    assert len(fake.calls) == 1

@@ -90,6 +90,14 @@ class Job:
     seniority_high: bool = False           # staff/principal/director/lead/manager
     min_yoe_required: Optional[int] = None # parsed lower bound from JD
     yoe_is_preferred: bool = False         # soft mention ("preferred", etc.)
+    # --- Phase 1: multi-source fields --------------------------------------
+    apply_url: Optional[str] = None        # where Apply must go (board terms may require their link)
+    region_restrictions: list[str] = field(default_factory=list)       # e.g. ["USA Only"], ["APAC"], ["Worldwide"]
+    timezone_restrictions: list[float] = field(default_factory=list)   # UTC offsets the employer accepts
+    tz_requirement_text: Optional[str] = None  # free-text TZ requirement as posted
+    attribution_name: Optional[str] = None # e.g. "Himalayas" — shown as "via …" on the card
+    attribution_url: Optional[str] = None  # followable link back to the listing on that source
+    expires_at: Optional[str] = None       # ISO date when the source says the listing expires
     raw: dict = field(default_factory=dict)  # original payload, kept for debugging
 
     @property

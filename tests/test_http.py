@@ -8,6 +8,7 @@ limits are asserted exactly and the suite runs instantly.
 from __future__ import annotations
 
 import json
+import logging
 import random
 import socket
 import sys
@@ -198,14 +199,18 @@ def dead_port() -> int:
 class FakeAdapter(requests.adapters.BaseAdapter):
     """Canned responses for https:// hosts (Workday, Greenhouse) with no sockets."""
 
-    def __init__(self, routes: dict[tuple[str, str], Any]) -> None:
+    def __init__(self, routes: dict[tuple[str, str], Any],
+                 fallback: Optional[Callable[[requests.PreparedRequest], Reply]] = None) -> None:
         super().__init__()
         self.routes = routes
+        self.fallback = fallback
         self.sent: list[requests.PreparedRequest] = []
 
     def send(self, request, **kwargs):  # noqa: D401 — requests adapter API
         self.sent.append(request)
-        reply = self.routes.get((request.method, request.url.split("?")[0]), (404, {}, b""))
+        reply = self.routes.get((request.method, request.url.split("?")[0]))
+        if reply is None:
+            reply = self.fallback(request) if self.fallback else (404, {}, b"")
         status, headers, body = reply(request) if callable(reply) else reply
         resp = requests.Response()
         resp.status_code, resp.reason = status, "fake"
@@ -255,8 +260,16 @@ def test_client_spaces_requests_per_host(ft, server, server2):
     for _ in range(3):
         client.get(server.url("/jobs"))
     assert ft.sleeps == [0.5, 0.5]
-    client.get(server2.url("/jobs"))  # another host has its own bucket
-    assert ft.sleeps == [0.5, 0.5]
+    client.get(server2.url("/jobs"))  # same host on another port: same bucket
+    assert ft.sleeps == [0.5, 0.5, 0.5]
+
+    ft2 = FakeTime()
+    sess, _ = _catch_all_session({})
+    other = make_client(ft2, session=sess, default_rate_per_sec=2.0,
+                        robots_exempt_hosts={"a.test": "test", "b.test": "test"})
+    for url in ("https://a.test/x", "https://a.test/y", "https://b.test/x"):
+        other.get(url)
+    assert ft2.big_sleeps() == [0.5]  # b.test has its own bucket
 
 
 def test_host_rates_override_default(ft, server):
@@ -321,8 +334,10 @@ def test_robots_404_allows_everything(ft, server):
     assert server.paths() == ["/robots.txt", "/jobs"]
 
 
-@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
-def test_robots_error_disallows_host_for_the_process(ft, server, status, caplog):
+@pytest.mark.parametrize("status,fetches", [(401, 1), (403, 1), (429, 3), (500, 3), (503, 3)])
+def test_robots_error_disallows_host(ft, server, status, fetches, caplog):
+    # 401/403 are answers; 429/5xx are retried twice. Either way the result is cached
+    # (briefly for 429/5xx, see test_http_robots.py) and /jobs is never fetched.
     server.route("/robots.txt", (status, {}, b"nope"))
     server.route("/jobs", (200, JSON, b"[]"))
     client = make_client(ft)
@@ -332,7 +347,7 @@ def test_robots_error_disallows_host_for_the_process(ft, server, status, caplog)
     assert any("robots.txt" in r.message for r in caplog.records)
     with pytest.raises(RobotsUnavailable):
         client.get(server.url("/jobs"))
-    assert server.paths() == ["/robots.txt"]  # not re-fetched, never fetched /jobs
+    assert server.paths() == ["/robots.txt"] * fetches
 
 
 def test_robots_network_error_disallows(ft):
@@ -636,3 +651,178 @@ def test_connector_surfaces_robots_disallow():
     with pytest.raises(RobotsDisallowed):
         GreenhouseConnector(session=sess).fetch({"name": "Uber", "slug": "uber"})
     assert len(adapter.sent) == 1
+
+
+# ------------------------------------------------- review-fix regressions
+
+def _catch_all_session(routes: dict[str, Reply]) -> tuple[requests.Session, list[requests.PreparedRequest]]:
+    """http(s):// fake keyed by URL without query (any method); robots.txt is 404
+    and any other URL answers 200 unless routed."""
+    def fallback(request) -> Reply:
+        key = request.url.split("?")[0]
+        if key in routes:
+            r = routes[key]
+            return r(request) if callable(r) else r
+        return (404, {}, b"") if key.endswith("/robots.txt") else (200, {}, b"ok")
+
+    adapter = FakeAdapter({}, fallback=fallback)
+    sess = requests.Session()
+    sess.trust_env = False
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    return sess, adapter.sent
+
+
+SECRET_HEADERS = {"X-RapidAPI-Key": "SECRET-KEY-123", "Authorization": "Bearer TOK",
+                  "Cookie": "sid=1", "Accept": "application/json"}
+
+
+def test_cross_origin_redirect_drops_credential_headers(ft):
+    # finding #5: caller headers (API keys) were replayed to whatever host Location named.
+    sess, sent = _catch_all_session({
+        "https://api.test/start": (302, {"Location": "https://attacker.test/collect"}, b""),
+        "https://api.test/down": (302, {"Location": "http://api.test/plain"}, b""),
+        "https://api.test/bounce": (302, {"Location": "https://attacker.test/back"}, b""),
+        "https://attacker.test/back": (302, {"Location": "https://api.test/home"}, b""),
+    })
+    client = make_client(ft, session=sess)
+    client.get("https://api.test/start", headers=SECRET_HEADERS)
+    client.get("https://api.test/down", headers=SECRET_HEADERS)  # https -> http, same host
+    client.get("https://api.test/bounce", headers=SECRET_HEADERS)  # leaves and comes back
+    by_url = {r.url: r.headers for r in sent}
+    for url in ("https://attacker.test/collect", "http://api.test/plain",
+                "https://attacker.test/back", "https://api.test/home"):
+        h = by_url[url]
+        assert "X-RapidAPI-Key" not in h and "Authorization" not in h and "Cookie" not in h, url
+        assert h["Accept"] == "application/json" and h["User-Agent"] == UA
+    assert by_url["https://api.test/start"]["X-RapidAPI-Key"] == "SECRET-KEY-123"
+
+
+def test_same_origin_and_https_upgrade_redirects_keep_headers(ft):
+    sess, sent = _catch_all_session({
+        "https://api.test/a": (301, {"Location": "/b"}, b""),
+        "http://api.test/old": (301, {"Location": "https://api.test/new"}, b""),
+    })
+    client = make_client(ft, session=sess)
+    client.get("https://api.test/a", headers=SECRET_HEADERS)
+    client.get("http://api.test/old", headers=SECRET_HEADERS)
+    by_url = {r.url: r.headers for r in sent}
+    assert by_url["https://api.test/b"]["X-RapidAPI-Key"] == "SECRET-KEY-123"
+    assert by_url["https://api.test/new"]["Authorization"] == "Bearer TOK"
+
+
+def test_rate_limit_is_per_host_not_per_origin(ft):
+    # finding #7: scheme, explicit default port and a trailing dot each got a fresh bucket.
+    sess, sent = _catch_all_session({})
+    client = make_client(ft, session=sess, default_rate_per_sec=1.0,
+                         robots_exempt_hosts={"api.test": "test"})
+    for url in ("https://api.test/x", "https://api.test:443/x", "https://API.test./x",
+                "http://api.test/x"):
+        client.get(url)
+    assert ft.sleeps == [1.0, 1.0, 1.0]
+
+
+def test_robots_cached_per_normalised_origin(ft):
+    sess, sent = _catch_all_session({})
+    client = make_client(ft, session=sess)
+    for url in ("https://api.test/x", "https://api.test:443/y", "https://API.test./z",
+                "http://api.test/x", "http://api.test:80/y"):
+        client.get(url)
+    robots = [r.url for r in sent if r.url.endswith("/robots.txt")]
+    assert robots == ["https://api.test/robots.txt", "http://api.test/robots.txt"]
+
+
+@pytest.mark.parametrize("value", ["inf", "Infinity", "-inf", "1e400", "nan", "NaN", "-5", "5.5",
+                                   "0x10", "1_000", " 12 34"])
+def test_parse_retry_after_rejects_non_delta_seconds(value):
+    # finding #26: float() spellings put the host into infinite debt.
+    assert parse_retry_after(value, now=0) is None
+
+
+def test_parse_retry_after_is_clamped_to_a_finite_maximum():
+    assert parse_retry_after("9" * 40, now=0) == jhttp.RETRY_AFTER_MAX_SEC
+    assert parse_retry_after(formatdate(10 ** 11, usegmt=True), now=0) == jhttp.RETRY_AFTER_MAX_SEC
+    assert parse_retry_after(" 7 ", now=0) == 7.0
+
+
+def test_retry_after_inf_does_not_wedge_the_host(ft, server):
+    server.route("/jobs", (429, {"Retry-After": "inf"}, b""), (200, JSON, b"[]"))
+    client = make_client(ft, robots_exempt_hosts=EXEMPT)
+    assert client.get(server.url("/jobs")).status_code == 200  # backoff, not RetryLater(inf)
+    assert len(ft.big_sleeps()) == 1 and ft.big_sleeps()[0] <= 1.0
+    bucket = TokenBucket(1.0, clock=ft.clock)
+    bucket.penalize(float("inf"))  # defence in depth: never infinite debt
+    assert bucket.reserve() <= jhttp.RETRY_AFTER_MAX_SEC + 1
+
+
+def test_record_mode_two_clients_same_second_never_overwrite(ft, tmp_path, monkeypatch):
+    # finding #31: the per-instance counter restarted at 1, so files collided.
+    rec = tmp_path / "rec"
+    monkeypatch.setenv(jhttp.RECORD_ENV, str(rec))
+    sess_a, _ = _catch_all_session({"https://g.test/v1/boards/acme/jobs": (200, JSON, b'{"from":"A"}')})
+    sess_b, _ = _catch_all_session({"https://g.test/v1/boards/acme/jobs": (200, JSON, b'{"from":"B"}')})
+    make_client(ft, session=sess_a).get("https://g.test/v1/boards/acme/jobs")
+    make_client(ft, session=sess_b).get("https://g.test/v1/boards/acme/jobs")
+    bodies = sorted(p.read_bytes() for p in rec.rglob("*.json") if not p.name.endswith(".meta.json"))
+    assert bodies == [b'{"from":"A"}', b'{"from":"B"}']
+    assert len(list(rec.rglob("*.meta.json"))) == 2
+
+
+def test_record_mode_host_dir_has_no_userinfo(ft, tmp_path, monkeypatch):
+    rec = tmp_path / "rec"
+    monkeypatch.setenv(jhttp.RECORD_ENV, str(rec))
+    sess, _ = _catch_all_session({})
+    make_client(ft, session=sess).get("https://alice:s3cret@u.test:8443/x")
+    dirs = [p.name for p in rec.iterdir()]
+    assert dirs == ["u.test_8443"]
+    assert not any("s3cret" in str(p) or "alice" in str(p) for p in rec.rglob("*"))
+    assert all("s3cret" not in p.read_text() for p in rec.rglob("*.meta.json"))
+
+
+# ---------------------------------------------------- ingest reporting (#8)
+
+def _fake_connector(outcome: Any) -> type:
+    class Fake:
+        source = "fake"
+
+        def fetch(self, company):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    return Fake
+
+
+def test_ingest_reports_robots_unavailable_apart_from_disallow(monkeypatch, caplog, capsys):
+    from jobcopilot import ingest as ingest_mod
+
+    monkeypatch.setattr(ingest_mod, "REGISTRY", {
+        "down": _fake_connector(RobotsUnavailable("https://x.test/jobs",
+                                                  "robots.txt unreachable (ConnectionError)",
+                                                  transient=True)),
+        "wall": _fake_connector(RobotsUnavailable("https://w.test/jobs", "robots.txt answered HTTP 403")),
+        "says_no": _fake_connector(RobotsDisallowed("https://y.test/jobs")),
+        "denied": _fake_connector(jhttp.HostDenied("https://www.linkedin.com/jobs",
+                                                   "do-not-automate host (linkedin.com) refused")),
+        "ok": _fake_connector([]),
+    })
+    companies = [{"name": n, "connector": n} for n in ("down", "wall", "says_no", "denied", "ok")]
+    with caplog.at_level("INFO", logger="jobcopilot.ingest"):
+        assert ingest_mod.ingest(companies) == []  # no exception: the run carries on
+
+    def record(name: str) -> logging.LogRecord:
+        return next(r for r in caplog.records if f"company={name} " in r.getMessage())
+
+    assert record("down").levelno == logging.ERROR
+    assert "robots_unavailable" in record("down").getMessage()
+    assert "transient=True" in record("down").getMessage()
+    assert record("wall").levelno == logging.ERROR
+    assert record("says_no").levelno == logging.INFO
+    assert "reason=robots_disallowed" in record("says_no").getMessage()
+    assert record("denied").levelno == logging.WARNING
+    assert "reason=denied_host" in record("denied").getMessage()
+    assert "ingest company=ok" in caplog.text
+    err = capsys.readouterr().err
+    assert "robots.txt unavailable" in err and "will retry" in err
+    assert "disallowed by robots.txt" in err
+    assert "do-not-automate host" in err

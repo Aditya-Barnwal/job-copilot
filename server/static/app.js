@@ -38,9 +38,46 @@ function fmtTs(ts) {
   return d.toLocaleString();
 }
 
+// Safe in text AND in quoted attribute values: quotes are escaped too, so
+// model output or scraped job data can't close an attribute and add handlers.
 function escapeHtml(s) {
   return (s ?? "").toString()
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Only http(s) URLs may become links; relative paths resolve to this origin.
+// Any other scheme (script, data, vbscript, …) or unparsable input -> null.
+function safeHttpUrl(u) {
+  if (typeof u !== "string" || !u.trim()) return null;
+  let url;
+  try { url = new URL(u.trim(), window.location.href); } catch { return null; }
+  return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+}
+
+// The one place app.js emits href=. A URL that isn't http(s) is shown as
+// plain text instead of a link. `attrs` must be a constant string.
+function linkHtml(url, label, attrs = "") {
+  const href = safeHttpUrl(url);
+  if (!href) {
+    const shown = url ? ` (${escapeHtml(url)})` : "";
+    return `<span class="hint" title="not an http(s) link">${escapeHtml(label)}${shown}</span>`;
+  }
+  return `<a href="${escapeHtml(href)}" ${attrs}>${escapeHtml(label)}</a>`;
+}
+
+// Grounding flags + the confirmation checkbox, shared by every approve flow.
+function groundingWarnHtml(g, checkboxId, title = "⚠ Grounding check failed:") {
+  const row = (label, items) => (Array.isArray(items) && items.length
+    ? `<div>${label}: ${items.map(escapeHtml).join(", ")}</div>` : "");
+  return `<div class="grounding-warn">
+    <b>${title}</b>
+    ${row("inserted keywords not in original", g.inserted_unsupported)}
+    ${row("skills not in original", g.unsupported_skills)}
+    ${row("new numbers/years not in original", g.new_numbers)}
+    ${row("seniority/ownership claims or titles not in original", g.inflated_claims)}
+    <label><input type="checkbox" id="${checkboxId}"/> I confirm these are accurate</label>
+  </div>`;
 }
 
 // --- card builder (no inline handlers; data-* attrs only) ---
@@ -50,7 +87,7 @@ function jobCard(j) {
     : j.package_estimated ? "est." : "—";
   const geo = (j.country_bucket || "?") + (j.country_uncertain ? "?" : "");
   const ageBadge = j.freshness
-    ? `<span class="badge ${j.freshness}">${j.posted_age_days ?? "?"}d · ${j.freshness}</span>`
+    ? `<span class="badge ${escapeHtml(j.freshness)}">${escapeHtml(j.posted_age_days ?? "?")}d · ${escapeHtml(j.freshness)}</span>`
     : "";
   const scoreBadge = j.match_score != null
     ? `<span class="badge score">match ${j.match_score.toFixed(1)}</span>` : "";
@@ -58,10 +95,10 @@ function jobCard(j) {
     ? `<span class="badge ats">ATS ${Math.round(j.ats_coverage * 100)}%</span>` : "";
   const senBadge = j.seniority_high ? `<span class="badge high-sen">senior+</span>` : "";
 
-  const fitBadge = j.fit_score != null ? `<span class="badge fit">fit ${j.fit_score}</span>` : "";
+  const fitBadge = j.fit_score != null ? `<span class="badge fit">fit ${escapeHtml(j.fit_score)}</span>` : "";
   const lowConfBadge = j.ats_low_confidence ? `<span class="badge lowconf">low signal · ${j.required_keywords.length} kw</span>` : "";
   const yoeBadge = j.min_yoe_required != null
-    ? `<span class="badge ${j.yoe_gap ? 'yoe-gap' : (j.yoe_is_preferred ? 'yoe-soft' : 'yoe-req')}">YOE ≥ ${j.min_yoe_required}${j.yoe_is_preferred ? ' (pref)' : ''}${j.yoe_gap ? ' · gap' : ''}</span>`
+    ? `<span class="badge ${j.yoe_gap ? 'yoe-gap' : (j.yoe_is_preferred ? 'yoe-soft' : 'yoe-req')}">YOE ≥ ${escapeHtml(j.min_yoe_required)}${j.yoe_is_preferred ? ' (pref)' : ''}${j.yoe_gap ? ' · gap' : ''}</span>`
     : "";
 
   const missing = Array.isArray(j.missing_keywords) ? j.missing_keywords : [];
@@ -75,9 +112,9 @@ function jobCard(j) {
          }).join(" ")}
        </div>` : "";
 
-  const hasUrl = j.url && j.url.trim().length > 0;
+  const hasUrl = typeof j.url === "string" && j.url.trim().length > 0;
   const openBtn = hasUrl
-    ? `<a class="btn-link" href="${escapeHtml(j.url)}" target="_blank" rel="noopener">open posting</a>`
+    ? linkHtml(j.url, "open posting", 'class="btn-link" target="_blank" rel="noopener noreferrer"')
     : `<button class="btn-link" disabled title="no apply URL on this posting">open posting</button>`;
 
   const k = escapeHtml(j.key);
@@ -270,7 +307,7 @@ async function loadVersions() {
     div.innerHTML = data.versions.map((v) =>
       `<div class="job"><b>${escapeHtml(v.label)}</b> · ${escapeHtml(v.role_family || "")} ·
        ATS ${Math.round((v.base_ats_coverage || 0) * 100)}%
-       ${v.pdf_path ? `<a href="${escapeHtml(v.pdf_path)}" target="_blank">PDF</a>` : ""}</div>`
+       ${v.pdf_path ? linkHtml(`/api/resume-versions/${encodeURIComponent(v.id)}/download`, "PDF", 'target="_blank" rel="noopener"') : ""}</div>`
     ).join("");
   } catch {}
 }
@@ -349,17 +386,37 @@ async function openTailorModal(key) {
         base ATS coverage: ${Math.round((v.base_ats_coverage || 0) * 100)}%
       </div>
       <p class="hint">Reuse skips the LLM call entirely — no new file is generated.</p>
+      <div id="reuse-grounding"></div>
     `;
     $("#modal-approve").textContent = "Use this version";
     $("#modal-approve").disabled = false;
+    let reuseGrounding = null;   // set when the server flags the stored text
     $("#modal-approve").onclick = async () => {
+      const body = { reuse_version_id: v.id };
+      if (reuseGrounding) body.confirmed_flags = confirmedFlagsFrom(reuseGrounding);
       try {
         const res = await api(`/api/jobs/${encodeURIComponent(key)}/approve`, {
-          method: "POST", body: JSON.stringify({ reuse_version_id: v.id }),
+          method: "POST", body: JSON.stringify(body),
         });
         alert(`Linked to version ${res.version_id}. Status: ready.`);
         hideModal(); loadJobs();
-      } catch (e) { alert(e.message); }
+      } catch (e) {
+        if (e.status === 409 && e.payload) {
+          // The server re-checked the stored text against your CURRENT resume.
+          // Nothing was linked; show what it found and require confirmation.
+          $("#modal-status").textContent =
+            e.payload.detail || "Grounding check failed on the server. Nothing was linked.";
+          if (!e.payload.grounding) { $("#modal-approve").disabled = true; return; }
+          reuseGrounding = e.payload.grounding;
+          $("#reuse-grounding").innerHTML = groundingWarnHtml(reuseGrounding, "confirm-grounding-reuse");
+          $("#modal-approve").disabled = true;
+          $("#confirm-grounding-reuse").addEventListener("change", (ev) => {
+            $("#modal-approve").disabled = !ev.target.checked;
+          });
+          return;
+        }
+        alert(e.message);
+      }
     };
     return;
   }
@@ -390,19 +447,7 @@ function renderTailorResult(t) {
   const after = Math.round((t.new_ats_coverage || 0) * 100);
   const stillMissing = (t.still_missing || []).map((k) => `<span class="kw miss">${escapeHtml(k)}</span>`).join(" ");
   const grounding = t.grounding || {};
-  const flags = !grounding.clean
-    ? `<div class="grounding-warn">
-         <b>⚠ Grounding check failed:</b>
-         ${grounding.inserted_unsupported.length
-           ? `<div>inserted keywords not in original: ${grounding.inserted_unsupported.map(escapeHtml).join(", ")}</div>` : ""}
-         ${grounding.unsupported_skills?.length
-           ? `<div>skills not in original: ${grounding.unsupported_skills.map(escapeHtml).join(", ")}</div>` : ""}
-         ${grounding.new_numbers.length
-           ? `<div>new numbers/years not in original: ${grounding.new_numbers.map(escapeHtml).join(", ")}</div>` : ""}
-         ${grounding.inflated_claims?.length
-           ? `<div>seniority/ownership verbs not in original: ${grounding.inflated_claims.map(escapeHtml).join(", ")}</div>` : ""}
-         <label><input type="checkbox" id="confirm-grounding"/> I confirm these are accurate</label>
-       </div>` : "";
+  const flags = !grounding.clean ? groundingWarnHtml(grounding, "confirm-grounding") : "";
 
   $("#modal-body").innerHTML = `
     <div class="ats-row">
@@ -591,21 +636,20 @@ async function openEmailModal(key) {
     return;
   }
   const g = r.grounding || {};
-  const flags = !g.clean ? `
-    <div class="grounding-warn"><b>⚠ Grounding flagged:</b>
-      ${g.inserted_unsupported?.length ? `<div>unsupported claims: ${g.inserted_unsupported.map(escapeHtml).join(", ")}</div>` : ""}
-      ${g.unsupported_skills?.length ? `<div>skills not in original: ${g.unsupported_skills.map(escapeHtml).join(", ")}</div>` : ""}
-      ${g.new_numbers?.length ? `<div>new numbers: ${g.new_numbers.map(escapeHtml).join(", ")}</div>` : ""}
-      ${g.inflated_claims?.length ? `<div>seniority/ownership verbs not in original: ${g.inflated_claims.map(escapeHtml).join(", ")}</div>` : ""}
-      <label><input type="checkbox" id="confirm-grounding-em"/> I confirm these are accurate</label>
-    </div>` : "";
+  const flags = !g.clean ? groundingWarnHtml(g, "confirm-grounding-em", "⚠ Grounding flagged:") : "";
   $("#modal-body").innerHTML = `
     ${flags}
     <p><b>To:</b> ${escapeHtml(r.to || "")}</p>
-    <p><b>Subject:</b> <input id="em-subject" value="${escapeHtml(r.subject || "")}" style="width:80%"/></p>
-    <textarea id="em-body" rows="14" style="width:100%">${escapeHtml(r.body || "")}</textarea>
+    <p><b>Subject:</b> <input id="em-subject"/></p>
+    <textarea id="em-body" rows="14"></textarea>
     <p class="hint">Remember to attach your tailored PDF before sending.</p>
   `;
+  // Model output goes in through .value (never parsed as HTML); sizes via
+  // CSSOM because the CSP blocks inline style attributes.
+  $("#em-subject").value = r.subject || "";
+  $("#em-subject").style.width = "80%";
+  $("#em-body").value = r.body || "";
+  $("#em-body").style.width = "100%";
   const setOk = () => $("#modal-approve").disabled = !(g.clean || $("#confirm-grounding-em")?.checked);
   setOk();
   const cb = $("#confirm-grounding-em"); if (cb) cb.addEventListener("change", setOk);
@@ -710,7 +754,7 @@ async function openApplyPack(key, resumeSelector) {
            ${cr.note ? `<br/><span class="hint">${escapeHtml(cr.note)}</span>` : ""}
          </div>
          <div>
-           ${cr.pdf_url ? `<a class="btn-primary" href="${escapeHtml(cr.pdf_url)}" target="_blank" download>⬇ PDF</a>` : ""}
+           ${cr.pdf_url ? linkHtml(cr.pdf_url, "⬇ PDF", 'class="btn-primary" target="_blank" rel="noopener" download') : ""}
            ${cr.pdf_path ? `<button class="btn-sec" data-action="copy" data-text="${escapeHtml(cr.pdf_path)}">Copy path</button>` : ""}
          </div>
        </div>`
@@ -742,7 +786,7 @@ async function openApplyPack(key, resumeSelector) {
     </div>`).join("");
 
   const postingLink = r.posting_url
-    ? `<p><a class="btn-sec" href="${escapeHtml(r.posting_url)}" target="_blank" rel="noopener">↗ Open posting in a new tab</a></p>`
+    ? `<p>${linkHtml(r.posting_url, "↗ Open posting in a new tab", 'class="btn-sec" target="_blank" rel="noopener noreferrer"')}</p>`
     : '<p class="hint">no apply URL on this posting</p>';
 
   $("#modal-body").innerHTML = `

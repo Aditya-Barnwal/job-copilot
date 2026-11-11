@@ -98,6 +98,9 @@ class Job:
     attribution_name: Optional[str] = None # e.g. "Himalayas" — shown as "via …" on the card
     attribution_url: Optional[str] = None  # followable link back to the listing on that source
     expires_at: Optional[str] = None       # ISO date when the source says the listing expires
+    company_id: Optional[int] = None       # companies.id once linked
+    sources: list[dict] = field(default_factory=list)  # every place this job was seen (dedupe.merge)
+    canonical_key: Optional[str] = None    # cross-source identity (dedupe.canonical_key)
     raw: dict = field(default_factory=dict)  # original payload, kept for debugging
 
     @property

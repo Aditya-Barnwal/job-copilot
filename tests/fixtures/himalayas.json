@@ -1,0 +1,346 @@
+{
+ "comments": "Search results come 20 to a page. Pass ?page=2, ?page=3 and so on for more; there is no cursor on search. Cursor pagination (nextCursor) is only on /jobs/api, the browse feed. 13/03/2026: The API has been updated to include the companySlug field in the response.",
+ "updatedAt": 1794134173,
+ "offset": 0,
+ "limit": 20,
+ "totalCount": 5000,
+ "jobs": [
+  {
+   "title": "Senior Software Engineer",
+   "excerpt": "We are an AI-first company building innovative agentic frameworks, the systems that let LLM-driven agents research, plan, and act reliably in production.",
+   "companyName": "Alien Intellect",
+   "companySlug": "alien-intellect",
+   "companyLogo": "https://cdn-images.himalayas.app/mbvefydaivkhdqjf6l6s6hgqm8rt",
+   "employmentType": "Full Time",
+   "minSalary": 2000,
+   "maxSalary": 3000,
+   "salaryPeriod": "monthly",
+   "seniority": [
+    "Senior",
+    "Manager"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [],
+   "timezoneRestrictions": [
+    3.5
+   ],
+   "categories": [
+    "Senior-Software-Developer",
+    "Senior-Software-Engineer-Jobs",
+    "Senior-Engineer",
+    "Software-Engineer"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<p>We are an <span><strong>AI-first</strong></span> company building innovative agentic frameworks, the systems that let LLM-driven agents research, plan, and act reliably in production. That means orchestrating multi-step workflows with retries, skips, and parallel execution; keeping long-running work persistent and observable; and serving per-tenant retrieval at scale. This isn't about wrapping ",
+   "pubDate": 1793013430,
+   "expiryDate": 1795605430,
+   "applicationLink": "https://himalayas.app/companies/alien-intellect/jobs/senior-software-engineer-8699633569?utm_source=api",
+   "guid": "https://himalayas.app/companies/alien-intellect/jobs/senior-software-engineer-8699633569"
+  },
+  {
+   "title": "Software or Systems Engineers - Flight Controls",
+   "excerpt": "We have an immediate need for an Avionics Software or Systems Engineer.",
+   "companyName": "Performance Software",
+   "companySlug": "performance-software",
+   "companyLogo": "",
+   "employmentType": "Full Time",
+   "minSalary": 75000,
+   "maxSalary": 145000,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8,
+    -7,
+    -6,
+    -5,
+    14
+   ],
+   "categories": [
+    "Software-Engineer",
+    "Systems-Engineer",
+    "Avionics-Software-Engineer",
+    "Embedded-Software-Engineer",
+    "Flight-Controls-Engineer",
+    "Flight-Control-Systems-Engineer",
+    "Flight-Control-Systems-Engineering",
+    "Flight-Controls-Engineering",
+    "Flight-Systems-Engineering",
+    "Flight-Software-Engineering",
+    "Flight-Control-Engineering"
+   ],
+   "parentCategories": [
+    "Developer",
+    "Operations"
+   ],
+   "description": "<p>We have an immediate need for an Avionics Software or Systems Engineer. This position can either be direct in one of our office locations or as a remote contract. We are located in Phoenix, AZ, Cedar Rapids, IA, Grand Rapids, MI, Bothell, WA, Lexington, KY, and New Orleans, LA.</p><p>Pay Range: $75/hr - $110/hr - DOE - Contract</p><p>                    $75,000 - $145,000 - DOE - Direct</p><h3>",
+   "pubDate": 1792845790,
+   "expiryDate": 1798029789,
+   "applicationLink": "https://himalayas.app/companies/performance-software/jobs/software-or-systems-engineers-flight-controls?utm_source=api",
+   "guid": "https://himalayas.app/companies/performance-software/jobs/software-or-systems-engineers-flight-controls"
+  },
+  {
+   "title": "Senior Software Engineer",
+   "excerpt": "About the roleData science is in a moment of reinvention: AI-generated code and agentic workflows are changing what it means to put analytical work into production.",
+   "companyName": "Posit Software, PBC",
+   "companySlug": "posit-software-pbc",
+   "companyLogo": "https://cdn-images.himalayas.app/ugyxt8dyl6u7m4mw45rqb157y7zw",
+   "employmentType": "Full Time",
+   "minSalary": 141800,
+   "maxSalary": 187110,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "United States"
+   ],
+   "timezoneRestrictions": [
+    -10,
+    -9,
+    -8,
+    -7,
+    -6,
+    -5,
+    14
+   ],
+   "categories": [
+    "Software-Engineer",
+    "Data-Science-and-Engineering",
+    "Backend-Engineering",
+    "AI-Engineering",
+    "Senior-Software-Developer",
+    "Senior-Software-Engineer-Jobs",
+    "Senior-Engineer",
+    "Senior-Lead-Software-Developer",
+    "Senior-C#-.NET-Software-Engineer",
+    "Senior-Java-Software-Engineer",
+    "Senior-Systems-Software-Engineer",
+    "Senior-Software-Engineer-C++",
+    "Full-Stack-Engineer",
+    "Senior-App-Engineer"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<h3><strong>About the role</strong></h3><p>Data science is in a moment of reinvention: AI-generated code and agentic workflows are changing what it means to put analytical work into production. Posit’s mission is to empower people to conduct trustworthy data analysis for themselves, their organizations, and the world at large. Posit Team is the trusted on-premises platform at the center: a place w",
+   "pubDate": 1793725014,
+   "expiryDate": 1798909014,
+   "applicationLink": "https://himalayas.app/companies/posit-software-pbc/jobs/senior-software-engineer?utm_source=api",
+   "guid": "https://himalayas.app/companies/posit-software-pbc/jobs/senior-software-engineer"
+  },
+  {
+   "title": "Senior/Lead Software Engineer (Packet Forwarding Engines)",
+   "excerpt": "Who You’ll Work WithArista Networks is looking for world-class software engineers to join our Packet Forwarding Engines (PFE) and System software development team.",
+   "companyName": "Arista Networks",
+   "companySlug": "arista-networks",
+   "companyLogo": "https://cdn-images.himalayas.app/7btsd7o0yxg6j3hgyq4lw867wb8e",
+   "employmentType": "Full Time",
+   "minSalary": 120000,
+   "maxSalary": 195000,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": "CAD",
+   "locationRestrictions": [
+    "Canada"
+   ],
+   "timezoneRestrictions": [
+    -8,
+    -7,
+    -6,
+    -5,
+    -4,
+    -3.5
+   ],
+   "categories": [
+    "Software-Engineer",
+    "Embedded-Software",
+    "Network-Engineer",
+    "Systems-Engineering",
+    "Network-Software-Development",
+    "Senior-Network-Software-Engineer",
+    "Senior-IP-Network-Engineer",
+    "Senior-Network-Engineering",
+    "Senior-Network-Engineer",
+    "Senior-Infrastructure-Software-Engineer",
+    "Senior-C++-Lead-Engineer",
+    "Network-Software-Engineer",
+    "Senior-Network-Infrastructure-Engineer"
+   ],
+   "parentCategories": [
+    "Developer",
+    "Hardware Engineer"
+   ],
+   "description": "<h3>Who You’ll Work With</h3><p><a href=\"https://himalayas.app/companies/arista-networks\">Arista Networks</a> is looking for world-class software engineers to join our Packet Forwarding Engines (PFE) and System software development team. As a core member of the PFE software and System software team, you will be part of a fast-paced, high caliber team building packet forwarding engine and system so",
+   "pubDate": 1790131291,
+   "expiryDate": 1795315290,
+   "applicationLink": "https://himalayas.app/companies/arista-networks/jobs/senior-lead-software-engineer-packet-forwarding-engines?utm_source=api",
+   "guid": "https://himalayas.app/companies/arista-networks/jobs/senior-lead-software-engineer-packet-forwarding-engines"
+  },
+  {
+   "title": "Ubuntu Software Engineer",
+   "excerpt": "Canonical is a leading provider of open source software and operating systems to the global enterprise and technology markets.",
+   "companyName": "Canonical",
+   "companySlug": "canonical",
+   "companyLogo": "https://cdn-images.himalayas.app/re8q1jo71m4lmph4ozuxybpu8nei",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": null,
+   "locationRestrictions": [],
+   "timezoneRestrictions": [
+    -11,
+    -10,
+    -9.5,
+    -9,
+    -8,
+    -7,
+    -6,
+    -5,
+    -4,
+    -3.5,
+    -3,
+    -2,
+    -1,
+    0,
+    1,
+    2,
+    3,
+    3.5,
+    4,
+    4.5,
+    5,
+    5.5,
+    5.75,
+    6,
+    6.5,
+    7,
+    8,
+    8.75,
+    9,
+    9.5,
+    10,
+    10.5,
+    11,
+    12,
+    12.75,
+    13,
+    14
+   ],
+   "categories": [
+    "Software-Engineer",
+    "Linux-Engineering",
+    "Open-Source-Development",
+    "Systems-Programming",
+    "DevOps",
+    "Distribution-Engineering",
+    "Software-Development",
+    "Backend-Development",
+    "Ubuntu-Engineering",
+    "Linux-Software-Engineer",
+    "Linux-Engineer",
+    "Linux-Software-Engineering",
+    "Open-Source-Software-Engineer",
+    "Open-Source-Engineer",
+    "Developer"
+   ],
+   "parentCategories": [
+    "Developer",
+    "Operations"
+   ],
+   "description": "<p><a href=\"https://himalayas.app/companies/canonical\">Canonical</a> is a leading provider of open source software and operating systems to the global enterprise and technology markets. Our platform, Ubuntu, is very widely used in breakthrough enterprise initiatives such as public cloud, data science, AI, engineering innovation and IoT. Our customers include the world's leading public cloud and si",
+   "pubDate": 1792342627,
+   "expiryDate": 1797526627,
+   "applicationLink": "https://himalayas.app/companies/canonical/jobs/ubuntu-software-engineer?utm_source=api",
+   "guid": "https://himalayas.app/companies/canonical/jobs/ubuntu-software-engineer"
+  },
+  {
+   "title": "Software Engineer, AI Coding Tasks (Contract)",
+   "excerpt": "We're looking for experienced software engineers to build AI coding tasks from a codebase they know well.",
+   "companyName": "Askable",
+   "companySlug": "askable",
+   "companyLogo": "https://cdn-images.himalayas.app/y4eojs8toyo9ocht137iss4uee48",
+   "employmentType": "Contractor",
+   "minSalary": 100,
+   "maxSalary": 100,
+   "salaryPeriod": "hourly",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [],
+   "timezoneRestrictions": [
+    -11,
+    -10,
+    -9.5,
+    -9,
+    -8,
+    -7,
+    -6,
+    -5,
+    -4,
+    -3.5,
+    -3,
+    -2,
+    -1,
+    0,
+    1,
+    2,
+    3,
+    3.5,
+    4,
+    4.5,
+    5,
+    5.5,
+    5.75,
+    6,
+    6.5,
+    7,
+    8,
+    8.75,
+    9,
+    9.5,
+    10,
+    10.5,
+    11,
+    12,
+    12.75,
+    13,
+    14
+   ],
+   "categories": [
+    "Freelance-AI-Software-Engineer",
+    "Contract-Software-Engineer",
+    "AI-ML-Software-Engineer",
+    "Contract-Software-Engineering-Jobs",
+    "AI-Coding-Specialist",
+    "Software-Engineer",
+    "Developer"
+   ],
+   "parentCategories": [
+    "Developer"
+   ],
+   "description": "<p>We're looking for experienced software engineers to build AI coding tasks from a codebase they know well. US$1,000 per task, and you can do as many tasks as you want.</p><p>You turn a real change from a repository you know into a task that today's best AI coding models struggle with: hard for the models, but fair for a skilled engineer. Your tasks are used to measure and train AI coding models.",
+   "pubDate": 1792198336,
+   "expiryDate": 1700000000,
+   "applicationLink": "https://himalayas.app/companies/askable/jobs/software-engineer-ai-coding-tasks-contract?utm_source=api",
+   "guid": "https://himalayas.app/companies/askable/jobs/software-engineer-ai-coding-tasks-contract"
+  }
+ ]
+}

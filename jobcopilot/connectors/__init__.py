@@ -11,6 +11,14 @@ from .ashby import AshbyConnector
 from .workday import WorkdayConnector
 from .adzuna import AdzunaConnector
 from .jsearch import JsearchConnector
+from .smartrecruiters import SmartRecruitersConnector
+from .gem import GemConnector
+# Remote job boards (Phase 1): fetch(board_cfg) takes config.sources()['boards'][name].
+from .himalayas import HimalayasConnector
+from .workingnomads import WorkingNomadsConnector
+from .jobspresso import JobspressoConnector
+from .remoteok import RemoteOKConnector
+from .weworkremotely import WeWorkRemotelyConnector
 
 REGISTRY: dict[str, type[Connector]] = {
     GreenhouseConnector.source: GreenhouseConnector,
@@ -19,10 +27,22 @@ REGISTRY: dict[str, type[Connector]] = {
     WorkdayConnector.source: WorkdayConnector,
     AdzunaConnector.source: AdzunaConnector,
     JsearchConnector.source: JsearchConnector,
+    SmartRecruitersConnector.source: SmartRecruitersConnector,
+    GemConnector.source: GemConnector,
+    HimalayasConnector.source: HimalayasConnector,
+    WorkingNomadsConnector.source: WorkingNomadsConnector,
+    JobspressoConnector.source: JobspressoConnector,
+    RemoteOKConnector.source: RemoteOKConnector,
+    WeWorkRemotelyConnector.source: WeWorkRemotelyConnector,
 }
+
+# Sources that are job boards (many employers) rather than one employer's ATS.
+BOARD_SOURCES = frozenset({"himalayas", "workingnomads", "jobspresso", "remoteok", "weworkremotely"})
 
 __all__ = [
     "Connector", "GreenhouseConnector", "LeverConnector",
     "AshbyConnector", "WorkdayConnector",
-    "AdzunaConnector", "JsearchConnector", "REGISTRY",
+    "AdzunaConnector", "JsearchConnector", "REGISTRY", "BOARD_SOURCES", "SmartRecruitersConnector", "GemConnector",
+    "HimalayasConnector", "WorkingNomadsConnector", "JobspressoConnector",
+    "RemoteOKConnector", "WeWorkRemotelyConnector",
 ]

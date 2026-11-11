@@ -4,7 +4,7 @@ PORT    ?= 8000
 TORCH_CPU = --extra-index-url https://download.pytorch.org/whl/cpu
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev run test pii check ingest facts-check facts-review llm-check docker-build docker-up
+.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review llm-check docker-build docker-up
 
 help:  ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
@@ -31,8 +31,14 @@ pii:  ## fail if personal data is in tracked files (repo is public)
 
 check: test pii  ## everything CI runs (minus the docker build)
 
-ingest:  ## CLI ingest of config/companies.yaml -> jobs.jsonl
+ingest:  ## CLI ingest of companies + targets + boards -> jobs.jsonl
 	$(PY) run.py
+
+discover:  ## refresh discovered companies (yc-oss, Bangalore Startup Map, ATS detection)
+	$(PY) -m jobcopilot.discovery all
+
+smoke-live:  ## live ingest, prints per-source counts (no jsonl, no DB writes)
+	$(PY) -m jobcopilot.ingest --smoke
 
 facts-check:  ## validate profile/resume_facts.yaml
 	$(PY) -m jobcopilot.facts check
@@ -50,4 +56,4 @@ docker-up:  ## run the container locally (data/config/profile mounted from the h
 	docker compose up --build
 
 # Coming in later phases (see PLAN.md): daily, schedule-install, schedule-uninstall,
-# smoke-live (Phase 1–2), deploy-demo / stop-demo (Phase 3b).
+# deploy-demo / stop-demo (Phase 3b).

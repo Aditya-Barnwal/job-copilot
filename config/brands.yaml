@@ -1,0 +1,302 @@
+# brands.yaml — company tier signals. EDIT FREELY: this is your list, not ground truth.
+#
+# Read by jobcopilot/companies.py (compute_tier). After editing, re-run
+#   python -m jobcopilot.discovery tiers
+# so every company's tier + reasons are recomputed.
+#
+#   brands       recognised product / tech companies  -> tier "brand"
+#   brand_domains  same, matched on the company's website domain (subdomains count)
+#   body_shops   IT-services / staffing firms          -> tier "excluded"
+#     names      exact company names (matched after normalisation, so
+#                "Infosys Limited" == "Infosys")
+#     patterns   whole-word keywords in the normalised name. Applied ONLY when the
+#                company has no positive signal (brand, YC batch, funding stage,
+#                config tier), so a YC startup called "Staffing AI" that builds a
+#                product is not thrown out by the word "staffing".
+#     allow      names that contain a keyword but must never be excluded
+#
+# Matching is case/punctuation-insensitive. A tier set in config/companies.yaml
+# (`tier: brand`) always wins over anything here.
+
+brands:
+  # --- global big tech ---
+  - Google
+  - Alphabet
+  - Microsoft
+  - Amazon
+  - Amazon Web Services
+  - Apple
+  - Meta
+  - Netflix
+  - Nvidia
+  - Adobe
+  - Salesforce
+  - Oracle
+  - SAP
+  - IBM
+  - Intel
+  - AMD
+  - Qualcomm
+  - Cisco
+  - VMware
+  - Intuit
+  - ServiceNow
+  - Workday
+  - Snowflake
+  - Databricks
+  - Atlassian
+  - Uber
+  - Lyft
+  - Airbnb
+  - DoorDash
+  - Stripe
+  - PayPal
+  - Visa
+  - Mastercard
+  - Block
+  - Shopify
+  - Spotify
+  - LinkedIn
+  - Pinterest
+  - Snap
+  - Dropbox
+  - Zoom
+  - Slack
+  - Twilio
+  - Okta
+  - Cloudflare
+  - Datadog
+  - MongoDB
+  - Elastic
+  - Confluent
+  - HashiCorp
+  - GitLab
+  - GitHub
+  - DigitalOcean
+  - Palantir
+  - OpenAI
+  - Anthropic
+  - Notion
+  - Figma
+  - Canva
+  - Linear
+  - Vercel
+  - Supabase
+  - Discord
+  - Asana
+  - Mixpanel
+  - Plaid
+  - Ramp
+  - Brex
+  - Mercury
+  - Affirm
+  - Robinhood
+  - Coinbase
+  - Grammarly
+  - Booking.com
+  - Expedia
+  - Rippling
+  - Deel
+  - Goldman Sachs
+  - JP Morgan
+  - Morgan Stanley
+  - D.E. Shaw
+  - Tower Research Capital
+  - Optiver
+  - Jane Street
+  - Citadel
+  - Walmart
+  - Target
+  # --- Indian product companies ---
+  - Flipkart
+  - Myntra
+  - Swiggy
+  - Zomato
+  - Eternal
+  - Blinkit
+  - Zepto
+  - Zerodha
+  - PhonePe
+  - Paytm
+  - Razorpay
+  - CRED
+  - Meesho
+  - Postman
+  - Freshworks
+  - Zoho
+  - Groww
+  - Ola
+  - Ola Electric
+  - Ather Energy
+  - Nykaa
+  - Lenskart
+  - PolicyBazaar
+  - MakeMyTrip
+  - InMobi
+  - Glance
+  - ShareChat
+  - Dream11
+  - Dream Sports
+  - Games24x7
+  - MPL
+  - Unacademy
+  - upGrad
+  - PhysicsWallah
+  - Urban Company
+  - Delhivery
+  - Udaan
+  - BrowserStack
+  - Chargebee
+  - Druva
+  - Hasura
+  - Setu
+  - Jupiter
+  - Slice
+  - Juspay
+  - Pine Labs
+  - BharatPe
+  - Cars24
+  - Spinny
+  - OYO
+  - Rapido
+  - Dunzo
+  - Licious
+  - CureFit
+  - Sprinklr
+  - Innovaccer
+  - Darwinbox
+  - Whatfix
+  - MoEngage
+  - CleverTap
+  - Capillary Technologies
+  - ThoughtSpot
+  - Atlan
+  - Uniphore
+  - Observe.AI
+  - Sarvam AI
+  - Krutrim
+  - Ultrahuman
+  - Rubrik
+  - Nutanix
+  - Intuit India
+  - Walmart Global Tech
+  - Media.net
+  - Directi
+  - Fyle
+  - Hevo Data
+  - LambdaTest
+  - Zeta
+  - M2P Fintech
+  - Perfios
+
+brand_domains:
+  - google.com
+  - microsoft.com
+  - amazon.com
+  - amazon.jobs
+  - apple.com
+  - meta.com
+  - netflix.com
+  - adobe.com
+  - salesforce.com
+  - oracle.com
+  - uber.com
+  - stripe.com
+  - atlassian.com
+  - flipkart.com
+  - swiggy.com
+  - zomato.com
+  - zerodha.com
+  - phonepe.com
+  - razorpay.com
+  - cred.club
+  - meesho.com
+  - postman.com
+  - freshworks.com
+  - groww.in
+  - zoho.com
+
+body_shops:
+  names:
+    - Tata Consultancy Services
+    - TCS
+    - Infosys
+    - Infosys BPM
+    - Wipro
+    - Cognizant
+    - Cognizant Technology Solutions
+    - Accenture
+    - Capgemini
+    - HCLTech
+    - HCL Technologies
+    - Tech Mahindra
+    - LTIMindtree
+    - L&T Infotech
+    - Mindtree
+    - LTTS
+    - L&T Technology Services
+    - Mphasis
+    - Hexaware
+    - Hexaware Technologies
+    - Persistent Systems
+    - Coforge
+    - Birlasoft
+    - Cyient
+    - Zensar
+    - Zensar Technologies
+    - NIIT Technologies
+    - Sonata Software
+    - Mastek
+    - KPIT Technologies
+    - Virtusa
+    - DXC Technology
+    - NTT Data
+    - Atos
+    - Genpact
+    - EXL
+    - WNS
+    - Firstsource
+    - iGate
+    - Syntel
+    - UST Global
+    - UST
+    - Happiest Minds
+    - Quess Corp
+    - TeamLease
+    - Randstad
+    - Adecco
+    - ManpowerGroup
+    - Manpower
+    - Kelly Services
+    - Allegis Group
+    - TEKsystems
+    - Robert Half
+    - Hays
+    - Michael Page
+    - Xpheno
+    - CIEL HR
+    - Collabera
+    - Mafoi
+    - Ma Foi
+    - Synechron
+    - Infogain
+    - Sasken
+    - Mindteck
+    - Datamatics
+    - 3i Infotech
+  patterns:
+    - staffing
+    - manpower
+    - consultancy services
+    - outsourcing
+    - recruitment services
+    - recruitment solutions
+    - placement services
+    - placements
+    - hr solutions
+    - hr services
+    - talent solutions
+    - it services
+    - it solutions
+    - infotech solutions
+  allow: []

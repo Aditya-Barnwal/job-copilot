@@ -9,9 +9,14 @@ extract `{company, stage, amount_usd, investors, sector}` per item, then
   3. ≥1 notable investor (tier-1 list)
   4. sector ∈ {tech, fintech}
 
-Qualified entries land in `discovered_companies.yaml`, **not** the curated
-companies.yaml. Their ATS slug is left as `# TODO verify` since funding feeds
-don't tell us which ATS they're on.
+Qualified entries are written to the `companies` table (signal source
+"funding-rss", which makes them tier "funded") and, for back-compat, to
+`discovered_companies.yaml` — never to the curated companies.yaml. Their ATS
+is unknown (funding feeds don't say), so the detector has to find it.
+
+Recency (F12): items whose RSS pubDate is older than `recent_days`, or missing
+/ unparseable, are dropped BEFORE the LLM call — an old round never qualifies
+and never costs tokens.
 
 If RSS is unreachable or the LLM is unavailable, this skips with a log line
 rather than crashing the ingest.
@@ -23,6 +28,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
@@ -87,6 +93,57 @@ _EXTRACT_PROMPT = (
 )
 
 
+def _pub_datetime(pub_date: str) -> Optional[datetime]:
+    """RFC 822 pubDate (or ISO 8601) -> aware UTC datetime; None if unparseable."""
+    if not pub_date:
+        return None
+    try:
+        dt = parsedate_to_datetime(pub_date)
+    except (TypeError, ValueError, IndexError):
+        try:
+            dt = datetime.fromisoformat(pub_date.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def is_recent(pub_date: str, recent_days: int, now: Optional[datetime] = None) -> bool:
+    """True only for a parseable pubDate within the last `recent_days` days."""
+    dt = _pub_datetime(pub_date)
+    if dt is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return now - timedelta(days=recent_days) <= dt <= now + timedelta(days=2)
+
+
+def record_companies(qualifiers: list[dict], db_path=None) -> int:
+    """Upsert qualified companies into the companies table (tier "funded" via
+    signal source funding-rss), then recompute tiers. Returns rows written."""
+    from . import companies
+    n = 0
+    for q in qualifiers:
+        amount = q.get("amount_usd")
+        note = "funding-rss: " + ", ".join(p for p in (
+            q.get("stage") or "",
+            f"${amount / 1e6:.0f}M" if isinstance(amount, (int, float)) and amount else "",
+            q.get("source_url") or "",
+        ) if p)
+        try:
+            companies.upsert_company(
+                q["name"], db_path=db_path, signal_source="funding-rss",
+                funding_stage=q.get("stage") or None,
+                investors=[str(i) for i in q.get("investors") or []],
+                sector=q.get("sector") or "tech", notes=note)
+            n += 1
+        except (ValueError, TypeError) as exc:
+            log.warning("funding: could not record %r: %s", q.get("name"), exc)
+    if n:
+        companies.recompute_tiers(db_path)
+    return n
+
+
 def _ask_llm(headline: str, description: str) -> Optional[dict]:
     user = f"Headline: {headline}\nSummary: {description[:1000]}"
     try:
@@ -111,7 +168,8 @@ def _qualifies(rec: dict, min_amount_usd: float, recent_days: int) -> bool:
 
 
 def run(out_path: str | Path = "discovered_companies.yaml",
-        min_amount_usd: float | None = None, recent_days: int = 540) -> dict:
+        min_amount_usd: float | None = None, recent_days: int = 540,
+        db_path=None) -> dict:
     """Returns a summary dict; writes/updates `out_path` with qualifiers."""
     min_amount_usd = float(min_amount_usd
                            if min_amount_usd is not None
@@ -129,10 +187,11 @@ def run(out_path: str | Path = "discovered_companies.yaml",
     if not all_items:
         return {"feeds_total": 0, "qualified": 0, "skipped_reason": "no RSS reachable"}
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
+    recent = [it for it in all_items if is_recent(it.get("pub_date") or "", recent_days)]
+    log.info("funding: %d/%d items within %d days", len(recent), len(all_items), recent_days)
     qualifiers: list[dict] = []
     seen: set[str] = set()
-    for it in all_items[:60]:  # cap to keep LLM cost low
+    for it in recent[:60]:  # cap to keep LLM cost low
         rec = _ask_llm(it["title"], it["description"])
         if not rec or not rec.get("company"):
             continue
@@ -152,6 +211,7 @@ def run(out_path: str | Path = "discovered_companies.yaml",
             "amount_usd": rec.get("amount_usd"),
             "investors": rec.get("investors") or [],
             "source_url": it.get("link"),
+            "pub_date": it.get("pub_date"),
             "discovered_at": datetime.now(timezone.utc).isoformat(),
             "note": "discovered via funding watcher; verify ATS before enabling live ingest",
         })
@@ -170,6 +230,7 @@ def run(out_path: str | Path = "discovered_companies.yaml",
         {"companies": list(existing_companies.values())}, sort_keys=False
     ), encoding="utf-8")
 
-    log.info("funding qualified=%d total_items=%d", len(qualifiers), len(all_items))
-    return {"feeds_total": len(all_items), "qualified": len(qualifiers),
-            "output": str(out)}
+    recorded = record_companies(qualifiers, db_path)
+    log.info("funding qualified=%d recorded=%d total_items=%d", len(qualifiers), recorded, len(all_items))
+    return {"feeds_total": len(all_items), "recent": len(recent), "qualified": len(qualifiers),
+            "recorded": recorded, "output": str(out)}

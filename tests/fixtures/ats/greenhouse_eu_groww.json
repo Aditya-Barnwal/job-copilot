@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {
+      "id": 4011001101,
+      "title": "Software Development Engineer II - Backend",
+      "first_published": "2026-10-28T10:00:00+05:30",
+      "updated_at": "2026-11-05T10:00:00+05:30",
+      "location": {"name": "Bengaluru"},
+      "absolute_url": "https://job-boards.eu.greenhouse.io/groww/jobs/4011001101",
+      "departments": [{"name": "Engineering"}],
+      "content": "&lt;p&gt;Build trading systems in &lt;strong&gt;Java and Go&lt;/strong&gt;.&lt;/p&gt;"
+    },
+    {
+      "id": 4011001102,
+      "title": "Data Engineer",
+      "updated_at": "2026-11-06T10:00:00+05:30",
+      "location": {"name": "Bengaluru, Karnataka, India"},
+      "absolute_url": "",
+      "departments": [],
+      "content": "&lt;p&gt;Pipelines.&lt;/p&gt;"
+    }
+  ]
+}

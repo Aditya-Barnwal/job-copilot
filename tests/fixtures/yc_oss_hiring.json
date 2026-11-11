@@ -1,0 +1,163 @@
+[
+ {
+  "id": 827,
+  "name": "Razorpay",
+  "slug": "razorpay",
+  "website": "https://razorpay.com",
+  "all_locations": "Bengaluru, KA, India",
+  "one_liner": "India's only full-stack financial solutions company for businesses.",
+  "team_size": 2700,
+  "industry": "Fintech",
+  "subindustry": "Fintech -> Payments",
+  "tags": [
+   "Banking as a Service",
+   "Fintech",
+   "Payments",
+   "India"
+  ],
+  "top_company": true,
+  "isHiring": true,
+  "batch": "Winter 2015",
+  "status": "Active",
+  "industries": [
+   "Fintech",
+   "Payments"
+  ],
+  "regions": [
+   "India",
+   "South Asia",
+   "Remote",
+   "Partly Remote"
+  ],
+  "stage": "Growth",
+  "url": "https://www.ycombinator.com/companies/razorpay"
+ },
+ {
+  "id": 1535,
+  "name": "Wifi Dabba, Inc.",
+  "slug": "wifi-dabba-inc",
+  "website": "https://dabba.com",
+  "all_locations": "Bengaluru, KA, India",
+  "one_liner": "Decentralised broadband connectivity.",
+  "team_size": 21,
+  "industry": "Consumer",
+  "subindustry": "Consumer",
+  "tags": [
+   "Hardware",
+   "Crypto / Web3",
+   "Telecommunications"
+  ],
+  "top_company": false,
+  "isHiring": true,
+  "batch": "Winter 2017",
+  "status": "Active",
+  "industries": [
+   "Consumer"
+  ],
+  "regions": [
+   "India",
+   "South Asia"
+  ],
+  "stage": "Early",
+  "url": "https://www.ycombinator.com/companies/wifi-dabba-inc"
+ },
+ {
+  "id": 12067,
+  "name": "PNOĒ",
+  "slug": "pnoe",
+  "website": "",
+  "all_locations": "Athens, Greece; Miami, FL, USA",
+  "one_liner": "Enabling health professionals to prescribe clinical-grade wellness…",
+  "team_size": 70,
+  "industry": "Healthcare",
+  "subindustry": "Healthcare -> Healthcare Services",
+  "tags": [
+   "Medical Devices",
+   "Digital Health",
+   "Telemedicine",
+   "Diagnostics",
+   "Primary Care"
+  ],
+  "top_company": false,
+  "isHiring": true,
+  "batch": "Winter 2019",
+  "status": "Active",
+  "industries": [
+   "Healthcare",
+   "Healthcare Services"
+  ],
+  "regions": [
+   "Greece",
+   "United States of America",
+   "Europe",
+   "America / Canada",
+   "Remote",
+   "Partly Remote"
+  ],
+  "stage": "Early",
+  "url": "https://www.ycombinator.com/companies/pnoe"
+ },
+ {
+  "id": 28409,
+  "name": "LiteLLM",
+  "slug": "litellm",
+  "website": "https://www.litellm.ai/",
+  "all_locations": "San Francisco, CA, USA",
+  "one_liner": "Call every LLM API like it's OpenAI [100+ LLMs]",
+  "team_size": 20,
+  "industry": "B2B",
+  "subindustry": "B2B",
+  "tags": [
+   "AIOps",
+   "Developer Tools",
+   "Generative AI",
+   "Open Source",
+   "AI"
+  ],
+  "top_company": false,
+  "isHiring": true,
+  "batch": "Winter 2023",
+  "status": "Active",
+  "industries": [
+   "B2B"
+  ],
+  "regions": [
+   "United States of America",
+   "America / Canada"
+  ],
+  "stage": "Early",
+  "url": "https://www.ycombinator.com/companies/litellm"
+ },
+ {
+  "id": 29765,
+  "name": "Emergent",
+  "slug": "emergent",
+  "website": "https://emergent.sh",
+  "all_locations": "San Francisco, CA, USA",
+  "one_liner": "AI app builder that turns your ideas into monetizable software.",
+  "team_size": null,
+  "industry": "Consumer",
+  "subindustry": "Consumer",
+  "tags": [
+   "Generative AI",
+   "Consumer",
+   "No-code",
+   "AI"
+  ],
+  "top_company": false,
+  "isHiring": true,
+  "batch": "Summer 2024",
+  "status": "Active",
+  "industries": [
+   "Consumer"
+  ],
+  "regions": [
+   "United States of America",
+   "America / Canada",
+   "Remote",
+   "Partly Remote"
+  ],
+  "stage": "Growth",
+  "url": "https://www.ycombinator.com/companies/emergent"
+ }
+]

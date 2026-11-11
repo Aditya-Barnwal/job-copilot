@@ -34,9 +34,19 @@ def _parse_compensation(comp: Optional[dict]) -> Optional[Compensation]:
     tiers = comp.get("compensationTiers") or []
     summary = comp.get("compensationTierSummary") or comp.get("summary")
 
-    salary_tier = None
+    # The live API (2026) nests the typed numbers one level down:
+    # summaryComponents[] at the top, and compensationTiers[].components[].
+    # Older payloads put compensationType/minValue directly on each tier.
+    # Check the nested shapes first, then fall back to the flat one (F2).
+    candidates: list[dict] = list(comp.get("summaryComponents") or [])
     for tier in tiers:
-        if str(tier.get("compensationType", "")).lower() == "salary":
+        candidates.extend(tier.get("components") or [])
+    candidates.extend(tiers)
+
+    salary_tier = None
+    for tier in candidates:
+        if str(tier.get("compensationType", "")).lower() == "salary" and (
+                tier.get("minValue") is not None or tier.get("maxValue") is not None):
             salary_tier = tier
             break
     if salary_tier is None and tiers:

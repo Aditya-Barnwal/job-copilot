@@ -46,6 +46,7 @@ COMPANIES_YAML = """companies:
 # Every path + method the vanilla-JS UI (and anything else) may call. The
 # router split must not add, drop or rename any of them.
 EXPECTED_ROUTES = {
+    ("GET", "/api/sources/health"),
     ("GET", "/"),
     ("GET", "/api/meta"), ("GET", "/api/meta-kv"), ("POST", "/api/meta-kv"),
     ("GET", "/api/llm/health"),

@@ -156,7 +156,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - no personal data appears in `git ls-files`
   - the facts file validates
 
-### Phase 1: New sources ☐
+### Phase 1: New sources ◐ (built; review pending)
 - ☐ Connectors, each with a module, fixture, parse test and rate limit:
 
   | Connector | Endpoint / note |
@@ -192,6 +192,20 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - a job seen on Himalayas and on Ashby becomes 1 row with 2 sources (test)
   - a failing source doesn't abort the run (test)
   - `make smoke-live` prints per-source counts
+
+### Phase 1b: Many more sources (your request, 2026-11-11) ☐
+- ☐ Survey the top-starred job-automation / job-aggregation repos on GitHub (e.g. JobSpy, AIHawk, ApplyPilot, jobpilot, and the topic lists `job-scraper`, `job-search`, `job-board`, `job-application-automation`) and extract **every job source they use**.
+- ☐ For each candidate, apply the same gate as Phase 1 (official API / RSS / public JSON, robots.txt, terms) and record the verdict in `docs/SOURCES.md`. Sources that need scraping a ToS-protected site (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound...) stay link-out only, even when popular repos scrape them.
+- ☐ Candidates to check first:
+  - remote and global boards: Remotive, Arbeitnow, Jobicy, The Muse, Findwork, Landing.jobs, 4dayweek, Web3.career / crypto boards
+  - India: Hasjob, Instahyre, Cutshort, YC-style India startup lists
+  - community lists: Hacker News "Who is hiring" (official HN / Algolia API); GitHub new-grad and early-career lists (SimplifyJobs, etc.) — strong for 0–2 YOE
+  - more employer ATS boards: public lists of Greenhouse / Lever / Ashby / Workday employers, fed through `ats_detect.py`
+- ☐ One connector per approved source: same contract as Phase 1 (fixture + offline test + rate limit + attribution), registered in `connectors/__init__.py` and `config/sources.yaml`.
+- **Accept when**:
+  - `docs/SOURCES.md` lists every surveyed source with a verdict and reason
+  - every approved source has a passing offline test
+  - a live ingest shows per-source counts
 
 ### Phase 2: Filtering, scoring, queue, nightly run ☐
 - ☐ YOE v2:
@@ -345,3 +359,10 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
     - `tailor.suggest` / `apply-pack` should re-ground stored versions too (P3)
     - facts unknown-key check and `absent_in:` (P3)
     - `/api/ingest` response should list robots-blocked companies (P5)
+- 2026-11-11: **Phase 1 built** (4 builders), integrated and run live.
+  - **Live ingest:** 37 company boards + 5 job boards → 770 jobs stored, 124 of them from boards; 47 with real salary numbers (F2 fixed: Ashby nests salary in `summaryComponents`).
+  - **Discovery:** 2,511 companies with tiers (brand 174 · funded 1,894 · unknown 431 · excluded 12).
+  - **Targets:** all 7 resolved; PromptQL via Gem (robots exemption, your call). Freshworks stays manual (SmartRecruiters robots disallow). Postman's board still 404s.
+  - **Himalayas:** robots.txt forbids paging, so page 1 per query only.
+  - **Tests:** 537 green, PII clean.
+  - **Next:** Phase 1 review → fixes → mark ☑ → Phase 1b (many more sources).

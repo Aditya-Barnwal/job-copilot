@@ -1,0 +1,27 @@
+[
+  {
+    "id": "4621552004",
+    "title": "Founding Engineer, Agents",
+    "location": {"name": "Bengaluru, India"},
+    "location_type": "hybrid",
+    "employment_type": "full_time",
+    "departments": [{"id": "4061506004", "name": "Engineering"}],
+    "offices": [{"id": "1", "name": "Bengaluru"}],
+    "content": "<p>Build <strong>agent infrastructure</strong>.</p>",
+    "content_plain": "Build agent infrastructure.",
+    "first_published_at": "2026-10-09T20:19:43.000Z",
+    "updated_at": "2026-11-01T20:02:47.278Z",
+    "absolute_url": "https://jobs.gem.com/promptql/4621552004"
+  },
+  {
+    "id": "4621552005",
+    "title": "Developer Advocate",
+    "location": {"name": ""},
+    "location_type": "remote",
+    "departments": [],
+    "offices": [{"id": "2", "name": "San Francisco"}],
+    "content": "<p>Talk to developers.</p>",
+    "updated_at": "2026-11-03T20:02:47.278Z",
+    "absolute_url": null
+  }
+]

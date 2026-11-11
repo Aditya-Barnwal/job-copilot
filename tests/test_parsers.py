@@ -329,3 +329,23 @@ def test_normalize_company_name_and_domain():
     assert d("https://www.Emergent.sh/careers") == "emergent.sh"
     assert d("revenuecat.com") == "revenuecat.com"
     assert d("https://jobs.ashbyhq.com:443/litellm") == "jobs.ashbyhq.com"
+
+
+def test_ashby_compensation_nested_live_shape():
+    """F2: the live Ashby API nests typed salary numbers in summaryComponents /
+    compensationTiers[].components; the parser must read them, not just the text."""
+    from jobcopilot.connectors.ashby import _parse_compensation
+    comp = {
+        "compensationTierSummary": "$180K – $220K • 0.1% – 0.2%",
+        "summaryComponents": [
+            {"compensationType": "EquityPercentage", "minValue": 0.1, "maxValue": 0.2},
+            {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD",
+             "minValue": 180000, "maxValue": 220000},
+        ],
+        "compensationTiers": [{"title": "Zone A", "components": [
+            {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD",
+             "minValue": 180000, "maxValue": 220000}]}],
+    }
+    c = _parse_compensation(comp)
+    assert (c.currency, c.min_value, c.max_value, c.interval) == ("USD", 180000, 220000, "1 YEAR")
+    assert c.summary.startswith("$180K")

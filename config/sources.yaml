@@ -15,6 +15,7 @@ http:
   #     key-gated and unused today. Decide explicitly if you ever add keys.
   robots_exempt_hosts:
     api.ashbyhq.com: "Ashby public Job Postings API (developers.ashbyhq.com) built for job boards; its robots.txt answers 401 so it cannot be read"
+    api.gem.com: "Gem public Job Board API (/job_board/v0/{slug}/job_posts) documented for career sites; its robots.txt answers 403 so it cannot be read. Exempted at the user's request 2026-11-11 (PromptQL)."
 
   # DO-NOT-AUTOMATE (docs/SOURCES.md): the HTTP client refuses these hosts and all
   # their subdomains outright, whoever the caller is. Link out to them instead.
@@ -36,7 +37,7 @@ boards:
     attribution: {name: Himalayas, url: "https://himalayas.app"}
     apply_rule: source_link          # terms: every Apply must use applicationLink
     queries: ["software engineer", "backend engineer", "machine learning engineer", "ai engineer", "full stack engineer"]
-    max_pages_per_query: 2           # search API pages of 20 — a few pages a day, never a crawl
+    max_pages_per_query: 1           # robots.txt disallows ?page= on /jobs (checked 2026-11-11): page 1 only; widen via more queries, never by dodging the rule
     drop_expired: true
   workingnomads:
     enabled: true

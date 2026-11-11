@@ -1,0 +1,39 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 3,
+  "content": [
+    {
+      "id": "744000101010101",
+      "name": "Senior Software Engineer - Backend",
+      "uuid": "0f1e2d3c-0000-4000-8000-000000000001",
+      "refNumber": "REF1001",
+      "company": {"identifier": "Freshworks", "name": "Freshworks"},
+      "releasedDate": "2026-11-02T09:30:00.000Z",
+      "location": {"city": "Bengaluru", "region": "Karnataka", "country": "in", "remote": false, "hybrid": true,
+                   "fullLocation": "Bengaluru, Karnataka, India"},
+      "department": {"id": "1001", "label": "Engineering"},
+      "typeOfEmployment": {"id": "permanent", "label": "Full-time"},
+      "ref": "https://api.smartrecruiters.com/v1/companies/Freshworks/postings/744000101010101"
+    },
+    {
+      "id": "744000101010102",
+      "name": "Site Reliability Engineer",
+      "company": {"identifier": "Freshworks", "name": "Freshworks"},
+      "releasedDate": "2026-10-20T09:30:00.000Z",
+      "location": {"city": "", "region": "", "country": "in", "remote": true, "hybrid": false,
+                   "fullLocation": ", , India"},
+      "function": {"id": "engineering", "label": "Engineering"},
+      "ref": "https://api.smartrecruiters.com/v1/companies/Freshworks/postings/744000101010102"
+    },
+    {
+      "id": "744000101010103",
+      "name": "Product Manager",
+      "company": {"identifier": "Freshworks", "name": "Freshworks"},
+      "releasedDate": "2026-09-01T09:30:00.000Z",
+      "location": {"city": "San Mateo", "region": "CA", "country": "us", "remote": false, "hybrid": false,
+                   "fullLocation": "San Mateo, CA, United States"},
+      "department": {"label": "Product"}
+    }
+  ]
+}

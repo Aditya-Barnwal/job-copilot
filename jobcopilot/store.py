@@ -90,10 +90,16 @@ _POSTING_FIELDS = (
     "comp_summary", "posted_at", "posted_age_days", "freshness",
     "package_estimated", "country_uncertain", "seniority_high",
     "min_yoe_required", "yoe_is_preferred",
+    # v2 (Phase 1)
+    "apply_url", "region_restrictions", "timezone_restrictions", "tz_requirement_text",
+    "attribution_name", "attribution_url", "expires_at", "canonical_key", "company_id",
 )
+_JSON_LIST_FIELDS = ("region_restrictions", "timezone_restrictions")
 
 
 def _row_from_filter_result(r: FilterResult) -> dict[str, Any]:
+    from .dedupe import canonical_key  # local: dedupe imports models only, but keep store light
+
     j = r.job
     comp = j.compensation
     return dict(
@@ -123,31 +129,93 @@ def _row_from_filter_result(r: FilterResult) -> dict[str, Any]:
         seniority_high=int(j.seniority_high),
         min_yoe_required=j.min_yoe_required,
         yoe_is_preferred=int(j.yoe_is_preferred),
+        apply_url=j.apply_url or j.url or None,
+        region_restrictions=json.dumps(list(j.region_restrictions or [])),
+        timezone_restrictions=json.dumps(list(j.timezone_restrictions or [])),
+        tz_requirement_text=j.tz_requirement_text,
+        attribution_name=j.attribution_name,
+        attribution_url=j.attribution_url,
+        expires_at=j.expires_at,
+        canonical_key=getattr(j, "canonical_key", None) or canonical_key(j),
+        company_id=getattr(j, "company_id", None),
     )
 
 
-def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = None) -> tuple[int, int]:
-    """Insert new keys; update posting fields + last_seen on existing keys.
+def _find_existing(conn: sqlite3.Connection, row: dict, occurrences: list[dict]) -> Optional[sqlite3.Row]:
+    """The stored row this job belongs to: same key, a known listing, or the
+    same canonical role from a DIFFERENT source (two postings from one source
+    are two roles, see dedupe.py)."""
+    found = conn.execute("SELECT key, source FROM jobs WHERE key = ?", (row["key"],)).fetchone()
+    if found:
+        return found
+    for o in occurrences:
+        hit = conn.execute(
+            "SELECT j.key, j.source FROM job_sources s JOIN jobs j ON j.key = s.job_key "
+            "WHERE s.source = ? AND s.external_id = ?", (o["source"], o["external_id"]),
+        ).fetchone()
+        if hit:
+            return hit
+    mine = {o["source"] for o in occurrences}
+    for cand in conn.execute("SELECT key, source FROM jobs WHERE canonical_key = ?",
+                             (row["canonical_key"],)).fetchall():
+        theirs = {r["source"] for r in conn.execute(
+            "SELECT source FROM job_sources WHERE job_key = ?", (cand["key"],))}
+        theirs.add(cand["source"])
+        if not (theirs & mine):
+            return cand
+    return None
 
-    Preserves status, notes, scores, applied_version_id on update.
+
+def _write_sources(conn: sqlite3.Connection, job_key: str, occurrences: list[dict], now: float) -> None:
+    for o in occurrences:
+        conn.execute(
+            "INSERT INTO job_sources(job_key, source, external_id, url, apply_url, "
+            "attribution_name, attribution_url, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(source, external_id) DO UPDATE SET job_key = excluded.job_key, "
+            "url = excluded.url, apply_url = excluded.apply_url, "
+            "attribution_name = excluded.attribution_name, "
+            "attribution_url = excluded.attribution_url, last_seen = excluded.last_seen",
+            (job_key, o["source"], str(o["external_id"]), o.get("url"), o.get("apply_url"),
+             o.get("attribution_name"), o.get("attribution_url"), now, now),
+        )
+
+
+def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = None) -> tuple[int, int]:
+    """Insert new roles; update posting fields + last_seen on known ones.
+
+    A role already stored under another key (found via job_sources or the
+    canonical key) is updated in place, so it stays ONE row with every source
+    in job_sources. Posting fields are only overwritten by an equal-or-better
+    source (employer ATS beats a board), so a board re-listing can't replace
+    the ATS apply link. Preserves status, notes, scores, applied_version_id.
     Returns (inserted, updated).
     """
+    from .dedupe import source_rank, sources_of
+
     now = time.time()
     inserted = 0
     updated = 0
     with connect(db_path) as conn:
         for r in results:
             row = _row_from_filter_result(r)
-            existing = conn.execute("SELECT key FROM jobs WHERE key = ?", (row["key"],)).fetchone()
+            occurrences = sources_of(r.job)
+            existing = _find_existing(conn, row, occurrences)
             if existing:
-                set_clause = ", ".join(f"{f} = :{f}" for f in _POSTING_FIELDS)
-                row["_last"] = now
-                conn.execute(
-                    f"UPDATE jobs SET {set_clause}, last_seen = :_last WHERE key = :key",
-                    row,
-                )
+                target = existing["key"]
+                if source_rank(row["source"]) <= source_rank(existing["source"]):
+                    set_clause = ", ".join(f"{f} = :{f}" for f in _POSTING_FIELDS)
+                    conn.execute(
+                        f"UPDATE jobs SET {set_clause}, last_seen = :_last WHERE key = :_target",
+                        {**row, "_last": now, "_target": target},
+                    )
+                else:
+                    conn.execute("UPDATE jobs SET last_seen = ?, "
+                                 "company_id = COALESCE(company_id, ?) WHERE key = ?",
+                                 (now, row["company_id"], target))
                 updated += 1
             else:
+                target = row["key"]
                 row["first_seen"] = now
                 row["last_seen"] = now
                 cols = list(row.keys())
@@ -156,7 +224,53 @@ def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = No
                     row,
                 )
                 inserted += 1
+            _write_sources(conn, target, occurrences, now)
     return inserted, updated
+
+
+def purge_expired(today: Optional[str] = None, db_path: Path | str | None = None) -> int:
+    """Delete untouched ('new') rows whose source listing has expired (D11:
+    Himalayas jobs past expiryDate are purged). Rows the user acted on stay."""
+    today = today or time.strftime("%Y-%m-%d")
+    with connect(db_path) as conn:
+        keys = [r["key"] for r in conn.execute(
+            "SELECT key FROM jobs WHERE expires_at IS NOT NULL AND expires_at != '' "
+            "AND substr(expires_at, 1, 10) < ? AND status = 'new' "
+            "AND applied_version_id IS NULL", (today,))]
+        for k in keys:
+            conn.execute("DELETE FROM job_sources WHERE job_key = ?", (k,))
+            conn.execute("DELETE FROM jobs WHERE key = ?", (k,))
+    return len(keys)
+
+
+def job_sources(key: str, db_path: Path | str | None = None) -> list[dict]:
+    """Every place this job was seen, oldest first."""
+    with connect(db_path) as conn:
+        return _sources_for(conn, key)
+
+
+def _sources_for(conn: sqlite3.Connection, key: str) -> list[dict]:
+    try:
+        rows = conn.execute(
+            "SELECT source, external_id, url, apply_url, attribution_name, attribution_url, "
+            "first_seen, last_seen FROM job_sources WHERE job_key = ? ORDER BY first_seen, id",
+            (key,)).fetchall()
+    except sqlite3.OperationalError:  # a DB still on schema v1 (read before init_db)
+        return []
+    return [dict(r) for r in rows]
+
+
+def _decode_json_lists(row: dict) -> dict:
+    for f in _JSON_LIST_FIELDS:
+        v = row.get(f)
+        if isinstance(v, str) and v:
+            try:
+                row[f] = json.loads(v)
+            except Exception:
+                row[f] = []
+        elif v is None and f in row:
+            row[f] = []
+    return row
 
 
 def _decode_keywords(row: dict) -> dict:
@@ -271,16 +385,23 @@ def list_jobs(
     with connect(db_path) as conn:
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
         user_yoe = _user_yoe(conn)
-    return [_derive(_decode_keywords(r), user_yoe) for r in rows]
+    return [_derive(_decode_json_lists(_decode_keywords(r)), user_yoe) for r in rows]
 
 
 def get_job(key: str, db_path: Path | str | None = None) -> Optional[dict]:
     with connect(db_path) as conn:
         row = conn.execute("SELECT * FROM jobs WHERE key = ?", (key,)).fetchone()
         user_yoe = _user_yoe(conn)
+        sources = _sources_for(conn, key) if row else []
     if not row:
         return None
-    return _derive(_decode_keywords(dict(row)), user_yoe)
+    job = _derive(_decode_json_lists(_decode_keywords(dict(row))), user_yoe)
+    if not sources:  # rows stored before v2 have no job_sources yet
+        sources = [{k: job.get(k) for k in ("source", "external_id", "url", "apply_url",
+                                             "attribution_name", "attribution_url",
+                                             "first_seen", "last_seen")}]
+    job["sources"] = sources
+    return job
 
 
 def set_status(key: str, status: str, notes: Optional[str] = None,
@@ -310,6 +431,55 @@ def status_counts(db_path: Path | str | None = None) -> dict[str, int]:
     with connect(db_path) as conn:
         rows = conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status").fetchall()
     return {r["status"]: r["n"] for r in rows}
+
+
+# --- source state (per-source health + conditional-fetch memory) --------
+
+_SOURCE_STATE_FIELDS = ("etag", "last_modified", "content_hash", "last_run", "last_ok",
+                        "last_error", "items", "state")
+
+
+def _decode_state(row: dict) -> dict:
+    v = row.get("state")
+    if isinstance(v, str) and v:
+        try:
+            row["state"] = json.loads(v)
+        except Exception:
+            row["state"] = None
+    return row
+
+
+def get_source_state(source: str, db_path: Path | str | None = None) -> Optional[dict]:
+    """The source_state row for `source` (`state` JSON-decoded), or None."""
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM source_state WHERE source = ?", (source,)).fetchone()
+    return _decode_state(dict(row)) if row else None
+
+
+def set_source_state(source: str, db_path: Path | str | None = None, **fields: Any) -> None:
+    """Upsert only the given columns, leaving the rest (e.g. an ETag) intact.
+
+    `state` may be any JSON-serialisable value. Unknown columns raise, so a typo
+    can't silently drop health data.
+    """
+    bad = set(fields) - set(_SOURCE_STATE_FIELDS)
+    if bad:
+        raise ValueError(f"unknown source_state fields: {sorted(bad)}")
+    if "state" in fields and fields["state"] is not None and not isinstance(fields["state"], str):
+        fields["state"] = json.dumps(fields["state"])
+    with connect(db_path) as conn:
+        conn.execute("INSERT INTO source_state(source) VALUES (?) ON CONFLICT(source) DO NOTHING",
+                     (source,))
+        if fields:
+            cols = ", ".join(f"{k} = ?" for k in fields)
+            conn.execute(f"UPDATE source_state SET {cols} WHERE source = ?",
+                         (*fields.values(), source))
+
+
+def list_source_state(db_path: Path | str | None = None) -> list[dict]:
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM source_state ORDER BY source").fetchall()
+    return [_decode_state(dict(r)) for r in rows]
 
 
 # --- meta / resume base -------------------------------------------------

@@ -8,8 +8,8 @@ Re-check terms when a source starts failing or every ~6 months. Anything marked 
 | Source | Verdict | How we ingest | Must-dos |
 |---|---|---|---|
 | Greenhouse / Lever / Ashby / Workday CXS | OK-API (public board APIs) | existing connectors | per-host rate limit |
-| SmartRecruiters | OK-API | `api.smartrecruiters.com/v1/companies/{id}/postings` | — |
-| Gem | OK-API | `api.gem.com/job_board/v0/{slug}/job_posts/` (Greenhouse-like JSON) | — |
+| SmartRecruiters | **robots disallow** (`User-agent: * Disallow: /`, only LinkedInBot allowed; checked 2026-11-11) | connector built, not used | Freshworks stays manual — do not exempt |
+| Gem | OK-API — robots.txt unreadable (403), **exempted** as a documented public job-board API (user's call, 2026-11-11) | `api.gem.com/job_board/v0/{slug}/job_posts/` | rate-limited like every host |
 | **Himalayas** | OK-API + **attribution** | `/jobs/api/search` (filtered, few pages/day) | visible "via Himalayas" link; **Apply must use `applicationLink`**; drop jobs after `expiryDate`; no bulk collection; free key → 60/min, 10k/day |
 | **Working Nomads** | OK-API | `/api/exposed_jobs/` (≈36 recent, no paging) | no resale / competing product |
 | **Jobspresso** | OK-RSS, personal use only | `/feed/job_feed/` (path form — `?feed=` is robots-disallowed) | feed holds only ~10 newest (≈1–2 h) → poll every 2 h; store minimal fields + link; no HTML scraping |

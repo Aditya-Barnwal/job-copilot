@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	xmlns:job_listing="https://jobspresso.co"
+>
+
+<channel>
+	<title>Jobs Archive | Jobspresso</title>
+	<atom:link href="https://jobspresso.co/feed/job_feed/" rel="self" type="application/rss+xml" />
+	<link>https://jobspresso.co</link>
+	<description>Jobspresso is the easiest way to find remote jobs and careers at interesting and innovative companies.</description>
+	<lastBuildDate>Wed, 11 Nov 2026 07:32:58 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=7.1.4</generator>
+
+<image>
+	<url>https://jobspresso.co/wp-content/uploads/cropped-social-square-1080-32x32.png</url>
+	<title>Jobs Archive | Jobspresso</title>
+	<link>https://jobspresso.co</link>
+	<width>32</width>
+	<height>32</height>
+</image> 
+<site xmlns="com-wordpress:feed-additions:1">88453655</site>	<item>
+		<title>Outbound Business Development Representative for Dec 2026 Graduates</title>
+		<link>https://jobspresso.co/job/outbound-business-development-representative-for-dec-2026-graduates/</link>
+		
+		<dc:creator><![CDATA[HubSpot<br>⚲&nbsp;United States]]></dc:creator>
+		<pubDate>Wed, 11 Nov 2026 07:27:46 +0000</pubDate>
+				<guid isPermaLink="false">https://jobspresso.co/job/outbound-business-development-representative-for-dec-2026-graduates/</guid>
+
+					<description><![CDATA[🚨 DECEMBER 2026 GRADUATES: THIS ROLE IS FOR YOU. 🚨 We’re hiring Outbound Business Development Representatives (BDRs) for start dates after December 2026 graduation. This opening is specifically intended for candidates graduating in December 2026. Attention Graduates! 🚀 Join HubSpot as an Outbound Bu]]></description>
+										<content:encoded><![CDATA[<p>(trimmed for fixture)</p>]]></content:encoded>
+					
+		
+		
+		<post-id xmlns="com-wordpress:feed-additions:1">165640</post-id><media:content xmlns:media="http://search.yahoo.com/mrss/" medium="image" type="image/jpeg" url="https://jobspresso.co/wp-content/uploads/hubspot-400-1-150x150.jpg" width="70" height="70" /><job_listing:location><![CDATA[United States]]></job_listing:location>
+<job_listing:job_type><![CDATA[Sales]]></job_listing:job_type>
+<job_listing:job_category><![CDATA[Full Time]]></job_listing:job_category>
+<job_listing:company><![CDATA[HubSpot]]></job_listing:company>
+<job_listing:salary><![CDATA[US$54k - US$90k]]></job_listing:salary>
+	</item>
+<item>
+		<title>Solutions Consultant, Post Sales, Mid-Market</title>
+		<link>https://jobspresso.co/job/solutions-consultant-post-sales-mid-market/</link>
+		
+		<dc:creator><![CDATA[Ramp<br>⚲&nbsp;United States, Canada]]></dc:creator>
+		<pubDate>Wed, 11 Nov 2026 07:27:39 +0000</pubDate>
+				<guid isPermaLink="false">https://jobspresso.co/job/solutions-consultant-post-sales-mid-market/</guid>
+
+					<description><![CDATA[About Ramp Ramp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books]]></description>
+										<content:encoded><![CDATA[<p>(trimmed for fixture)</p>]]></content:encoded>
+					
+		
+		
+		<post-id xmlns="com-wordpress:feed-additions:1">165636</post-id><media:content xmlns:media="http://search.yahoo.com/mrss/" medium="image" type="image/jpeg" url="https://jobspresso.co/wp-content/uploads/ramp-400-150x150.jpg" width="70" height="70" /><job_listing:location><![CDATA[United States, Canada]]></job_listing:location>
+<job_listing:job_type><![CDATA[Engineer, Sales]]></job_listing:job_type>
+<job_listing:job_category><![CDATA[Full Time]]></job_listing:job_category>
+<job_listing:company><![CDATA[Ramp]]></job_listing:company>
+<job_listing:salary><![CDATA[US$151k - US$231k]]></job_listing:salary>
+	</item>
+<item>
+		<title>Software Engineer 5, Training Platform</title>
+		<link>https://jobspresso.co/job/software-engineer-5-training-platform/</link>
+		
+		<dc:creator><![CDATA[Netflix<br>⚲&nbsp;United States]]></dc:creator>
+		<pubDate>Wed, 11 Nov 2026 07:27:37 +0000</pubDate>
+				<guid isPermaLink="false">https://jobspresso.co/job/software-engineer-5-training-platform/</guid>
+
+					<description><![CDATA[Building highly scalable and differentiated ML infrastructure is key to accelerating this innovation. Design and build the platform that powers large-scale machine learning model training, fine-tuning, model transformation and evaluations workflows and use cases from the entire company. Design easy-]]></description>
+										<content:encoded><![CDATA[<p>(trimmed for fixture)</p>]]></content:encoded>
+					
+		
+		
+		<post-id xmlns="com-wordpress:feed-additions:1">165635</post-id><media:content xmlns:media="http://search.yahoo.com/mrss/" medium="image" type="image/jpeg" url="https://jobspresso.co/wp-content/uploads/netflix-400-150x150.jpg" width="70" height="70" /><job_listing:location><![CDATA[United States]]></job_listing:location>
+<job_listing:job_type><![CDATA[Engineer]]></job_listing:job_type>
+<job_listing:job_category><![CDATA[Full Time]]></job_listing:job_category>
+<job_listing:company><![CDATA[Netflix]]></job_listing:company>
+	</item>
+<item>
+		<title>Creative Director</title>
+		<link>https://jobspresso.co/job/clickhouse-creative-director/</link>
+		
+		<dc:creator><![CDATA[ClickHouse<br>⚲&nbsp;United States]]></dc:creator>
+		<pubDate>Wed, 11 Nov 2026 07:27:32 +0000</pubDate>
+				<guid isPermaLink="false">https://jobspresso.co/job/clickhouse-creative-director/</guid>
+
+					<description><![CDATA[ClickHouse is the fastest analytical database in the world. Built for engineers and used by companies operating at massive scale.  Our users care about performance, clarity, and control. Our brand reflects that. We communicate directly, avoid marketing fluff, and focus on real technical capability. ]]></description>
+										<content:encoded><![CDATA[<p>(trimmed for fixture)</p>]]></content:encoded>
+					
+		
+		
+		<post-id xmlns="com-wordpress:feed-additions:1">165632</post-id><media:content xmlns:media="http://search.yahoo.com/mrss/" medium="image" type="image/jpeg" url="https://jobspresso.co/wp-content/uploads/clickhouse-400-1-150x150.jpg" width="70" height="70" /><job_listing:location><![CDATA[United States]]></job_listing:location>
+<job_listing:job_type><![CDATA[Design]]></job_listing:job_type>
+<job_listing:job_category><![CDATA[Full Time]]></job_listing:job_category>
+<job_listing:company><![CDATA[ClickHouse]]></job_listing:company>
+<job_listing:salary><![CDATA[US$210k - US$290k]]></job_listing:salary>
+	</item>
+</channel>
+</rss>

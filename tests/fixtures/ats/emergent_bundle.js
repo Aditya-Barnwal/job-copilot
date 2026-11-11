@@ -1,0 +1,1 @@
+var Zt=Object.defineProperty;const BOARD_TOKEN="emergentlabsinc",API_BASE="https://boards-api.greenhouse.io/v1/boards";async function lJ(){const e=await fetch(`${API_BASE}/${BOARD_TOKEN}/jobs?content=true`);return(await e.json()).jobs}

@@ -27,4 +27,49 @@ http:
     - wellfound.com
     - glassdoor.com
 
-boards: {}                       # Phase 1: per-board on/off + options
+# Job boards (Phase 1). Access rules + attribution duties: docs/SOURCES.md.
+# Each board's jobs carry "via <board>" attribution; apply_rule says where Apply
+# must point when we did NOT also find the job on the employer's own ATS.
+boards:
+  himalayas:
+    enabled: true
+    attribution: {name: Himalayas, url: "https://himalayas.app"}
+    apply_rule: source_link          # terms: every Apply must use applicationLink
+    queries: ["software engineer", "backend engineer", "machine learning engineer", "ai engineer", "full stack engineer"]
+    max_pages_per_query: 2           # search API pages of 20 — a few pages a day, never a crawl
+    drop_expired: true
+  workingnomads:
+    enabled: true
+    attribution: {name: Working Nomads, url: "https://www.workingnomads.com"}
+    apply_rule: prefer_ats
+    categories: [development]
+  jobspresso:
+    enabled: true
+    attribution: {name: Jobspresso, url: "https://jobspresso.co"}
+    apply_rule: prefer_ats
+    poll_hours: 2                    # feed only holds the last ~10 posts
+    store: minimal                   # personal-use terms: title/company/location/link only
+  remoteok:
+    enabled: true
+    attribution: {name: Remote OK, url: "https://remoteok.com"}   # followable link required
+    apply_rule: prefer_ats
+  weworkremotely:
+    enabled: true
+    attribution: {name: We Work Remotely, url: "https://weworkremotely.com"}
+    apply_rule: prefer_ats
+    feeds: ["https://weworkremotely.com/categories/remote-programming-jobs.rss",
+            "https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
+            "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss"]
+    store: minimal
+
+# Company discovery (Phase 1). Feeds the companies table; jobs still come from ATS APIs.
+discovery:
+  yc_oss:
+    enabled: true
+    url: "https://yc-oss.github.io/api/companies/hiring.json"
+  bangalore_startup_map:
+    enabled: true
+    url: "https://bangalorestartupmap.com/"
+    refresh: daily                   # in the 19:00 run; conditional GET + diff-based company pages
+    company_page_delay_sec: 5
+    attribution: {name: Bangalore Startup Map, url: "https://bangalorestartupmap.com"}

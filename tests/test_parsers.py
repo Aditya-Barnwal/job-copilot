@@ -317,3 +317,15 @@ def test_freshness_bucketing():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_normalize_company_name_and_domain():
+    from jobcopilot.normalize import normalize_company_name as n, domain_of as d
+    assert n("Emergent Labs, Inc.") == "emergent labs"
+    assert n("LiteLLM (BerriAI)") == "litellm"
+    assert n("Computer Age Management Services Ltd.") == "computer age management services"
+    assert n("Société Générale") == "societe generale"
+    assert n("Co") == "co" and n("") == ""
+    assert d("https://www.Emergent.sh/careers") == "emergent.sh"
+    assert d("revenuecat.com") == "revenuecat.com"
+    assert d("https://jobs.ashbyhq.com:443/litellm") == "jobs.ashbyhq.com"

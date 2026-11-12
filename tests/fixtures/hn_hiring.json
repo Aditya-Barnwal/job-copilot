@@ -1,0 +1,153 @@
+{
+ "id": 50338728,
+ "created_at": "2026-11-02T16:01:37.000Z",
+ "title": "Ask HN: Who is hiring? (November 2026)",
+ "type": "story",
+ "author": "whoishiring",
+ "story_id": 50338728,
+ "parent_id": null,
+ "text": "Please state the location and include REMOTE...",
+ "children": [
+  {
+   "id": 50338732,
+   "created_at": "2026-11-02T16:01:43.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user0",
+   "text": "Simple Analytics | DevOps Engineer | REMOTE (worldwide, any timezone) | Full-time, 32h, 24h possible | €5,000&#x2F;month (full-time) | <a href=\"https:&#x2F;&#x2F;www.simpleanalytics.com&#x2F;jobs&#x2F;devops\" rel=\"nofollow\">https:&#x2F;&#x2F;www.simpleanalytics.com&#x2F;jobs&#x2F;devops</a><p>Hi HN, I&#x27;m Adriaan. Simple Analytics exists thanks to HN: it started with my Show HN in 2018 [1]. Today we&#x27;re a self-funded, profitable team of four building privacy-first analytics.",
+   "children": [
+    {
+     "id": 90000001,
+     "created_at": "2026-11-02T17:00:00.000Z",
+     "parent_id": 50338732,
+     "story_id": 50338728,
+     "type": "comment",
+     "author": "replier",
+     "text": "Acme | Staff Engineer | REMOTE | https://acme.example/jobs",
+     "children": []
+    }
+   ]
+  },
+  {
+   "id": 50338736,
+   "created_at": "2026-11-02T16:01:53.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user1",
+   "text": "Synteq | Growth Lead &amp; Systems Administrator | Austin, TX | REMOTE (US) | Full-time<p>Synteq is a developer cloud running our own hardware and network. We do large-scale bare-metal, GPU, VPS, storage, and PaaS deployments across 5 US datacenters.",
+   "children": []
+  },
+  {
+   "id": 50338809,
+   "created_at": "2026-11-02T16:05:23.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user2",
+   "text": "Bridge AI Consulting | AI Consultant, Junior AI Consultant | REMOTE (US) | Full-time | $60K–$100K base + upside for new business, equity possible | Visa sponsorship possible<p>We&#x27;re a small, bootstrapped, profitable AI consulting firm. We embed with small and mid-size businesses (wealth management, real estate, construction, higher ed, nonprofits), learn how the work actually gets done, build what makes sens",
+   "children": []
+  },
+  {
+   "id": 50338907,
+   "created_at": "2026-11-02T16:09:48.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user3",
+   "text": "PostHog | Full-Time | Technical CSMs, SRE, Product Manager, AI Research Engineer | REMOTE (all remote) | Hiring GMT-8 to GMT+2 | PostHog makes your product self-driving.<p>* we have a public handbook (posthog.com&#x2F;handbook) if you want to learn how we work, pay and more in complete detail.",
+   "children": []
+  },
+  {
+   "id": 50339013,
+   "created_at": "2026-11-02T16:15:14.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user4",
+   "text": "MixRank (YC S11) | Software Engineers | 100% Remote (Global) | Full-Time MixRank processes petabytes of data every month through web crawling. Hundreds of customers use our data products, including Google, Amazon, Facebook, Intel, and Adobe, across industries such as finance, recruiting, sales, marketing, and security. We’re a fully remote company with a global footprint across 20+ countries. We’re growing, profitable, employee-owned, and have no dependence on outside funding. Applicants from all geographies and backgrounds are welcome. We’re looking for passionate individuals for whom programming is not just a job, but something they genuinely love to do. We’re obsessed with computers, programming, big data, databases, compilers, hardware, math, data science, and the internet. Does this sound like you? Please apply to join our team. Our codebase is friendly to new contributors. You’ll have a fully functional development environment within hours through full automation and will be pushing commits on your first day. Deployments to production happen multiple times per day and finish in under two minutes.Effectively all of our codebase is written in Python, Rust, SQL, JavaScript&#x2F;TypeScript, and Nix. The core technologies you’ll need familiarity with to be productive are Python, PostgreSQL, Linux, and Git.\nWe operate at a larger scale than typical startups. We run two datacenters with high-performance servers we’ve built ourselves, capable of handling the volumes of data we process. We’ve implemented our own distributed file system, perform full-scale web crawls, and download and run static analysis on the entire universe of published Android APKs and iOS IPAs.<p>Unlike a typical startup where you might spend half your time in meetings and the other half fixing Jira tickets, at MixRank you’ll challenge yourself with difficult technical problems that help you grow as an individual. We’re continuously",
+   "children": []
+  },
+  {
+   "id": 50339441,
+   "created_at": "2026-11-02T16:37:14.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user5",
+   "text": "Lyra | Full-Time | Applied AI Engineer | REMOTE (US Citizenship Required) |  Building the AI that builds satellites.<p>Lyra is building an AI-native platform to solve the problem of mission integration that exists today: a slow, expensive, and manual process of information extraction and design for satellite missions. You will work on a small, fast-paced te",
+   "children": []
+  },
+  {
+   "id": 50339975,
+   "created_at": "2026-11-02T17:08:46.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user6",
+   "text": "humans&amp; | Product Engineer (Member of Technical Staff) | San Francisco | ONSITE | Full-time<p>humans&amp; is a human-centric frontier AI lab. Our view is that AI should help people work together, so it has to understand people and the relationships between them, not just tasks.",
+   "children": []
+  },
+  {
+   "id": 50369581,
+   "created_at": "2026-11-04T18:28:02.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user7",
+   "text": "Oscilar.com | Sr&#x2F;Staff Software Engineers, Data Scientist, FDE, PM| REMOTE (US&#x2F;Canada&#x2F;Brazil&#x2F;Poland&#x2F;UK&#x2F;India) Full-time AI Risk Decisioning™ platform that helps organizations manage onboarding, fraud, credit, and compliance risks\nOpen roles: - Sr.&#x2F;Staff Analytics &amp; Data Architecture Engineer (US&#x2F;Canada) - Sr.&#x2F;Staff Java Backend Engineer (Brazil&#x2F;Poland&#x2F;India) - Staff Web SDK Engineer (US&#x2F;Brazil&#x2F;India&#x2F;Canada&#x2F;Poland&#x2F;UK) - Data Scientist (US&#x2F;Canada) - Forward Deployment Engineer (Brazil) - Product Manager AML (US&#x2F;Canada) - Product Manager Device and Behavior (US&#x2F;Canada) apply at: <a href=\"https:&#x2F;&#x2F;jobs.ashbyhq.com&#x2F;oscilar?utm_source=HackerNews\" rel=\"nofollow\">https:&#x2F;&#x2F;jobs.ashbyhq.com&#x2F;oscilar?utm_source=HackerNews</a>",
+   "children": []
+  },
+  {
+   "id": 50370932,
+   "created_at": "2026-11-04T20:20:22.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user8",
+   "text": "SentiLink | <a href=\"https:&#x2F;&#x2F;www.sentilink.com&#x2F;\" rel=\"nofollow\">https:&#x2F;&#x2F;www.sentilink.com&#x2F;</a> | Engineering &amp; Data Science | REMOTE, HYBRID, and ONSITE (UNITED STATES ONLY) | Full Time\nPrimarily hiring in the U.S. for more senior level roles.<p>We’re hiring across Engineering (Primarily Backend&#x2F;Data Platform) and Data Science &#x2F; ML roles. Hiring at Manager&#x2F;Director level as well as Senior IC levels. We’re language-agnostic and hire for fundamentals.",
+   "children": []
+  },
+  {
+   "id": 90000002,
+   "created_at": "2026-11-03T10:00:00.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user_syn",
+   "text": "Acme Robotics | Backend Engineer, Data Engineer | Bengaluru, India | ONSITE | ₹25–40 LPA | Apply: hiring@acme-robotics.example or <a href=\"mailto:hiring@acme-robotics.example\">mail us</a><p>We build warehouse robots. Contact jobs [at] acme-robotics [dot] example.",
+   "children": []
+  },
+  {
+   "id": 90000003,
+   "created_at": "2026-11-03T10:00:00.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": null,
+   "text": null,
+   "children": []
+  },
+  {
+   "id": 90000004,
+   "created_at": "2026-11-03T10:00:00.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user_syn",
+   "text": "Duranta-style prose: Foo Corp is hiring a computer vision engineer in Seattle, work-from-office.",
+   "children": []
+  },
+  {
+   "id": 90000005,
+   "created_at": "2026-11-03T10:00:00.000Z",
+   "parent_id": 50338728,
+   "story_id": 50338728,
+   "type": "comment",
+   "author": "user_syn",
+   "text": "Some Person | Software Engineer | India (REMOTE)<p>I&#x27;m a software engineer focused on backend work. Willing to relocate: Yes",
+   "children": []
+  }
+ ]
+}

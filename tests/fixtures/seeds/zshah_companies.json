@@ -1,0 +1,10 @@
+[
+  {"name": "1-800 Contacts", "slug": "1800contacts", "ats": "greenhouse"},
+  {"name": "1Password", "slug": "1password", "ats": "ashby"},
+  {"name": "1X", "slug": "1x", "ats": "recruitee"},
+  {"name": "1X", "slug": "1x", "ats": "ashby"},
+  {"name": "23andMe", "slug": "23andme", "ats": "workday", "wd": "wd5", "site": "23"},
+  {"name": "Bad Server", "slug": "badsrv", "ats": "workday", "wd": "x9", "site": "jobs"},
+  {"name": "Acosta Group", "slug": "eczy.fa.us2.oraclecloud.com", "ats": "oracle", "host": "eczy.fa.us2.oraclecloud.com", "site": "CX_1"},
+  {"name": "AbbVie", "slug": "AbbVie", "ats": "smartrecruiters"}
+]

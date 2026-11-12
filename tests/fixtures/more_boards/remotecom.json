@@ -1,0 +1,131 @@
+{
+ "jobs": [
+  {
+   "status": "open",
+   "description": null,
+   "title": "Payroll Specialist Lead - Germany",
+   "location": "EMEA",
+   "tags": [],
+   "application_id": null,
+   "employment_type": "Full-time",
+   "department": "Payroll",
+   "requirements": null,
+   "pwd_role": false,
+   "opened_at": "2026-11-10T13:28:09Z",
+   "accepting_applications": true,
+   "public_id": "f7e5d5f7-723e-4892-ae95-7babde6fb19b",
+   "workplace": "remote",
+   "already_applied": false,
+   "pay": {
+    "rows": [
+     {
+      "code": null,
+      "max": 64650,
+      "min": 57500,
+      "currency": "EUR",
+      "range_text": "€57,500 to €64,650"
+     }
+    ],
+    "range_text": "€57,500 to €64,650"
+   },
+   "pay_text": "Remote's Total Rewards philosophy is to ensure fair, unbiased compensation and fair equity pay along with competitive be …"
+  },
+  {
+   "status": "open",
+   "description": null,
+   "title": "Cash Application Specialist",
+   "location": "LATAM, NORAM",
+   "tags": [],
+   "application_id": null,
+   "employment_type": "Full-time",
+   "department": "Customer Experience",
+   "requirements": null,
+   "pwd_role": false,
+   "opened_at": "2026-11-06T16:23:20Z",
+   "accepting_applications": true,
+   "public_id": "578b5d2d-877d-4b1c-b4fd-95ce6a63f091",
+   "workplace": "remote",
+   "already_applied": false,
+   "pay": {
+    "rows": [
+     {
+      "code": null,
+      "max": 61900,
+      "min": 22000,
+      "currency": "USD",
+      "range_text": "$22,000 to $61,900"
+     }
+    ],
+    "range_text": "$22,000 to $61,900"
+   },
+   "pay_text": "Remote's Total Rewards philosophy is to ensure fair, unbiased compensation and fair equity pay along with competitive be …"
+  },
+  {
+   "status": "open",
+   "description": null,
+   "title": "Manager, Mobility",
+   "location": "APAC",
+   "tags": [],
+   "application_id": null,
+   "employment_type": "Full-time",
+   "department": "EOR Operations",
+   "requirements": null,
+   "pwd_role": false,
+   "opened_at": "2026-10-16T09:16:26Z",
+   "accepting_applications": true,
+   "public_id": "bafbe437-8af0-44be-bef6-bf8ee456cd8d",
+   "workplace": "remote",
+   "already_applied": false,
+   "pay": {
+    "rows": [
+     {
+      "code": null,
+      "max": 122350,
+      "min": 48300,
+      "currency": "USD",
+      "range_text": "$48,300 to $122,350"
+     }
+    ],
+    "range_text": "$48,300 to $122,350"
+   },
+   "pay_text": "Remote's Total Rewards philosophy is to ensure fair, unbiased compensation and fair equity pay along with competitive be …"
+  },
+  {
+   "status": "open",
+   "description": null,
+   "title": "Integrated Campaign Manager",
+   "location": "EMEA, NORAM",
+   "tags": [],
+   "application_id": null,
+   "employment_type": "Full-time",
+   "department": "Marketing",
+   "requirements": null,
+   "pwd_role": false,
+   "opened_at": "2026-10-13T10:08:22Z",
+   "accepting_applications": true,
+   "public_id": "a67929d2-7843-49d1-9c6f-2d7482eca901",
+   "workplace": "remote",
+   "already_applied": false,
+   "pay": {
+    "rows": [
+     {
+      "code": "EMEA",
+      "max": 110000,
+      "min": 75000,
+      "currency": "EUR",
+      "range_text": "EMEA: €75,000 to €110,000"
+     },
+     {
+      "code": "NORAM",
+      "max": 160000,
+      "min": 144000,
+      "currency": "USD",
+      "range_text": "NORAM: $144,000 to $160,000"
+     }
+    ],
+    "range_text": "EMEA: €75,000 to €110,000; NORAM: $144,000 to $160,000"
+   },
+   "pay_text": "Remote's Total Rewards philosophy is to ensure fair, unbiased compensation and fair equity pay along with competitive be …"
+  }
+ ]
+}

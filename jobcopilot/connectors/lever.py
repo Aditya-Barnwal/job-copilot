@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .base import Connector, DEFAULT_HEADERS
+from ..ats_detect import path_id
 from ..models import Job
 from ..normalize import (
     strip_html,
@@ -33,9 +34,20 @@ def _ms_to_iso(ms: Optional[int]) -> Optional[str]:
 class LeverConnector(Connector):
     source = "lever"
     BASE = "https://api.lever.co/v0/postings/{slug}"
+    BASE_EU = "https://api.eu.lever.co/v0/postings/{slug}"
+
+    @classmethod
+    def list_url(cls, slug: str, region: Optional[str] = None) -> str:
+        """Postings endpoint for a board; `region` is None/'us' or 'eu'. The slug is
+        validated and sent as ONE percent-encoded path segment."""
+        region = str(region or "us").strip().lower()
+        if region not in ("us", "eu"):
+            raise ValueError(f"lever region must be 'us' or 'eu', got {region!r}")
+        base = cls.BASE_EU if region == "eu" else cls.BASE
+        return base.format(slug=path_id(slug, "Lever site"))
 
     def fetch_raw(self, company: dict[str, Any]) -> Any:
-        url = self.BASE.format(slug=company["slug"])
+        url = self.list_url(company["slug"], company.get("region"))
         return self.client.get_json(
             url, params={"mode": "json"}, headers=DEFAULT_HEADERS, timeout=self.timeout
         )

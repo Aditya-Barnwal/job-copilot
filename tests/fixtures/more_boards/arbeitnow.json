@@ -1,0 +1,106 @@
+{
+ "data": [
+  {
+   "slug": "international-junior-consultant-healthcare-latam-north-america-at-cpc-berlin-88266",
+   "company_name": "Mammut Pharma",
+   "title": "International Junior Consultant Healthcare LATAM & North America at CPC",
+   "description": "<ul><li><p>We at Chameleon Pharma Consulting Group are supporting medium sized to bigger <strong>Pharma, Consumer Health, Aesthetic Medicine & Derma</strong> clients in Market Entry in <strong>Latin America, US/Canada, Asia, Europe and MENA</strong>.</p></li><li><p>Our unique services range from Com …",
+   "remote": false,
+   "url": "https://www.arbeitnow.com/jobs/companies/mammut-pharma/international-junior-consultant-healthcare-latam-north-america-at-cpc-berlin-88266",
+   "tags": [
+    "Business Consulting"
+   ],
+   "job_types": [
+    "Permanent employment (unbefristeter arbeitsvertrag)",
+    "entry"
+   ],
+   "location": "Berlin",
+   "created_at": 1794418252
+  },
+  {
+   "slug": "founder-associate-assistenz-der-geschaftsfuhrung-vollzeit-hamburg-262084",
+   "company_name": "besser zuhause GmbH",
+   "title": "Founder Associate / Assistenz der Geschäftsführung (m/w/d) - - Vollzeit",
+   "description": "<h2><strong>Du willst nicht zuschauen, wie ein Unternehmen gebaut wird – du willst es mitbauen.</strong></h2><p>besser zuhause baut Badezimmer für Menschen um, die zu Hause alt werden wollen. Unser Kernprodukt ist der Umbau von der Badewanne zur barrierearmen Dusche, komplett aus einer Hand: Beratun …",
+   "remote": false,
+   "url": "https://www.arbeitnow.com/jobs/companies/besser-zuhause-gmbh/founder-associate-assistenz-der-geschaftsfuhrung-vollzeit-hamburg-262084",
+   "tags": [
+    "Business Operations"
+   ],
+   "job_types": [
+    "Unbefristeter arbeitsvertrag",
+    "berufseinstieg"
+   ],
+   "location": "Hamburg",
+   "created_at": 1794416447
+  },
+  {
+   "slug": "remote-sales-support-manager-239174",
+   "company_name": "Enpal",
+   "title": "Sales Support Manager (w/m/d)",
+   "description": "<p style=\"min-height:1.5em\">Unser Ziel ist eine Solaranlage auf jedem Dach, ein Speicher in jedem Haus und ein E-Auto in jeder Garage. Enpal macht das möglich mit einer integrierten Gesamtlösung für dezentrale Energie – von Solaranlage und Batteriespeicher über Wallbox, Smart Meter bis zur Wärmepump …",
+   "remote": true,
+   "url": "https://www.arbeitnow.com/jobs/companies/enpal/remote-sales-support-manager-239174",
+   "tags": [
+    "Sales"
+   ],
+   "job_types": [
+    "Full Time"
+   ],
+   "location": "Remote",
+   "created_at": 1794411618
+  },
+  {
+   "slug": "remote-senior-sap-ams-consultant-sap-pp-uk-230733",
+   "company_name": "The Config Team",
+   "title": "Senior SAP AMS Consultant (SAP PP)",
+   "description": "<p><strong>Job title: </strong>Senior SAP AMS Consultant (SAP PP)</p><p><strong>Employment:</strong> Permanent</p><p><strong>Location: </strong>UK based</p><p><strong>Salary:</strong> Excellent basic salary</p><p><strong>Benefits:<span style=\"font-size:1.2em\"> </span></strong>24 days holiday, paid b …",
+   "remote": true,
+   "url": "https://www.arbeitnow.co.uk/jobs/companies/the-config-team/remote-senior-sap-ams-consultant-sap-pp-uk-230733",
+   "tags": [
+    "Application Management Services (AMS)",
+    "Remote"
+   ],
+   "job_types": [
+    "Experienced",
+    "fulltime permanent"
+   ],
+   "location": "Remote job",
+   "created_at": 1794411085
+  },
+  {
+   "slug": "sustainability-consultant-pcf-lca-climate-tech-berlin-12238",
+   "company_name": "Right Search",
+   "title": "Sustainability Consultant – PCF/LCA / Climate Tech (w/m/d)",
+   "description": "<p>If you do not speak German at a minimum C1 level, please do not apply!</p><p>Applying anyway is disrespectful and a waste of both your time and mine. </p><p>This requirement is clearly stated for a reason.</p><p><strong>No fluent German, no chance. No exceptions!</strong></p><h2>Unser Kunde</h2> …",
+   "remote": true,
+   "url": "https://www.arbeitnow.com/jobs/companies/right-search/sustainability-consultant-pcf-lca-climate-tech-berlin-12238",
+   "tags": [
+    "Remote",
+    "Power Engineering and Environmental Engineering"
+   ],
+   "job_types": [
+    "Unbefristeter arbeitsvertrag",
+    "berufserfahren"
+   ],
+   "location": "Berlin",
+   "created_at": 1794412867
+  }
+ ],
+ "links": {
+  "first": "https://www.arbeitnow.com/api/job-board-api?page=1",
+  "last": null,
+  "prev": null,
+  "next": "https://www.arbeitnow.com/api/job-board-api?page=2"
+ },
+ "meta": {
+  "current_page": 1,
+  "current_page_url": "https://www.arbeitnow.com/api/job-board-api?page=1",
+  "from": 1,
+  "path": "https://www.arbeitnow.com/api/job-board-api",
+  "per_page": 300,
+  "to": 300,
+  "terms": "This is a free public API for jobs, please do not abuse. I would appreciate linking back to the site. By using the API, you agree to the terms of service present on Arbeitnow.com",
+  "info": "Jobs are updated every hour and order by the `created_at` timestamp. Use `?page=` to paginate. Read more information here: https://www.arbeitnow.com/blog/job-board-api"
+ }
+}

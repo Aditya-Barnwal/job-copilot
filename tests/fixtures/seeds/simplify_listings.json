@@ -1,0 +1,8 @@
+[
+  {"source": "Simplify", "company_name": "Postman", "title": "Software Engineer I", "active": true, "url": "https://job-boards.greenhouse.io/postman/jobs/7000001", "locations": ["Bangalore, India"]},
+  {"source": "Simplify", "company_name": "Postman", "title": "Software Engineer I, Platform", "active": false, "url": "https://job-boards.greenhouse.io/postman/jobs/7000002", "locations": ["Bangalore, India"]},
+  {"source": "Simplify", "company_name": "3M", "title": "New Grad Engineer", "active": true, "url": "https://3m.wd1.myworkdayjobs.com/en-US/search/job/St-Paul/Engineer_R01", "locations": ["St. Paul, MN"]},
+  {"source": "Simplify", "company_name": "Sainsbury's", "title": "Trading Assistant", "active": false, "url": "https://hdhe.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/400053741", "locations": ["Warwick, UK"]},
+  {"source": "Simplify", "company_name": "Plaid", "title": "Software Engineer - New Grad", "active": true, "url": "https://jobs.lever.co/plaid/abc-123?lever-source=Simplify", "locations": ["San Francisco, CA"]},
+  {"source": "Simplify", "company_name": "AbbVie", "title": "Engineer", "active": true, "url": "https://jobs.smartrecruiters.com/AbbVie/744000", "locations": ["Remote"]}
+]

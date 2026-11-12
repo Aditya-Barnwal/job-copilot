@@ -24,6 +24,7 @@ import re
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from xml.etree.ElementTree import ParseError
 from typing import Any, Optional
 
 import requests
@@ -43,17 +44,23 @@ SCAN_HTML_CHARS = 1_000_000
 SCAN_JS_CHARS = 2_000_000
 MAX_URL_CHARS = 8_192
 
-API_ATS = ("greenhouse", "lever", "ashby", "workday", "smartrecruiters", "gem")
+# New ATSs whose board id is a subdomain (one DNS label), not a path segment.
+HOST_ATS = frozenset({"recruitee", "teamtailor", "pinpoint", "personio", "bamboohr", "keka"})
+# ATSs with a public list endpoint we can confirm with one call (verify_result).
+NEW_ATS = ("recruitee", "workable", "rippling", "teamtailor", "pinpoint", "personio",
+           "bamboohr", "keka")
+API_ATS = ("greenhouse", "lever", "ashby", "workday", "smartrecruiters", "gem") + NEW_ATS
 
 
 @dataclass
 class AtsResult:
-    ats: Optional[str] = None            # greenhouse|lever|ashby|workday|smartrecruiters|gem|turbohire|manual|None
+    ats: Optional[str] = None            # greenhouse|lever|ashby|workday|smartrecruiters|gem|recruitee|workable|rippling|teamtailor|pinpoint|personio|bamboohr|keka|turbohire|manual|None
     slug: Optional[str] = None
     tenant: Optional[str] = None         # workday
     wd_server: Optional[str] = None      # workday, e.g. "wd1"
     site: Optional[str] = None           # workday
-    region: Optional[str] = None         # "eu" or None
+    region: Optional[str] = None         # greenhouse/lever: "eu" or None; personio: "de" or None (.com)
+    org_id: Optional[str] = None         # keka: organisation uuid (spares the careers-page fetch)
     confidence: float = 0.0
     evidence: str = ""
     verified: bool = False
@@ -89,6 +96,33 @@ _WD = re.compile(
 _SR = re.compile(r"(?:careers|jobs)\.smartrecruiters\.com/(?P<slug>[\w-]+)", re.I)
 _GEM = re.compile(r"jobs\.gem\.com/(?P<slug>[\w-]+)", re.I)
 _TURBOHIRE = re.compile(r"(?<![\w-])(?P<slug>[\w-]{1,63})\.turbohire\.co\b", re.I)
+# The eight newer ATSs. Subdomain-hosted boards (<slug>.<ats>.com) share _sub(): the
+# label is 1-63 chars, may only start where a label starts (lookbehind) and is followed
+# by a literal, so a long run of label chars is scanned once per start, never re-tried.
+# The host must END after the vendor domain: 'acme.recruitee.com.evil.example' is not Recruitee.
+_END = r"(?![\w-]|\.[A-Za-z0-9])"
+
+
+def _sub(domain: str, tail: str = "") -> re.Pattern[str]:
+    return re.compile(rf"(?<![\w-])(?P<slug>[A-Za-z0-9-]{{1,63}})\.{domain}{tail}", re.I)
+
+
+_RECRUITEE = _sub(r"recruitee\.com", _END)
+_TEAMTAILOR = _sub(r"teamtailor\.com", _END)
+_PINPOINT = _sub(r"pinpointhq\.com", _END)
+_WORKABLE_SUB = _sub(r"workable\.com", _END)
+_PERSONIO = re.compile(r"(?<![\w-])(?P<slug>[A-Za-z0-9-]{1,63})\.jobs\.personio\.(?P<tld>com|de)" + _END, re.I)
+_BAMBOO = _sub(r"bamboohr\.com", r"/(?:careers|jobs)(?![\w-])")
+_KEKA = _sub(r"keka\.com", r"/careers(?![\w-])")
+_WORKABLE = re.compile(r"apply\.workable\.com/(?:api/v\d/(?:widget/)?accounts/)?(?P<slug>[\w-]+)", re.I)
+_RIPPLING = re.compile(r"ats\.rippling\.com/(?:api/v2/board/)?(?P<slug>[\w-]+)", re.I)
+_KEKA_ORG = re.compile(r"/ats/documents/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/", re.I)
+# Hosts of these vendors that are not a customer's board.
+_NOT_HOSTS = frozenset({
+    "www", "app", "apps", "api", "cdn", "assets", "static", "docs", "help", "support", "blog",
+    "status", "admin", "login", "mail", "email", "partner", "partners", "developers",
+    "scripts", "marketplace", "resources", "apply", "careers", "career", "jobs",
+})
 _PHENOM = re.compile(r"cdn\.phenompeople\.com|\"refNum\"\s{0,16}:", re.I)
 _APPLY_URL = re.compile(r"\"applyUrl\"\s{0,16}:\s{0,16}\"([^\"]{1,2048})\"")
 
@@ -109,6 +143,7 @@ _JOB_LINK = re.compile(r"/(?:jobs?|careers?|positions?|openings?|roles?)/[\w%-]{
 _NOT_SLUGS = frozenset({
     "embed", "v1", "js", "api", "job_app", "job_board", "jobs", "search", "assets",
     "static", "favicon", "images", "css", "www", "cdn", "careers", "wday", "en-us",
+    "j", "o",   # apply.workable.com/j/<code>: a job link without its account
 })
 
 # Workday sites can legitimately be "jobs" (PayPal), so they get their own, shorter list.
@@ -135,6 +170,29 @@ def _valid_id(value: Optional[str]) -> bool:
 
 def _ok_slug(slug: Optional[str]) -> bool:
     return _valid_id(slug) and slug.lower() not in _NOT_SLUGS
+
+
+# A board that lives on its own subdomain (<slug>.recruitee.com) puts the id in
+# the HOST, so it must be one DNS label: no '.', no '_', no leading/trailing '-'.
+_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def path_id(value: Any, what: str = "board id") -> str:
+    """`value` as ONE percent-encoded URL path segment, for connector list URLs.
+    Raises ValueError for anything _ID_RE refuses, so a bad config row fails that
+    one company loudly instead of steering a request somewhere else."""
+    text = str(value if value is not None else "").strip()
+    if not _valid_id(text):
+        raise ValueError(f"unusable {what} {text!r}")
+    return urllib.parse.quote(text, safe="")
+
+
+def host_label(value: Any, what: str = "subdomain") -> str:
+    """`value` as one lower-case DNS label, for boards hosted on <label>.<ats>.com."""
+    text = str(value if value is not None else "").strip().lower()
+    if _LABEL_RE.fullmatch(text) is None:
+        raise ValueError(f"unusable {what} {text!r}")
+    return text
 
 
 def _scan(text: str) -> list[AtsResult]:
@@ -166,6 +224,31 @@ def _scan(text: str) -> list[AtsResult]:
         for m in rx.finditer(text):
             if _ok_slug(m.group("slug")):
                 found.append(AtsResult(ats, slug=m.group("slug"), evidence=m.group(0)))
+    # The newer ATSs: a case-folded substring test first, so a page that never names
+    # the vendor costs one str.find instead of a regex pass over up to 2 MB.
+    low = text.lower()
+    for key, rx, ats in (("apply.workable.com", _WORKABLE, "workable"),
+                         ("ats.rippling.com", _RIPPLING, "rippling")):
+        if key in low:
+            for m in rx.finditer(text):
+                if _ok_slug(m.group("slug")):
+                    found.append(AtsResult(ats, slug=m.group("slug"), evidence=m.group(0)))
+    for key, rx, ats in (("recruitee.com", _RECRUITEE, "recruitee"),
+                         ("teamtailor.com", _TEAMTAILOR, "teamtailor"),
+                         ("pinpointhq.com", _PINPOINT, "pinpoint"),
+                         (".workable.com", _WORKABLE_SUB, "workable"),
+                         (".jobs.personio.", _PERSONIO, "personio"),
+                         ("bamboohr.com/", _BAMBOO, "bamboohr"),
+                         ("keka.com/", _KEKA, "keka")):
+        if key not in low:
+            continue
+        for m in rx.finditer(text):
+            slug = m.group("slug").lower()
+            if slug in _NOT_HOSTS or _LABEL_RE.fullmatch(slug) is None:
+                continue
+            tld = (m.groupdict().get("tld") or "").lower()
+            found.append(AtsResult(ats, slug=slug, region="de" if tld == "de" else None,
+                                   evidence=m.group(0)))
     return found
 
 
@@ -195,6 +278,16 @@ def detect_from_url(url: str) -> Optional[AtsResult]:
     return _pick(_scan(_clean((url or "")[:MAX_URL_CHARS])), CONF_URL)
 
 
+def _with_keka_org(hit: AtsResult, text: str) -> AtsResult:
+    """A Keka careers shell names its organisation id; keep it so the config row (and
+    verify) need no second page load. Read from text only; that path is never fetched."""
+    if hit.ats == "keka" and hit.org_id is None:
+        m = _KEKA_ORG.search(text)
+        if m:
+            hit.org_id = m.group(1).lower()
+    return hit
+
+
 def detect_from_html(html: str, base_url: str, *, max_chars: int = SCAN_HTML_CHARS) -> AtsResult:
     """Pure: fingerprint one fetched page (signals 1-2). Returns ats=None when the
     page holds no board link; the fetch-driven follow-ups live in detect().
@@ -202,7 +295,7 @@ def detect_from_html(html: str, base_url: str, *, max_chars: int = SCAN_HTML_CHA
     text = _clean((html or "")[:max_chars])
     hit = detect_from_url(base_url) if base_url else None
     if hit:
-        return hit
+        return _with_keka_org(hit, text)
     # Phenom is only a front end: its job JSON carries the real ATS in applyUrl.
     if _PHENOM.search(text):
         apply_urls = " ".join(_APPLY_URL.findall(text))
@@ -212,7 +305,7 @@ def detect_from_html(html: str, base_url: str, *, max_chars: int = SCAN_HTML_CHA
             return hit
     hit = _pick(_scan(text), CONF_LINK)
     if hit:
-        return hit
+        return _with_keka_org(hit, text)
     m = _GH_TOKEN.search(text)
     if m and _ok_slug(m.group("slug")) and ("greenhouse" in text.lower() or "boards-api" in text.lower()):
         r = AtsResult("greenhouse", slug=m.group("slug"), confidence=CONF_BUNDLE)
@@ -343,14 +436,25 @@ def verify_result(result: AtsResult, client: PoliteClient) -> AtsResult:
     if result.ats not in API_ATS:
         return result
     from .connectors.ashby import AshbyConnector
+    from .connectors.bamboohr import BambooHRConnector
     from .connectors.gem import GemConnector
     from .connectors.greenhouse import GreenhouseConnector
+    from .connectors.keka import KekaConnector, org_id_from_html
     from .connectors.lever import LeverConnector
+    from .connectors.personio import PersonioConnector
+    from .connectors.pinpoint import PinpointConnector
+    from .connectors.recruitee import RecruiteeConnector
+    from .connectors.rippling import RipplingConnector
     from .connectors.smartrecruiters import SmartRecruitersConnector
+    from .connectors.teamtailor import TeamtailorConnector, xml_root
+    from .connectors.workable import WorkableConnector
+    from .connectors.workday import WorkdayConnector
 
     h = {"Accept": "application/json"}
     ids = [result.tenant, result.site] if result.ats == "workday" else [result.slug]
-    if not all(_valid_id(i) for i in ids):
+    # Boards on <slug>.<ats>.com put the id in the HOST: a stricter, one-label rule.
+    check = _valid_id if result.ats not in HOST_ATS else (lambda v: bool(v) and _LABEL_RE.fullmatch(v) is not None)
+    if not all(check(i) for i in ids):
         result.note(f"verify skipped: unsafe board id {ids!r}"[:300])
         result.confidence = min(result.confidence, 0.2)
         return result
@@ -367,10 +471,8 @@ def verify_result(result: AtsResult, client: PoliteClient) -> AtsResult:
             data = client.get_json(AshbyConnector.list_url(result.slug), headers=h, **limits)
             count = len((data or {}).get("jobs") or [])
         elif result.ats == "lever":
-            base = (LeverConnector.BASE if result.region != "eu"
-                    else "https://api.eu.lever.co/v0/postings/{slug}")
-            data = client.get_json(base.format(slug=result.slug), params={"mode": "json"},
-                                   headers=h, **limits)
+            data = client.get_json(LeverConnector.list_url(result.slug, result.region),
+                                   params={"mode": "json"}, headers=h, **limits)
             count = len(data or [])
         elif result.ats == "smartrecruiters":
             data = client.get_json(SmartRecruitersConnector.list_url(result.slug),
@@ -379,10 +481,50 @@ def verify_result(result: AtsResult, client: PoliteClient) -> AtsResult:
         elif result.ats == "gem":
             data = client.get_json(GemConnector.list_url(result.slug), headers=h, **limits)
             count = len(data) if isinstance(data, list) else len((data or {}).get("job_posts") or [])
+        elif result.ats == "recruitee":
+            data = client.get_json(RecruiteeConnector.list_url(result.slug), headers=h, **limits)
+            count = len((data or {}).get("offers") or [])
+        elif result.ats == "workable":
+            data = client.get_json(WorkableConnector.list_url(result.slug), headers=h, **limits)
+            count = len((data or {}).get("jobs") or [])
+        elif result.ats == "rippling":
+            data = client.get_json(RipplingConnector.list_url(result.slug), headers=h, **limits)
+            count = int((data or {}).get("totalItems") or len((data or {}).get("items") or []))
+        elif result.ats == "pinpoint":
+            data = client.get_json(PinpointConnector.list_url(result.slug), headers=h, **limits)
+            count = len((data or {}).get("data") or [])
+        elif result.ats == "bamboohr":
+            data = client.get_json(BambooHRConnector.list_url(result.slug), headers=h, **limits)
+            count = len((data or {}).get("result") or [])
+        elif result.ats == "teamtailor":
+            body = client.get(TeamtailorConnector.list_url(result.slug),
+                              headers={"Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.5"},
+                              max_bytes=MAX_HTML_BYTES, deadline_sec=FETCH_DEADLINE_SEC).text
+            root = xml_root(body)
+            count = len(root.findall("./channel/item")) if root is not None else 0
+        elif result.ats == "personio":
+            body = client.get(PersonioConnector.list_url(result.slug, result.region),
+                              headers={"Accept": "application/xml, text/xml;q=0.9, */*;q=0.5"},
+                              max_bytes=MAX_JS_BYTES, deadline_sec=FETCH_DEADLINE_SEC).text
+            root = xml_root(body)
+            count = len(root.findall("position")) if root is not None else 0
+        elif result.ats == "keka":
+            if not result.org_id:  # the careers page names the org id; read it, nothing else
+                page = client.get(KekaConnector.page_url(result.slug), headers={"Accept": "text/html"},
+                                  max_bytes=MAX_HTML_BYTES, deadline_sec=FETCH_DEADLINE_SEC).text
+                result.org_id = org_id_from_html(page)
+            if not result.org_id:
+                result.note("verify failed: no Keka org id on the careers page")
+                result.confidence = min(result.confidence, 0.2)
+                return result
+            data = client.get_json(KekaConnector.list_url(result.slug, result.org_id), headers=h, **limits)
+            count = len(data) if isinstance(data, list) else 0
         else:  # workday
-            host = f"https://{result.tenant}.{result.wd_server}.myworkdayjobs.com"
+            tenant, wd_server, site = WorkdayConnector.endpoint_parts(
+                {"tenant": result.tenant, "wd_server": result.wd_server, "site": result.site})
+            host = f"https://{tenant}.{wd_server}.myworkdayjobs.com"
             data = client.post_json(
-                f"{host}/wday/cxs/{result.tenant}/{result.site}/jobs",
+                f"{host}/wday/cxs/{tenant}/{site}/jobs",
                 json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
                 headers={**h, "Content-Type": "application/json"}, idempotent=True, **limits)
             count = int((data or {}).get("total") or 0)
@@ -391,7 +533,7 @@ def verify_result(result: AtsResult, client: PoliteClient) -> AtsResult:
         if exc.status_code == 404:
             result.confidence = min(result.confidence, 0.2)
         return result
-    except (HttpError, requests.RequestException, ValueError) as exc:
+    except (HttpError, requests.RequestException, ValueError, ParseError) as exc:
         result.note(f"verify not possible: {type(exc).__name__}: {exc}"[:300])
         return result
     result.verified, result.job_count = True, count
@@ -444,6 +586,12 @@ def to_company_config(result: AtsResult, name: str, **extra: Any) -> dict[str, A
         row.update(connector=result.ats, slug=result.slug)
         if result.region:
             row["region"] = result.region
+    elif result.ats in NEW_ATS:
+        row.update(connector=result.ats, slug=result.slug)
+        if result.ats == "personio" and result.region == "de":
+            row["region"] = "de"
+        if result.ats == "keka" and result.org_id:
+            row["org_id"] = result.org_id
     elif result.ats == "workday":
         row.update(connector="workday", tenant=result.tenant,
                    wd_server=result.wd_server, site=result.site)

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <title>All jobs – Hasjob</title>
+  <link href="https://hasjob.co/"/>
+  <link rel="self" href="https://hasjob.co/feed"/>
+  <link rel="search" type="application/opensearchdescription+xml" href="https://hasjob.co/opensearch.xml" title="Hasjob" />
+  <updated>2026-11-10T12:11:19.105332+00:00Z</updated>
+  <id>https://hasjob.co/</id>
+  <icon>https://static.hasjob.co/static/img/hasjob-logo-200x200.png</icon>
+  <author><name>Hasjob</name></author>
+
+  <entry>
+    <title type="text">Digital Marketing Agency</title>
+    <id>https://hasjob.co/hookstech.in/l38x2</id>
+    <link href="https://hasjob.co/hookstech.in/l38x2"/>
+    <updated>2026-11-10T12:11:19.105332+00:00</updated>
+    <published>2026-11-10T12:11:19.105332+00:00</published>
+    <location>Madurai</location>
+    <content type="html">
+      &lt;p&gt;
+          &lt;strong&gt;&lt;a href="https://hookstech.in/"&gt;Azim&lt;/a&gt;&lt;/strong&gt;&lt;br/&gt;Madurai
+      &lt;/p&gt;
+      &lt;p&gt;Hooks Tech, a growth-focused digital partner based in Madurai, Tamil Nadu, helps businesses connect their brand, website, and marketing into  …</content>
+  </entry>
+<entry>
+    <title type="text">Cybersecurity Intern</title>
+    <id>https://hasjob.co/nestack.com/85q9v</id>
+    <link href="https://hasjob.co/nestack.com/85q9v"/>
+    <updated>2026-11-06T14:16:30.081137+00:00</updated>
+    <published>2026-11-06T14:16:30.081137+00:00</published>
+    <location>Hyderabad, Telangana, India (on-site, no WFH)</location>
+    <content type="html">
+      &lt;p&gt;
+          &lt;strong&gt;&lt;a href="https://nestack.com"&gt;Nestack Technologies Pvt Ltd&lt;/a&gt;&lt;/strong&gt;&lt;br/&gt;Hyderabad, Telangana, India (on-site, no WFH)
+      &lt;/p&gt;
+      &lt;p&gt;Nestack Technologies is hiring 2 Cybersecurity Interns at our Hyderabad office (H …</content>
+  </entry>
+<entry>
+    <title type="text">Founding Engineers — AI Systems, Sovereign Cloud &amp; Security (Remote)</title>
+    <id>https://hasjob.co/venport.in/yqg7j</id>
+    <link href="https://hasjob.co/venport.in/yqg7j"/>
+    <updated>2026-11-04T07:17:57.040237+00:00</updated>
+    <published>2026-11-04T07:17:57.040237+00:00</published>
+    <location>Anywhere</location>
+    <content type="html">
+      &lt;p&gt;&lt;img alt="Logo" src="https://hasjob.co/venport.in/yqg7j/logo"&gt;&lt;br/&gt;
+          &lt;strong&gt;&lt;a href="https://venportai-website.vercel.app/"&gt;Venport&lt;/a&gt;&lt;/strong&gt;&lt;br/&gt;Anywhere
+      &lt;/p&gt;
+      &lt;p&gt;&lt;strong&gt;Company:&lt;/strong&gt; Venp …</content>
+  </entry>
+<entry>
+    <title type="text">Generalist AI Trainer - remote, worldwide, $100/hr</title>
+    <id>https://hasjob.co/aitrainingjobs.xyz/xql2m</id>
+    <link href="https://hasjob.co/aitrainingjobs.xyz/xql2m"/>
+    <updated>2026-11-01T09:30:12.998456+00:00</updated>
+    <published>2026-11-01T09:30:12.998456+00:00</published>
+    <location>Anywhere</location>
+    <content type="html">
+      &lt;p&gt;
+          &lt;strong&gt;&lt;a href="https://aitrainingjobs.xyz"&gt;AI Training Jobs&lt;/a&gt;&lt;/strong&gt;&lt;br/&gt;Anywhere
+      &lt;/p&gt;
+      &lt;p&gt;AI Training Jobs is hiring Generalist AI Trainers directly.&lt;/p&gt;
+&lt;p&gt;Pay: $100/hr for hours worked, paid as a con …</content>
+  </entry>
+</feed>

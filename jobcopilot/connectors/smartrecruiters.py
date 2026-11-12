@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from .base import Connector, DEFAULT_HEADERS
+from ..ats_detect import path_id
 from ..models import Job, REMOTE, HYBRID
 from ..normalize import infer_workplace_type, infer_country_bucket, strip_html
 
@@ -50,7 +52,7 @@ class SmartRecruitersConnector(Connector):
 
     @classmethod
     def list_url(cls, slug: str) -> str:
-        return cls.BASE.format(slug=slug)
+        return cls.BASE.format(slug=path_id(slug, "SmartRecruiters company"))
 
     def fetch_raw(self, company: dict[str, Any]) -> Any:
         url = self.list_url(company["slug"])
@@ -98,7 +100,7 @@ class SmartRecruitersConnector(Connector):
                     location_text=location,
                     workplace_type=workplace,
                     country_bucket=infer_country_bucket(location),
-                    url=self.JOB_PAGE.format(slug=ident, id=pid) if pid else "",
+                    url=self.JOB_PAGE.format(slug=quote(str(ident), safe=''), id=quote(pid, safe='')) if pid else "",
                     description_text="",  # list has no body; fetch_detail() on demand
                     department=(p.get("department") or {}).get("label")
                     or (p.get("function") or {}).get("label"),
@@ -112,9 +114,11 @@ class SmartRecruitersConnector(Connector):
     def fetch_detail(self, job: Job, company: dict[str, Any]) -> str:
         """One posting's description text ('' if none). Failure-isolated like
         WorkdayConnector.fetch_detail: callers treat an exception as this posting only."""
-        ref = (job.raw or {}).get("ref") or (
-            f"{self.list_url(company['slug'])}/{job.external_id}" if job.external_id else ""
-        )
+        ref = str((job.raw or {}).get("ref") or "")
+        if not ref.startswith(self.BASE.split("{slug}")[0]):
+            # `ref` came from the API payload: only follow it on the API host itself.
+            ref = (f"{self.list_url(company['slug'])}/{quote(job.external_id, safe='')}"
+                   if job.external_id else "")
         if not ref:
             return ""
         data = self.client.get_json(ref, headers=DEFAULT_HEADERS, timeout=self.timeout) or {}

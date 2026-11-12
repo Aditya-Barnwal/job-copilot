@@ -22,20 +22,35 @@ e.g. https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced
 """
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import quote
 
 from .base import Connector, DEFAULT_HEADERS
+from ..ats_detect import host_label, path_id
 from ..models import Job
 from ..normalize import infer_workplace_type, infer_country_bucket, strip_html
+
+
+_WD_SERVER = re.compile(r"wd\d{1,3}")
 
 
 class WorkdayConnector(Connector):
     source = "workday"
 
+    @staticmethod
+    def endpoint_parts(company: dict[str, Any]) -> tuple[str, str, str]:
+        """(tenant, wd_server, site) from a config row, each validated for its place
+        in the URL: tenant is a host label, wd_server is wdN, site is one path segment
+        (returned percent-encoded). A bad row raises ValueError, never a stray request."""
+        tenant = host_label(company.get("tenant"), "Workday tenant")
+        wd_server = str(company.get("wd_server") or "wd1").strip().lower()
+        if _WD_SERVER.fullmatch(wd_server) is None:
+            raise ValueError(f"unusable Workday server {wd_server!r}")
+        return tenant, wd_server, path_id(company.get("site"), "Workday site")
+
     def _endpoint(self, company: dict[str, Any]) -> tuple[str, str, str]:
-        tenant = company["tenant"]
-        wd_server = company.get("wd_server", "wd1")
-        site = company["site"]
+        tenant, wd_server, site = self.endpoint_parts(company)
         host = f"https://{tenant}.{wd_server}.myworkdayjobs.com"
         list_url = f"{host}/wday/cxs/{tenant}/{site}/jobs"
         return host, site, list_url
@@ -77,7 +92,7 @@ class WorkdayConnector(Connector):
     def parse(self, raw: Any, company: dict[str, Any]) -> list[Job]:
         raw = raw or {}
         host = raw.get("_host") or self._endpoint(company)[0]
-        site = raw.get("_site") or company["site"]
+        site = raw.get("_site") or self._endpoint(company)[1]
 
         jobs: list[Job] = []
         for p in raw.get("jobPostings", []):
@@ -114,9 +129,9 @@ class WorkdayConnector(Connector):
         not the whole pass. Returns '' if nothing usable was found."""
         host, site, _ = self._endpoint(company)
         external_path = (job.raw or {}).get("externalPath") or ""
-        if not external_path:
-            return ""
-        url = f"{host}/wday/cxs/{company['tenant']}/{site}{external_path}"
+        if not external_path.startswith("/"):
+            return ""  # from the payload: must stay a path on this tenant's host
+        url = f"{host}/wday/cxs/{self.endpoint_parts(company)[0]}/{site}{external_path}"
         headers = {
             **DEFAULT_HEADERS,
             "Referer": f"{host}/en-US/{site}",

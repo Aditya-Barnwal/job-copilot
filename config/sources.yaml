@@ -64,6 +64,77 @@ boards:
             "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss"]
     store: minimal
 
+  jobicy:
+    enabled: true
+    attribution: {name: Jobicy, url: "https://jobicy.com"}   # credit with a direct link
+    apply_rule: source_link          # terms: Apply -> original job URL from the feed
+    queries: [{geo: apac, count: 50}, {count: 50}]
+  realworkfromanywhere:
+    enabled: true
+    attribution: {name: Real Work From Anywhere, url: "https://www.realworkfromanywhere.com"}
+    apply_rule: prefer_ats           # never follow /go/ links (robots)
+    store: minimal
+  fourdayweek:
+    enabled: true
+    attribution: {name: 4 Day Week, url: "https://4dayweek.io"}   # link back required
+    apply_rule: source_link
+    queries: [{work_arrangement: remote, category: engineering, limit: 50}]   # /api/v2 only, page 1
+  cryptojobslist:
+    enabled: true
+    attribution: {name: CryptoJobsList, url: "https://cryptojobslist.com"}
+    apply_rule: prefer_ats
+    store: minimal
+  hasjob:
+    enabled: true
+    attribution: {name: Hasjob, url: "https://hasjob.co"}
+    apply_rule: prefer_ats
+    store: minimal
+  remotecom:
+    enabled: true
+    attribution: {name: Remote, url: "https://apply.remote.com"}
+    apply_rule: source_link
+    company_name: Remote
+  arbeitnow:
+    enabled: true
+    attribution: {name: Arbeitnow, url: "https://www.arbeitnow.com"}
+    apply_rule: source_link
+    remote_only: true                # page 1 only; Germany-heavy
+  nodesk:
+    enabled: true
+    attribution: {name: NoDesk, url: "https://nodesk.co"}
+    apply_rule: prefer_ats
+    store: minimal                   # robots Content-Signal use=reference, ai-train=no
+
+  # Community lists (Phase 1b)
+  hn_hiring:
+    enabled: true
+    attribution: {name: "Hacker News — Who is hiring", url: "https://news.ycombinator.com/submitted?id=whoishiring"}
+    apply_rule: source_link
+    user: whoishiring
+    max_item_fetches: 6
+    max_roles_per_post: 5
+    max_bytes: 10000000
+    deadline_sec: 90
+  speedyapply:
+    enabled: true
+    attribution: {name: "speedyapply (GitHub)", url: "https://github.com/speedyapply/2027-SWE-College-Jobs"}
+    apply_rule: source_link
+    repo: speedyapply/2027-SWE-College-Jobs   # renamed every season
+    branch: main
+    files:
+      - {path: NEW_GRAD_INTL.md, keep: all}
+      - {path: NEW_GRAD_USA.md, keep: remote}
+  simplify:
+    enabled: true
+    attribution: {name: "SimplifyJobs (GitHub)", url: "https://github.com/SimplifyJobs/New-Grad-Positions"}
+    apply_rule: source_link
+    repo: SimplifyJobs/New-Grad-Positions
+    branch: dev
+    path: .github/scripts/listings.json
+    max_age_days: 60
+    max_bytes: 25000000
+    deadline_sec: 180
+
 # Company discovery (Phase 1). Feeds the companies table; jobs still come from ATS APIs.
 discovery:
   yc_oss:

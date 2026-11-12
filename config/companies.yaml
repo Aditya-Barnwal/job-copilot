@@ -75,7 +75,7 @@ companies:
   - { name: Setu, sector: fintech, connector: manual, ats: turbohire, careers_url: "https://pinelabsgroup.turbohire.co", note: "TurboHire (Pine Labs group board) — no public API connector; apply by hand. Was lever:setu 404" }
   # Postman: ats_detect on postman.com/company/careers finds no ATS fingerprint in the served HTML
   # (2026-11-11), but its public job links (2026-06..11) all point at job-boards.greenhouse.io/postman.
-  - { name: Postman, sector: tech, connector: greenhouse, slug: postman, tier: funded, tier_reason: "VC-backed API-platform unicorn, founded in Bengaluru", verify: false, note: "API verified 2026-06 (121 roles); not re-called 2026-11-11 (request budget)" }
+  - { name: Postman, sector: tech, connector: manual, tier: funded, verify: true, careers_url: "https://www.postman.com/company/careers/open-positions/", note: "greenhouse:postman 404 on 2026-11-12; workable:postman has 0 jobs; ashby/lever 404 - apply from the careers page" }
   - { name: DigitalOcean, sector: tech, connector: greenhouse, slug: digitalocean98, tier: brand, tier_reason: "public company, developer cloud", verify: false, note: "verified live 2026-11-11 (152 roles); board token is digitalocean98, not digitalocean" }
   - { name: Datadog, sector: tech, connector: greenhouse, slug: datadog, tier: brand, tier_reason: "public company, observability leader", verify: false, note: "verified live (411 roles)" }
   - { name: Cloudflare, sector: tech, connector: greenhouse, slug: cloudflare, tier: brand, tier_reason: "public company, network/security brand", verify: false, note: "verified live (200 roles)" }

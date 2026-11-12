@@ -1,0 +1,42 @@
+    <!DOCTYPE html>
+    <html>
+    <head><link rel="preconnect" href="https://cdn.keka.com/careers/v/2026/" />
+        <meta charset="utf-8" />
+        	<meta name="robots" content="noindex">
+
+        
+
+
+        <script>
+            window.isCareersPage = true;
+        </script>
+    </head>
+    <body>
+        <div id="content-container"></div>
+        <script>
+            fetch('/ats/documents/ba76ae62-6aee-446a-a292-a7c27c5304cc/careerportal/546b313631504b9280a0e83a378aabc6.html')
+                .then(response => response.text())
+                .then(data => {
+                    var parser = new DOMParser();
+                    var htmlDoc = parser.parseFromString(data, 'text/html');
+                    var bodyContent = htmlDoc.body.innerHTML;
+                    document.getElementById('content-container').innerHTML = bodyContent;
+
+                    htmlDoc.head.childNodes.forEach(node => {
+                        if (node.tagName === 'SCRIPT') {
+                            var script = document.createElement('script');
+                            script.innerHTML = node.innerHTML; // Set the script content
+
+                            for (var i = 0; i < node.attributes.length; i++) {
+                                script.setAttribute(node.attributes[i].name, node.attributes[i].value);
+                            }
+
+                            document.head.appendChild(script);
+                        } else {
+                            document.head.appendChild(node.cloneNode(true));
+                        }
+                    });
+                });
+        </script>
+    </body>
+    </html>

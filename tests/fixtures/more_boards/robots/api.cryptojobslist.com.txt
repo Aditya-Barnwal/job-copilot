@@ -1,0 +1,72 @@
+# robots.txt for https://cryptojobslist.com
+# CryptoJobsList.com — specialized crypto & web3 job board
+
+User-agent: *
+Allow: /
+
+# High-value crawlable content
+Allow: /jobs/
+Allow: /companies/
+Allow: /salary/
+Allow: /talent/
+Allow: /api/og/
+
+# Block private / low-value / internal areas
+Disallow: /api/
+Disallow: /*/apply$
+Disallow: /*/apply/
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /monitoring
+Disallow: /js/plsbl-script.js
+Disallow: /undefined
+Disallow: /edit
+Disallow: /unpublish
+Disallow: /settings/
+Disallow: /submit
+Disallow: /review
+Disallow: /newsletter
+Disallow: /recommend/
+
+# Tracking / referral params
+Disallow: /*?ref=*
+Disallow: /*?utm_*
+
+# Sitemaps
+Sitemap: https://cryptojobslist.com/sitemap.xml
+Sitemap: https://cryptojobslist.com/sitemap-jobs.xml
+Sitemap: https://cryptojobslist.com/sitemap-categories.xml
+Sitemap: https://cryptojobslist.com/sitemap-companies.xml
+Sitemap: https://cryptojobslist.com/sitemap-blog-posts.xml
+
+# --- AI search crawlers (indexing allowed, training discouraged) ---
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+# --- High-volume crawlers with no search value: throttle ---
+# Amazonbot was pulling ~193k requests/day, 8.6x every verified search engine
+# combined, while returning no indexing or referral traffic. Amazon documents
+# Crawl-delay support. 30s caps it near 2,880/day.
+User-agent: Amazonbot
+Crawl-delay: 30
+
+# --- Social crawlers ---
+User-agent: Twitterbot
+Allow: /
+
+# --- SEO scrapers blocked ---
+User-agent: AhrefsBot
+User-agent: SemrushBot
+User-agent: MJ12bot
+Disallow: /
+
+Crawl-delay: 1

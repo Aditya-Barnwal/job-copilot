@@ -1,0 +1,68 @@
+{
+ "items": [
+  {
+   "id": "c49c7908-1706-49b2-b4de-6a7fdfb31a41",
+   "name": "Cloud & Infrastructure Security Architect",
+   "url": "https://ats.rippling.com/koreai-india-careers/jobs/c49c7908-1706-49b2-b4de-6a7fdfb31a41",
+   "department": {
+    "name": "Common Shared Services"
+   },
+   "locations": [
+    {
+     "name": "Hyderabad, India",
+     "country": "India",
+     "countryCode": "IN",
+     "state": "Telangana",
+     "stateCode": "TG",
+     "city": "Hyderabad",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-US"
+  },
+  {
+   "id": "885d809b-47d6-4bb3-ba55-8210145c7f41",
+   "name": "Updated : Senior Voice Operations Engineer – 24×7 Customer Support",
+   "url": "https://ats.rippling.com/koreai-india-careers/jobs/885d809b-47d6-4bb3-ba55-8210145c7f41",
+   "department": {
+    "name": "Product & Engineering"
+   },
+   "locations": [
+    {
+     "name": "Hyderabad, India",
+     "country": "India",
+     "countryCode": "IN",
+     "state": "TS",
+     "stateCode": null,
+     "city": "Hyderabad",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-US"
+  },
+  {
+   "id": "885d809b-47d6-4bb3-ba55-8210145c7f41",
+   "name": "Updated : Senior Voice Operations Engineer – 24×7 Customer Support",
+   "url": "https://ats.rippling.com/koreai-india-careers/jobs/885d809b-47d6-4bb3-ba55-8210145c7f41",
+   "department": {
+    "name": "Product & Engineering"
+   },
+   "locations": [
+    {
+     "name": "Hyderabad, India",
+     "country": "India",
+     "countryCode": "IN",
+     "state": "Telangana",
+     "stateCode": "TG",
+     "city": "Hyderabad",
+     "workplaceType": "ON_SITE"
+    }
+   ],
+   "language": "en-US"
+  }
+ ],
+ "page": 0,
+ "pageSize": 20,
+ "totalItems": 3,
+ "totalPages": 1
+}

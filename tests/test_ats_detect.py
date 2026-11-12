@@ -322,6 +322,25 @@ ADVERSARIAL = {
     "open_scripts": _fill("<script "),
     "unclosed_apply": '"applyUrl":"' + "x" * _N,
     "phenom": _fill('"refNum"' + " " * 20),
+    # the eight newer ATSs
+    "label_run_63": _fill("a" * 63 + "."),
+    "label_dashes": _fill("a-" * 31 + "a."),
+    "recruitee_host": _fill("a.recruitee.co"),
+    "recruitee_tail": _fill("a.recruitee.com-"),
+    "recruitee_label_run": "recruitee.com " + "a" * _N,
+    "personio_label_run": ".jobs.personio.com " + "a-" * (_N // 2),
+    "bamboo_literal_then_run": "bamboohr.com/ " + _fill("a" * 63 + "."),
+    "keka_literal_then_run": "keka.com/ " + _fill("a" * 63 + "-"),
+    "teamtailor_host": _fill("a.teamtailor.co"),
+    "pinpoint_host": _fill("a.pinpointhq.co"),
+    "personio_host": _fill("a.jobs.personio."),
+    "personio_tail": _fill("a.jobs.personio.comx"),
+    "bamboo_host": _fill("a.bamboohr.com/care"),
+    "keka_host": _fill("a.keka.com/career"),
+    "workable_path": _fill("apply.workable.com/api/v1/widget/accounts/"),
+    "workable_sub": _fill("a.workable.co"),
+    "rippling_path": _fill("ats.rippling.com/api/v2/board/"),
+    "keka_org": _fill("/ats/documents/" + "a" * 36),
 }
 
 
@@ -333,6 +352,7 @@ def test_patterns_are_linear_on_2mb_adversarial_input(name):
     ats_detect._scan(text)
     for rx in (ats_detect._IFRAME, ats_detect._SCRIPT, ats_detect._HREF, ats_detect._APPLY_URL):
         rx.findall(text)
+    ats_detect._KEKA_ORG.findall(text)
     assert _time.perf_counter() - t0 < 1.0
 
 
@@ -427,3 +447,152 @@ def test_too_large_page_is_a_note_not_a_crash():
                                ResponseTooLarge("https://careers.example.com/", 2_000_000)})
     r = detect("https://careers.example.com/", client=client, verify=False)
     assert r.ats is None and "ResponseTooLarge" in r.evidence
+
+
+# ------------------------------------------- the eight newer ATSs (Phase 1b)
+
+@pytest.mark.parametrize("url, expect", [
+    ("https://box8.recruitee.com/o/senior-engineer", {"ats": "recruitee", "slug": "box8"}),
+    ("https://BOX8.Recruitee.com/", {"ats": "recruitee", "slug": "box8"}),
+    ("https://apply.workable.com/acme/j/ABC123/", {"ats": "workable", "slug": "acme"}),
+    ("https://apply.workable.com/api/v1/widget/accounts/acme", {"ats": "workable", "slug": "acme"}),
+    ("https://acme.workable.com/jobs/1", {"ats": "workable", "slug": "acme"}),
+    ("https://ats.rippling.com/koreai-india-careers/jobs", {"ats": "rippling", "slug": "koreai-india-careers"}),
+    ("https://ats.rippling.com/api/v2/board/acme/jobs", {"ats": "rippling", "slug": "acme"}),
+    ("https://veoneerin.teamtailor.com/jobs/123-x", {"ats": "teamtailor", "slug": "veoneerin"}),
+    ("https://accenture.pinpointhq.com/en/postings/abc", {"ats": "pinpoint", "slug": "accenture"}),
+    ("https://acme.jobs.personio.com/job/1", {"ats": "personio", "slug": "acme", "region": None}),
+    ("https://1komma5grad.jobs.personio.de/xml", {"ats": "personio", "slug": "1komma5grad", "region": "de"}),
+    ("https://curtinmaritime.bamboohr.com/careers/201", {"ats": "bamboohr", "slug": "curtinmaritime"}),
+    ("https://acme.bamboohr.com/jobs/embed2.php", {"ats": "bamboohr", "slug": "acme"}),
+    ("https://lambdatest.keka.com/careers", {"ats": "keka", "slug": "lambdatest"}),
+    ("https://lambdatest.keka.com/careers/jobdetails/146267", {"ats": "keka", "slug": "lambdatest"}),
+])
+def test_new_ats_url_patterns(url: str, expect: dict) -> None:
+    r = ats_detect.detect_from_url(url)
+    assert r is not None
+    for k, v in expect.items():
+        assert getattr(r, k) == v, (k, r)
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.recruitee.com/careers",           # the vendor's own site
+    "https://careers.teamtailor.com/",
+    "https://app.pinpointhq.com/login",
+    "https://apply.workable.com/j/ABC123",         # job link without its account
+    "https://www.bamboohr.com/careers/",
+    "https://acme.bamboohr.com/employees/",        # not a careers path
+    "https://cdn.keka.com/careers/v/2026/app.js",
+    "https://acme.keka.com/hr/login",
+    "https://acme.recruitee.com.evil.example/",
+    "https://acme.jobs.personio.community/",
+    "https://xrecruitee.com/",
+])
+def test_new_ats_lookalikes_are_not_detected(url: str) -> None:
+    assert ats_detect.detect_from_url(url) is None
+
+
+def test_new_ats_html_markers_and_keka_org_id() -> None:
+    shell = (Path(__file__).parent / "fixtures" / "more_ats" / "keka_lambdatest.html").read_text("utf-8")
+    r = detect_from_html(shell, "https://lambdatest.keka.com/careers/")
+    assert (r.ats, r.slug, r.org_id) == ("keka", "lambdatest", "ba76ae62-6aee-446a-a292-a7c27c5304cc")
+    page = '<a href="https://acme.recruitee.com/o/a">a</a><a href="https://acme.recruitee.com/o/b">b</a>' \
+           '<a href="https://other.recruitee.com/o/c">c</a>'
+    r = detect_from_html(page, "https://careers.example.com/")
+    assert (r.ats, r.slug) == ("recruitee", "acme") and r.confidence == round(ats_detect.CONF_LINK - 0.1, 2)
+    r = detect_from_html('<iframe src="https://apply.workable.com/acme/"></iframe>', "")
+    assert (r.ats, r.slug) == ("workable", "acme")
+
+
+def test_new_ats_host_ids_must_be_one_dns_label() -> None:
+    client = FakeClient()
+    for ats in ("recruitee", "teamtailor", "pinpoint", "personio", "bamboohr", "keka"):
+        r = AtsResult(ats, slug="evil.example.com#", confidence=0.9)
+        ats_detect.verify_result(r, client)
+        assert not r.verified and r.confidence <= 0.2
+    assert client.calls == []
+
+
+_FIX2 = Path(__file__).parent / "fixtures" / "more_ats"
+
+
+@pytest.mark.parametrize("ats, slug, region, url, payload, count", [
+    ("recruitee", "box8", None, "https://box8.recruitee.com/api/offers/", {"offers": [{}, {}]}, 2),
+    ("workable", "acme", None, "https://apply.workable.com/api/v1/widget/accounts/acme", {"jobs": [{}]}, 1),
+    ("rippling", "acme", None, "https://ats.rippling.com/api/v2/board/acme/jobs", {"items": [{}], "totalItems": 8}, 8),
+    ("pinpoint", "accenture", None, "https://accenture.pinpointhq.com/postings.json", {"data": [{}, {}, {}]}, 3),
+    ("bamboohr", "acme", None, "https://acme.bamboohr.com/careers/list", {"result": [{}]}, 1),
+])
+def test_verify_routes_new_json_ats(ats, slug, region, url, payload, count) -> None:
+    c = FakeClient(api={url: payload})
+    r = AtsResult(ats, slug=slug, region=region, confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert c.calls == [url] and r.verified and r.job_count == count
+
+
+def test_verify_routes_xml_ats() -> None:
+    rss = (_FIX2 / "teamtailor_veoneerin.rss").read_text("utf-8")
+    c = FakeClient(pages={"https://veoneerin.teamtailor.com/jobs.rss": rss})
+    r = AtsResult("teamtailor", slug="veoneerin", confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert r.verified and r.job_count == 3 and len(c.calls) == 1
+    xml = (_FIX2 / "personio_1komma5.xml").read_text("utf-8")
+    c = FakeClient(pages={"https://1komma5grad.jobs.personio.de/xml": xml})
+    r = AtsResult("personio", slug="1komma5grad", region="de", confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert r.verified and r.job_count == 3 and c.calls == ["https://1komma5grad.jobs.personio.de/xml"]
+
+
+def test_verify_xml_with_doctype_is_refused_not_raised() -> None:
+    bomb = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><rss><channel/></rss>'
+    c = FakeClient(pages={"https://acme.teamtailor.com/jobs.rss": bomb})
+    r = AtsResult("teamtailor", slug="acme", confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert not r.verified and "verify not possible" in r.evidence
+    c = FakeClient(pages={"https://acme.teamtailor.com/jobs.rss": "<rss><channel>"})
+    r = AtsResult("teamtailor", slug="acme", confidence=0.95)
+    ats_detect.verify_result(r, c)           # malformed XML: ParseError is a note too
+    assert not r.verified and "verify not possible" in r.evidence
+
+
+def test_verify_keka_uses_org_id_from_detection_or_reads_the_page_once() -> None:
+    org = "ba76ae62-6aee-446a-a292-a7c27c5304cc"
+    api = f"https://lambdatest.keka.com/careers/api/embedjobs/default/active/{org}"
+    c = FakeClient(api={api: [{"id": 1}, {"id": 2}]})
+    r = AtsResult("keka", slug="lambdatest", org_id=org, confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert c.calls == [api] and r.verified and r.job_count == 2
+    shell = (_FIX2 / "keka_lambdatest.html").read_text("utf-8")
+    page = "https://lambdatest.keka.com/careers/"
+    c = FakeClient(pages={page: shell}, api={api: [{"id": 1}]})
+    r = AtsResult("keka", slug="lambdatest", confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert c.calls == [page, api] and r.verified and r.org_id == org
+    c = FakeClient(pages={"https://nobody.keka.com/careers/": "<html>not keka</html>"})
+    r = AtsResult("keka", slug="nobody", confidence=0.95)
+    ats_detect.verify_result(r, c)
+    assert not r.verified and r.confidence <= 0.2 and "org id" in r.evidence
+
+
+def test_detect_end_to_end_for_a_new_ats_and_config_rows() -> None:
+    url = "https://box8.recruitee.com/api/offers/"
+    c = FakeClient(api={url: {"offers": [{}]}})
+    r = detect("https://box8.recruitee.com/o/x", client=c)
+    assert (r.ats, r.slug, r.verified, r.job_count) == ("recruitee", "box8", True, 1)
+    assert c.calls == [url]                       # URL named the board: no page fetch
+    row = to_company_config(r, "Box8")
+    assert row["connector"] == "recruitee" and row["slug"] == "box8" and row["verify"] is False
+    de = to_company_config(AtsResult("personio", slug="acme", region="de"), "Acme")
+    assert de["connector"] == "personio" and de["region"] == "de"
+    com = to_company_config(AtsResult("personio", slug="acme"), "Acme")
+    assert "region" not in com
+    k = to_company_config(AtsResult("keka", slug="lt", org_id="ba76ae62-6aee-446a-a292-a7c27c5304cc"), "LT")
+    assert k["connector"] == "keka" and k["org_id"].startswith("ba76ae62")
+
+
+def test_verify_404_on_a_new_ats_collapses_confidence() -> None:
+    url = "https://gone.recruitee.com/api/offers/"
+    c = FakeClient(api={url: _status_error(url, 404)})
+    r = detect("https://gone.recruitee.com/", client=c)
+    assert r.ats == "recruitee" and not r.verified and r.confidence <= 0.2 and "HTTP 404" in r.evidence
+

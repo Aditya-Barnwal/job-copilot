@@ -1,0 +1,6 @@
+User-Agent: *
+Allow: /
+Disallow: /go/
+
+Host: https://www.realworkfromanywhere.com
+Sitemap: https://www.realworkfromanywhere.com/sitemap.xml

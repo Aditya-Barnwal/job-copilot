@@ -1,0 +1,537 @@
+{
+ "data": [
+  {
+   "id": "01a1c174-9ac5-7078-b845-97386b354237",
+   "slug": "director-global-partner-and-ecosystem-marketing-at-kinaxis-e7586afd",
+   "title": "Director, Global Partner & Ecosystem Marketing",
+   "description": "## Director, Global Partner & Ecosystem Marketing\n\nLocation\nUS-Remote\n\nID\n[phone]\n\nCategory\nMarketing\n\nPosition Type\nFull-Time\n\nRemote\nYes\n\nAbout Kinaxis\n\nAre you looking to join an innovative, market-leading company where you can truly elevate your career? At Kinaxis we are serious about culture, w …",
+   "url": "https://4dayweek.io/job/director-global-partner-and-ecosystem-marketing-at-kinaxis-e7586afd",
+   "category": "marketing",
+   "role": "Partner & Ecosystem Marketing",
+   "level": "executive",
+   "schedule_type": "unlimited_pto",
+   "hours_per_week_min": 40,
+   "hours_per_week_max": 40,
+   "work_arrangement": "remote",
+   "locations": [
+    {
+     "country": "United States",
+     "continent": "North America",
+     "latitude": 39.83,
+     "longitude": -98.58,
+     "work_arrangement": "remote",
+     "is_primary": true
+    },
+    {
+     "country": "Canada",
+     "continent": "North America",
+     "latitude": 56.13,
+     "longitude": -106.35,
+     "work_arrangement": "remote"
+    }
+   ],
+   "skills": [
+    {
+     "name": "Account Based Mktg",
+     "slug": "account-based-mktg"
+    },
+    {
+     "name": "Cross-functional Lead",
+     "slug": "cross-functional-lead"
+    },
+    {
+     "name": "Demand Generation",
+     "slug": "demand-generation"
+    },
+    {
+     "name": "Ecosystem Strategy",
+     "slug": "ecosystem-strategy"
+    },
+    {
+     "name": "Executive Influence",
+     "slug": "executive-influence"
+    },
+    {
+     "name": "Go-to-Market Strategy",
+     "slug": "go-to-market-strategy"
+    },
+    {
+     "name": "Partner Marketing",
+     "slug": "partner-marketing"
+    },
+    {
+     "name": "Pipeline Management",
+     "slug": "pipeline-management"
+    },
+    {
+     "name": "Revenue Measurement",
+     "slug": "revenue-measurement"
+    },
+    {
+     "name": "Thought Leadership",
+     "slug": "thought-leadership"
+    }
+   ],
+   "posted_at": "2026-11-09T17:56:47Z",
+   "company": {
+    "id": "019e5b3d-87d9-7506-9644-241ab8600ef7",
+    "slug": "kinaxis",
+    "name": "Kinaxis",
+    "url": "https://4dayweek.io/company/kinaxis",
+    "website": "https://www.kinaxis.com",
+    "logo_url": "https://media.4dayweek.io/files/1779529465215_ade068cfd7651c68.jpg",
+    "short_description": "Public Canadian supply-chain orchestration SaaS (TSX:KXS). ~1,700 staff worldwid …",
+    "country": "Canada",
+    "employees": 1700,
+    "schedule_type": "unlimited_pto",
+    "hours_full_time": 40,
+    "remote_level": "hybrid",
+    "hires_worldwide": false
+   }
+  },
+  {
+   "id": "01a1c174-97f4-744f-8da0-3d7321d084a8",
+   "slug": "senior-product-manager-ai-innovation-team-operations-orchestration-at-kinaxis-f8561efd",
+   "title": "Senior Product Manager, AI Innovation Team, Operations Orchestration",
+   "description": "## Senior Product Manager, AI Innovation Team, Operations Orchestration\n\nLocation\nCA-Remote\n\nID\n[phone]\n\nCategory\nEngineering\n\nPosition Type\nFull-Time\n\nRemote\nYes\n\nAbout Kinaxis\n\nAre you looking to join an innovative, market-leading company where you can truly elevate your career? At Kinaxis we are  …",
+   "url": "https://4dayweek.io/job/senior-product-manager-ai-innovation-team-operations-orchestration-at-kinaxis-f8561efd",
+   "category": "product",
+   "role": "Product Manager",
+   "level": "senior",
+   "contract_type": "permanent",
+   "schedule_type": "unlimited_pto",
+   "hours_per_week_min": 40,
+   "hours_per_week_max": 40,
+   "work_arrangement": "remote",
+   "locations": [
+    {
+     "city": "Ottawa",
+     "state": "Ontario",
+     "country": "Canada",
+     "continent": "North America",
+     "latitude": 45.4200572,
+     "longitude": -75.7003397,
+     "work_arrangement": "hybrid",
+     "is_primary": true
+    },
+    {
+     "city": "Toronto",
+     "state": "Ontario",
+     "country": "Canada",
+     "continent": "North America",
+     "latitude": 43.6548253,
+     "longitude": -79.388447,
+     "work_arrangement": "hybrid"
+    },
+    {
+     "country": "Canada",
+     "continent": "North America",
+     "latitude": 56.13,
+     "longitude": -106.35,
+     "work_arrangement": "remote"
+    }
+   ],
+   "skills": [
+    {
+     "name": "Enterprise SaaS",
+     "slug": "enterprise-saas"
+    },
+    {
+     "name": "Go-to-Market",
+     "slug": "go-to-market"
+    },
+    {
+     "name": "Monetization",
+     "slug": "monetization"
+    },
+    {
+     "name": "Pricing Strategy",
+     "slug": "pricing-strategy"
+    },
+    {
+     "name": "Product Management",
+     "slug": "product-management"
+    },
+    {
+     "name": "Unit economics",
+     "slug": "unit-economics"
+    }
+   ],
+   "tools": [
+    {
+     "name": "SQL",
+     "slug": "sql"
+    }
+   ],
+   "posted_at": "2026-11-09T17:56:46Z",
+   "company": {
+    "id": "019e5b3d-87d9-7506-9644-241ab8600ef7",
+    "slug": "kinaxis",
+    "name": "Kinaxis",
+    "url": "https://4dayweek.io/company/kinaxis",
+    "website": "https://www.kinaxis.com",
+    "logo_url": "https://media.4dayweek.io/files/1779529465215_ade068cfd7651c68.jpg",
+    "short_description": "Public Canadian supply-chain orchestration SaaS (TSX:KXS). ~1,700 staff worldwid …",
+    "country": "Canada",
+    "employees": 1700,
+    "schedule_type": "unlimited_pto",
+    "hours_full_time": 40,
+    "remote_level": "hybrid",
+    "hires_worldwide": false
+   }
+  },
+  {
+   "id": "01a1c173-ad75-7c4c-97a6-7c27ca3e3e3c",
+   "slug": "senior-software-engineer-backend-at-bvnk-016ee23d",
+   "title": "Senior Software Engineer (Backend)",
+   "description": "**About us:**\n\nBVNK is the stablecoin-powered financial stack for enterprises. We're now part of Mastercard, and together we're building a network for every form of money – one that delivers more reach, more capability and more choice.\n\nWe enable businesses to build financial products, unlock new ma …",
+   "url": "https://4dayweek.io/job/senior-software-engineer-backend-at-bvnk-016ee23d",
+   "category": "engineering",
+   "role": "Software Engineer (Backend)",
+   "level": "senior",
+   "schedule_type": "flexible_hours",
+   "hours_per_week_min": 40,
+   "hours_per_week_max": 40,
+   "work_arrangement": "remote",
+   "locations": [
+    {
+     "country": "Bulgaria",
+     "continent": "Europe",
+     "latitude": 42.73,
+     "longitude": 25.49,
+     "work_arrangement": "remote",
+     "is_primary": true
+    },
+    {
+     "country": "South Africa",
+     "continent": "Africa",
+     "latitude": -30.56,
+     "longitude": 22.94,
+     "work_arrangement": "remote"
+    },
+    {
+     "country": "Poland",
+     "continent": "Europe",
+     "latitude": 51.92,
+     "longitude": 19.15,
+     "work_arrangement": "remote"
+    },
+    {
+     "country": "Spain",
+     "continent": "Europe",
+     "latitude": 40.46,
+     "longitude": -3.75,
+     "work_arrangement": "remote"
+    }
+   ],
+   "salary_min": 7000000,
+   "salary_max": 11000000,
+   "salary_currency": "EUR",
+   "salary_period": "year",
+   "skills": [
+    {
+     "name": "API Design",
+     "slug": "api-design"
+    },
+    {
+     "name": "Distributed Systems",
+     "slug": "distributed-systems"
+    },
+    {
+     "name": "Domain Driven Design",
+     "slug": "domain-driven-design"
+    },
+    {
+     "name": "Event-driven architecture",
+     "slug": "event-driven-architecture"
+    },
+    {
+     "name": "Mentorship",
+     "slug": "mentorship"
+    },
+    {
+     "name": "Observability",
+     "slug": "observability"
+    },
+    {
+     "name": "Payment orchestration",
+     "slug": "payment-orchestration"
+    },
+    {
+     "name": "Reliability Engineering",
+     "slug": "reliability-engineering"
+    }
+   ],
+   "stack": [
+    {
+     "name": "Java",
+     "slug": "java"
+    },
+    {
+     "name": "Kafka",
+     "slug": "kafka"
+    },
+    {
+     "name": "Kotlin",
+     "slug": "kotlin"
+    },
+    {
+     "name": "MySQL",
+     "slug": "mysql"
+    },
+    {
+     "name": "PostgreSQL",
+     "slug": "postgresql"
+    },
+    {
+     "name": "Redis",
+     "slug": "redis"
+    },
+    {
+     "name": "SQS",
+     "slug": "sqs"
+    },
+    {
+     "name": "Spring Boot",
+     "slug": "spring-boot"
+    }
+   ],
+   "tools": [
+    {
+     "name": "AWS",
+     "slug": "aws"
+    },
+    {
+     "name": "Docker",
+     "slug": "docker"
+    },
+    {
+     "name": "Kubernetes",
+     "slug": "kubernetes"
+    },
+    {
+     "name": "Temporal",
+     "slug": "temporal"
+    }
+   ],
+   "posted_at": "2026-11-09T17:55:46Z",
+   "company": {
+    "id": "01a1b1d2-06ec-7628-bbd3-30ac14333aaa",
+    "slug": "bvnk",
+    "name": "BVNK",
+    "url": "https://4dayweek.io/company/bvnk",
+    "website": "https://www.bvnk.com/",
+    "logo_url": "https://media.4dayweek.io/files/1793986083305_b55a56270b992530.jpg",
+    "short_description": "Stablecoin payments infrastructure company based in London, now part of Masterca …",
+    "country": "United Kingdom",
+    "employees": 350,
+    "schedule_type": "flexible_hours",
+    "hours_full_time": 40,
+    "remote_level": "hybrid",
+    "hires_worldwide": false
+   }
+  },
+  {
+   "id": "01a1c172-9723-7a20-b7d8-280c0bf43eda",
+   "slug": "medical-science-liaison-uncontrolled-gout-rare-disease-mi-at-amgen-f83cc845",
+   "title": "Medical Science Liaison - Uncontrolled Gout - Rare Disease - MI",
+   "description": "### **Career Category**\n\nMedical Affairs\n\n### **Job Description**\n\n**Join Amgen’s Mission of Serving Patients**\n\nAt Amgen, if you feel like you’re part of something bigger, it’s because you are. Our shared mission—to serve patients living with serious illnesses—drives all that we do.\n\nSince 1980, we …",
+   "url": "https://4dayweek.io/job/medical-science-liaison-uncontrolled-gout-rare-disease-mi-at-amgen-f83cc845",
+   "category": "other",
+   "role": "Medical Science Liaison",
+   "level": "mid",
+   "schedule_type": "generous_pto",
+   "hours_per_week_min": 40,
+   "hours_per_week_max": 40,
+   "work_arrangement": "hybrid",
+   "locations": [
+    {
+     "city": "Detroit",
+     "state": "Michigan",
+     "country": "United States",
+     "continent": "North America",
+     "latitude": 42.3297182,
+     "longitude": -83.0424533,
+     "work_arrangement": "hybrid",
+     "is_primary": true
+    }
+   ],
+   "salary_min": 15699840,
+   "salary_max": 21240960,
+   "salary_currency": "USD",
+   "salary_period": "year",
+   "skills": [
+    {
+     "name": "Clinical Knowledge",
+     "slug": "clinical-knowledge"
+    },
+    {
+     "name": "Presentation Skills",
+     "slug": "presentation-skills"
+    },
+    {
+     "name": "Relationship Building",
+     "slug": "relationship-building"
+    },
+    {
+     "name": "Stakeholder Management",
+     "slug": "stakeholder-management"
+    },
+    {
+     "name": "scientific communication",
+     "slug": "scientific-communication"
+    }
+   ],
+   "tools": [
+    {
+     "name": "Microsoft Office",
+     "slug": "microsoft-office"
+    },
+    {
+     "name": "iPad",
+     "slug": "ipad"
+    }
+   ],
+   "posted_at": "2026-11-09T17:54:35Z",
+   "company": {
+    "id": "019d9651-15a6-7e23-ab3d-b6853b2712bd",
+    "slug": "amgen",
+    "name": "Amgen",
+    "url": "https://4dayweek.io/company/amgen",
+    "website": "https://www.amgen.com",
+    "logo_url": "https://media.4dayweek.io/files/1776343143160_740e93bac71d23a3.jpg",
+    "short_description": "Pioneer biotech (NASDAQ: AMGN, $187B market cap) offering ~3 weeks vacation + st …",
+    "country": "United States",
+    "employees": 28000,
+    "schedule_type": "generous_pto",
+    "hours_full_time": 40,
+    "remote_level": "hybrid",
+    "hires_worldwide": false
+   }
+  },
+  {
+   "id": "01a1c16f-bd46-7e19-a303-f128da03c3e2",
+   "slug": "technical-director-urban-drainage-at-hr-wallingford-c202d6f9",
+   "title": "Technical Director (Urban Drainage)",
+   "description": "At HR Wallingford, we design smart, resilient solutions across the natural and built environments to help everyone live and work more sustainably with water. By harnessing research, data insights and the power of our collective expertise, we help the world to better understand the changing influence …",
+   "url": "https://4dayweek.io/job/technical-director-urban-drainage-at-hr-wallingford-c202d6f9",
+   "category": "engineering",
+   "role": "Urban Drainage Specialist",
+   "level": "executive",
+   "schedule_type": "flexible_hours",
+   "hours_per_week_min": 40,
+   "hours_per_week_max": 40,
+   "work_arrangement": "hybrid",
+   "locations": [
+    {
+     "city": "Oxford",
+     "country": "United Kingdom",
+     "continent": "Europe",
+     "latitude": 51.75222,
+     "longitude": -1.25596,
+     "work_arrangement": "hybrid",
+     "is_primary": true
+    }
+   ],
+   "timezones": [
+    "GMT"
+   ],
+   "salary_min": 7500000,
+   "salary_max": 7500000,
+   "salary_currency": "GBP",
+   "salary_period": "year",
+   "skills": [
+    {
+     "name": "Asset Management",
+     "slug": "asset-management"
+    },
+    {
+     "name": "Business Development",
+     "slug": "business-development"
+    },
+    {
+     "name": "Client Engagement",
+     "slug": "client-engagement"
+    },
+    {
+     "name": "Climate resilience",
+     "slug": "climate-resilience"
+    },
+    {
+     "name": "Commercial Awareness",
+     "slug": "commercial-awareness"
+    },
+    {
+     "name": "Expert Witness",
+     "slug": "expert-witness"
+    },
+    {
+     "name": "Flood Risk Management",
+     "slug": "flood-risk-management"
+    },
+    {
+     "name": "Natural Flood Mgmt",
+     "slug": "natural-flood-mgmt"
+    },
+    {
+     "name": "Strategic Planning",
+     "slug": "strategic-planning"
+    },
+    {
+     "name": "SuDS",
+     "slug": "suds"
+    },
+    {
+     "name": "Team Leadership",
+     "slug": "team-leadership"
+    },
+    {
+     "name": "Urban drainage",
+     "slug": "urban-drainage"
+    },
+    {
+     "name": "Wastewater treatment",
+     "slug": "wastewater-treatment"
+    },
+    {
+     "name": "Water recycling",
+     "slug": "water-recycling"
+    }
+   ],
+   "tools": [
+    {
+     "name": "GIS",
+     "slug": "gis"
+    },
+    {
+     "name": "InfoDrainage",
+     "slug": "infodrainage"
+    },
+    {
+     "name": "InfoWorks ICM",
+     "slug": "infoworks-icm"
+    }
+   ],
+   "posted_at": "2026-11-09T17:51:28Z",
+   "company": {
+    "id": "01a1b1d2-63e6-7ae3-9b2a-e3c8a5c602e4",
+    "slug": "hr-wallingford",
+    "name": "HR Wallingford",
+    "url": "https://4dayweek.io/company/hr-wallingford",
+    "website": "https://www.hrwallingford.com/",
+    "logo_url": "https://media.4dayweek.io/files/1793986116680_9f2083b018c0daa7.jpg",
+    "short_description": "Not-for-profit water, coastal and climate engineering research consultancy in Ox …",
+    "country": "United Kingdom",
+    "employees": 250,
+    "schedule_type": "flexible_hours",
+    "hours_full_time": 40,
+    "remote_level": "hybrid",
+    "hires_worldwide": false
+   }
+  }
+ ],
+ "page": 1,
+ "limit": 5,
+ "total": 35376,
+ "has_more": true
+}

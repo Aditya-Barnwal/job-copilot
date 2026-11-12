@@ -1,0 +1,64 @@
+{
+ "meta": {
+  "totalCount": 3
+ },
+ "result": [
+  {
+   "id": "201",
+   "jobOpeningName": "Vessel Chef",
+   "departmentId": "18418",
+   "departmentLabel": "Marine Transportation",
+   "employmentStatusLabel": "Full-Time",
+   "location": {
+    "city": "Long Beach",
+    "state": "California"
+   },
+   "atsLocation": {
+    "country": null,
+    "state": null,
+    "province": null,
+    "city": null
+   },
+   "isRemote": null,
+   "locationType": "0"
+  },
+  {
+   "id": "339",
+   "jobOpeningName": "Tugboat Engineer",
+   "departmentId": "18418",
+   "departmentLabel": "Marine Transportation",
+   "employmentStatusLabel": "Full-Time",
+   "location": {
+    "city": null,
+    "state": null
+   },
+   "atsLocation": {
+    "country": "United States",
+    "state": "California",
+    "province": null,
+    "city": "Long Beach"
+   },
+   "isRemote": null,
+   "locationType": "1"
+  },
+  {
+   "id": "335",
+   "jobOpeningName": "OSV Engineer",
+   "departmentId": "18418",
+   "departmentLabel": "Marine Transportation",
+   "employmentStatusLabel": "Full-Time",
+   "location": {
+    "city": "Long Beach",
+    "state": "California"
+   },
+   "atsLocation": {
+    "country": null,
+    "state": null,
+    "province": null,
+    "city": null
+   },
+   "isRemote": null,
+   "locationType": "2"
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+company_slug,board_slug,board_url,monitor_type,monitor_config,scraper_type,scraper_config
+1-800-contacts,1-800-contacts-greenhouse,https://job-boards.greenhouse.io/1800contacts,greenhouse,"{""token"": ""1800contacts""}",skip,
+100ms,100ms-pinpoint,https://100ms.pinpointhq.com,pinpoint,"{""slug"": ""100ms""}",skip,
+agile-robots-se,agile-robots-se-personio,https://agile-robots-se.jobs.personio.de/,personio,"{""slug"": ""agile-robots-se"", ""language"": ""en""}",skip,
+2020-companies,2020-companies-workday,https://2020companies.wd1.myworkdayjobs.com/external_careers,workday,,,
+stripe,stripe-careers,https://stripe.com/jobs/search,greenhouse,"{""token"": ""stripe""}",skip,
+abbvie,abbvie-careers,https://careers.abbvie.com/en/jobs,sitemap,"{""url"": ""https://careers.abbvie.com/en/sitemap.xml""}",json-ld,
+abbvie,abbvie-smartrecruiters,https://careers.smartrecruiters.com/AbbVie,smartrecruiters,"{""token"": ""AbbVie""}",smartrecruiters,
+unnamed-co,unnamed-co-lever,https://jobs.lever.co/unnamedco,lever,"{""token"": ""unnamedco""}",skip,

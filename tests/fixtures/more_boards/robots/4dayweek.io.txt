@@ -1,0 +1,36 @@
+User-Agent: *
+Allow: /
+Allow: /api/v1
+Allow: /api/v2
+Allow: /api/mcp
+Disallow: /api/
+Disallow: /dashboard/
+Disallow: /employer/
+Disallow: /profile/
+Disallow: /applications/
+Disallow: /saved/
+Disallow: /onboarding/
+Disallow: /login/
+Disallow: /signup/
+Disallow: /signup?*
+Disallow: /login?*
+Disallow: /forgot-password/
+Disallow: /reset-password/
+Disallow: /verify-claim/
+Disallow: /claim-pending/
+Disallow: /auth/
+Disallow: /checkout/
+Disallow: /job-search
+Disallow: /company-search
+Disallow: /contact?*
+
+User-Agent: Turnitin
+Disallow: /
+
+User-Agent: Barkrowler
+Disallow: /
+
+Sitemap: https://4dayweek.io/sitemap.xml
+Sitemap: https://4dayweek.io/sitemaps/jobs/sitemap.xml
+Sitemap: https://4dayweek.io/sitemaps/companies/sitemap.xml
+Sitemap: https://4dayweek.io/sitemaps/landings/sitemap.xml

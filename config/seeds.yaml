@@ -1,0 +1,56 @@
+# Employer job-board seed datasets (Phase 1b) + the rotating India probe.
+# Survey + verdicts: docs/SOURCES.md "Phase 1b survey". Seeds only fill the
+# companies table with UNVERIFIED ATS guesses; the probe (discovery/probe.py)
+# verifies a few hundred boards per run and activates only those with at least
+# one India / APAC / worldwide-remote role. Jobs still come from each ATS API.
+#
+# Every dataset is a static file on raw.githubusercontent.com (robots.txt: 404 =
+# allowed, checked 2026-11-12), fetched with a conditional GET; an unchanged file
+# (304 or same sha256) is skipped. Datasets without a licence give facts only
+# (name + board slug) and are credited by name.
+seeds:
+  enabled: true
+  # Only these ATS types are imported. smartrecruiters is robots-blocked for us
+  # (docs/SOURCES.md) and is skipped. The second group has connectors in
+  # progress; their rows are stored now and become usable once registered.
+  ats: [greenhouse, ashby, lever, workday, gem,
+        workable, recruitee, rippling, teamtailor, pinpoint, personio, bamboohr, keka]
+  datasets:
+    ats-scrapers:
+      format: kalil_csv                # ats-companies/<ats>.csv: name,slug,url (keka: name,url)
+      url: "https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/ats-companies/{ats}.csv"
+      licence: MIT
+      attribution: {name: "kalil0321/ats-scrapers", url: "https://github.com/kalil0321/ats-scrapers"}
+      files: [greenhouse, ashby, lever, workday, gem, workable, recruitee, rippling,
+              teamtailor, pinpoint, personio, bamboohr, keka]
+    jobseek:
+      format: jobseek_csv              # boards.csv: company_slug,board_url,monitor_type,monitor_config,...
+      url: "https://raw.githubusercontent.com/colophon-group/jobseek/main/apps/crawler/data/boards.csv"
+      names_url: "https://raw.githubusercontent.com/colophon-group/jobseek/main/apps/crawler/data/companies.csv"
+      licence: MIT (code)
+      attribution: {name: "colophon-group/jobseek", url: "https://github.com/colophon-group/jobseek"}
+    zshah-internships:
+      format: zshah_json               # data/companies.json: [{name, slug, ats, wd?, site?}]
+      url: "https://raw.githubusercontent.com/zshah101/Automated-List-Of-Summer-2027-and-Fall-2026-Tech-Internships/main/data/companies.json"
+      licence: MIT
+      attribution: {name: "zshah101 internships list", url: "https://github.com/zshah101/Automated-List-Of-Summer-2027-and-Fall-2026-Tech-Internships"}
+    simplify-newgrad:
+      format: simplify_json            # listings.json (~13 MB): employer + apply URL -> ATS slug
+      url: "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json"
+      licence: none (facts only - employer name + board slug, credited)
+      attribution: {name: "SimplifyJobs New-Grad-Positions", url: "https://github.com/SimplifyJobs/New-Grad-Positions"}
+      signal_source: simplify-newgrad  # strong early-career signal; the probe ranks these first
+
+probe:
+  enabled: true
+  limit: 4000                    # boards per run; the per-host throttle (1 req/s) is the real politeness limit
+  max_per_host_per_run: 3000     # shared hosts (boards-api.greenhouse.io, api.lever.co, ...)
+  stale_days: 7                  # re-probe a probed board after this long
+  require_role_match: true       # a board is 'active' only with an India/remote role whose title matches target roles
+  skip_senior: true              # ...and is not senior+ (Staff/Principal/Lead/Manager...)
+  workday_max_jobs: 20           # one CXS page = one request
+  # Signals that put a board at the front of the queue (overlap with lists of
+  # employers we already care about), then brand/funded tier, then oldest-probed.
+  priority_signals: [simplify-newgrad, speedyapply, yc-oss, bsm]
+  priority_tiers: [brand, funded]
+  skip_ats: [smartrecruiters]    # robots-blocked (docs/SOURCES.md)

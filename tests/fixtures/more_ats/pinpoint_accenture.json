@@ -1,0 +1,130 @@
+{
+ "data": [
+  {
+   "id": "583795",
+   "benefits": "<div><!--block-->You can only apply for <strong>one role</strong> in one location each year, so take your time choosing the best fit for you. After completing the initial application form, these are the steps you can expect to take:&nbsp;<br><br></div><div><!--block--><strong>",
+   "benefits_header": "🔗 How to Apply",
+   "compensation": "£36,400 per year, plus a £7,200 signing bonus ",
+   "compensation_minimum": null,
+   "compensation_maximum": null,
+   "compensation_currency": null,
+   "compensation_frequency": null,
+   "compensation_visible": true,
+   "deadline_at": null,
+   "description": "<div><!--block--><strong>💼 The Role at a Glance <br></strong><br>On our<strong> Software Engineering Graduate Programme</strong>",
+   "employment_type": "permanent_full_time",
+   "employment_type_text": "Permanent - Full Time",
+   "key_responsibilities": "<ul><li><!--block-->You will start your journey with some core training, teaching you the skills (including GenAI) that you’ll need to be a successful analyst at Accenture&nbsp;</li><li><!--block-->",
+   "key_responsibilities_header": "📚 What You’ll Learn",
+   "reporting_to": "",
+   "skills_knowledge_expertise": "<div><!--block-->",
+   "skills_knowledge_expertise_header": "🌱 Your Development Path",
+   "title": "Leeds Software Engineering Graduate Programme 2027 - 2028",
+   "url": "https://accenture.pinpointhq.com/en/postings/ea5476ed-b07b-4a24-b7c9-541881141de8",
+   "path": "/en/postings/ea5476ed-b07b-4a24-b7c9-541881141de8",
+   "workplace_type": "onsite",
+   "workplace_type_text": "Onsite",
+   "job": {
+    "id": "584633",
+    "requisition_id": "P000182",
+    "department": {
+     "id": "40811",
+     "name": "Technology UK"
+    },
+    "division": null,
+    "structure_custom_group_one": null
+   },
+   "location": {
+    "id": "34266",
+    "city": "Leeds ",
+    "name": "Leeds",
+    "postal_code": "LS1 2EQ",
+    "province": "United Kingdom"
+   }
+  },
+  {
+   "id": "583859",
+   "benefits": "<div><!--block-->You can only apply for <strong>one role</strong> in one location each year, so take your time choosing the best fit for you. After completing the initial application form, these are the steps you can expect to take:&nbsp;<br><br></div><div><!--block--><strong>",
+   "benefits_header": "🔗 How to Apply",
+   "compensation": "£36,400 per year, plus a £7,200 signing bonus ",
+   "compensation_minimum": null,
+   "compensation_maximum": null,
+   "compensation_currency": null,
+   "compensation_frequency": null,
+   "compensation_visible": true,
+   "deadline_at": null,
+   "description": "<div><!--block--><strong>💼 The Role at a Glance <br></strong><br>On our<strong> Software Engineering Graduate Programme</strong>",
+   "employment_type": "permanent_full_time",
+   "employment_type_text": "Permanent - Full Time",
+   "key_responsibilities": "<ul><li><!--block-->You will start your journey with some core training, teaching you the skills (including GenAI) that you’ll need to be a successful analyst at Accenture&nbsp;</li><li><!--block-->",
+   "key_responsibilities_header": "📚 What You’ll Learn",
+   "reporting_to": "",
+   "skills_knowledge_expertise": "<div><!--block-->",
+   "skills_knowledge_expertise_header": "🌱 Your Development Path",
+   "title": "Manchester Software Engineering Graduate Programme 2027 - 2028",
+   "url": "https://accenture.pinpointhq.com/en/postings/c2cbc079-dce6-4033-88a2-79b1246cdf21",
+   "path": "/en/postings/c2cbc079-dce6-4033-88a2-79b1246cdf21",
+   "workplace_type": "onsite",
+   "workplace_type_text": "Onsite",
+   "job": {
+    "id": "584691",
+    "requisition_id": "P000184",
+    "department": {
+     "id": "40811",
+     "name": "Technology UK"
+    },
+    "division": null,
+    "structure_custom_group_one": null
+   },
+   "location": {
+    "id": "34263",
+    "city": "Manchester",
+    "name": "Manchester",
+    "postal_code": "M1 7FS",
+    "province": "United Kingdom "
+   }
+  },
+  {
+   "id": "605885",
+   "benefits": "<div><!--block-->The Consulting Social Impact Week will take place from <strong>Monday 30th November to Friday 4th December 2026, from 9:00am to 5:30pm</strong> each day. You’ll need to be available for the full duration of the programme.<br><br></div><div><!--block-->The <strong>",
+   "benefits_header": "📅 Key Dates ",
+   "compensation": null,
+   "compensation_minimum": null,
+   "compensation_maximum": null,
+   "compensation_currency": null,
+   "compensation_frequency": null,
+   "compensation_visible": false,
+   "deadline_at": null,
+   "description": "<div><!--block--><strong>💼The Programme at Glance</strong></div><div><!--block--><br>Take your next step with Accenture’s Consulting Social Impact Week, a unique opportunity to build your confidence, gain practical experience and discover what a career in consulting could look like.<br><br></div>",
+   "employment_type": "temporary",
+   "employment_type_text": "Temporary",
+   "key_responsibilities": "<div><!--block-->Gain hands-on insight into how Accenture uses technology and new ideas to help clients solve real-world challenges.&nbsp;</div><ul><li><!--block-->",
+   "key_responsibilities_header": "📚 What you’ll learn",
+   "reporting_to": null,
+   "skills_knowledge_expertise": "<div><!--block-->Our Social Impact Week is about helping you build confidence, gain experience, and develop skills that you can take with you into whatever comes next.<br><br></div><div><!--block-->",
+   "skills_knowledge_expertise_header": "🌱 Your Next Steps",
+   "title": "Unlocking Potential: London Consulting Social Impact Week 2026",
+   "url": "https://accenture.pinpointhq.com/en/postings/2aacb162-1e05-455e-b96b-287f4881eacc",
+   "path": "/en/postings/2aacb162-1e05-455e-b96b-287f4881eacc",
+   "workplace_type": "hybrid",
+   "workplace_type_text": "Hybrid",
+   "job": {
+    "id": "605118",
+    "requisition_id": "P000210",
+    "department": {
+     "id": "40810",
+     "name": "Consulting UK"
+    },
+    "division": null,
+    "structure_custom_group_one": null
+   },
+   "location": {
+    "id": "27727",
+    "city": "London",
+    "name": "London",
+    "postal_code": "EC3M 3BD",
+    "province": "United Kingdom"
+   }
+  }
+ ]
+}

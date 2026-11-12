@@ -1,0 +1,87 @@
+[
+ {
+  "id": 146267,
+  "title": "Senior Security Engineer",
+  "description": "<h1 style=\"margin-top: 0px; margin-bottom: 0px;\">Role summary</h1><div><br></div><div>",
+  "departmentIdentifier": "a82e58b9-307e-4009-85d2-5ca37a98dd64",
+  "departmentName": "Platform Team- DevOps & Data Center",
+  "excerpt": "Role summaryTestmu AI &nbsp;runs a global cloud testing platform: thousands of real devices, browser VMs and CI pipelines serving engineering teams worldwide. We are hiring a hands-on Senior Security ",
+  "jobLocations": [
+   {
+    "id": 16613,
+    "name": "Noida",
+    "city": "Noida",
+    "state": "UP",
+    "countryCode": "IN",
+    "countryName": "India"
+   }
+  ],
+  "jobType": 2,
+  "experience": "4-8 Years",
+  "jobNumber": "LT342",
+  "salaryRange": {
+   "currency": "INR",
+   "salaryPeriod": 0,
+   "cultureInfo": "en-IN"
+  },
+  "salaryRangeFormat": "",
+  "publishedOn": "2026-11-02T09:12:56.437Z",
+  "publishedSinceDays": 9,
+  "skillNames": []
+ },
+ {
+  "id": 145658,
+  "title": "Performance Marketing",
+  "description": "<div><strong style=\"background-color: transparent; color: rgb(0, 0, 0);\">The Mission</strong></div><div><span style=\"background-color: transparent; color: rgb(0, 0, 0);\">",
+  "departmentIdentifier": "235856f6-cdcd-4864-aa0f-6670d96a736e",
+  "departmentName": "Marketing",
+  "excerpt": "The MissionAt TestMu AI (formerly LambdaTest), we aren't just automating scripts — we're deprecating the era of manual-heavy testing. We're building the world's first AI-native platform where Agentic ",
+  "jobLocations": [],
+  "jobType": 2,
+  "experience": "4-7",
+  "jobNumber": "LT340",
+  "salaryRange": {
+   "currency": "INR",
+   "salaryPeriod": 0,
+   "cultureInfo": "en-IN"
+  },
+  "salaryRangeFormat": "",
+  "publishedOn": "2026-10-26T14:47:00.46Z",
+  "publishedSinceDays": 16,
+  "skillNames": []
+ },
+ {
+  "id": 145411,
+  "title": "SDET-I",
+  "description": "<div><strong style=\"background-color: transparent; color: rgb(0, 0, 0);\">SDET-I — Quality Engineering</strong></div><div><br></div><div><strong style=\"background-color: transparent; color: rgb(0, 0, 0);\">Engineering · Platform Quality Engineering</strong></div><div><br></div><div><span style=\"background-color: transparent; color: rgb(0, 0, 0);\">",
+  "departmentIdentifier": "90fed678-e2fd-4d58-870b-f5af06876502",
+  "departmentName": "Engineering",
+  "excerpt": "SDET-I — Quality EngineeringEngineering · Platform Quality Engineering📍 Noida · 5 days WFO &nbsp; 🕐 Full-Time · 2–3 YearsHiring Drive · 31 October 2026 &nbsp;· &nbsp;On-site assessment and panel in a ",
+  "jobLocations": [
+   {
+    "id": 16613,
+    "name": "Noida",
+    "city": "Noida",
+    "state": "UP",
+    "countryCode": "IN",
+    "countryName": "India"
+   }
+  ],
+  "jobType": 2,
+  "experience": "2 - 3",
+  "jobNumber": "LT337",
+  "salaryRange": {
+   "currency": "INR",
+   "salaryPeriod": 0,
+   "cultureInfo": "en-IN"
+  },
+  "salaryRangeFormat": "",
+  "publishedOn": "2026-11-11T14:48:40.113Z",
+  "publishedSinceDays": 0,
+  "skillNames": [
+   "selenium",
+   "Automation Testing",
+   "appium"
+  ]
+ }
+]

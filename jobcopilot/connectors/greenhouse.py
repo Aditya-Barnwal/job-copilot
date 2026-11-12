@@ -18,9 +18,11 @@ region -> endpoint mapping in one place in case Greenhouse ever splits the API.
 """
 from __future__ import annotations
 
+from urllib.parse import quote
 from typing import Any, Optional
 
 from .base import Connector, DEFAULT_HEADERS
+from ..ats_detect import path_id
 from ..models import Job
 from ..normalize import strip_html, infer_workplace_type, infer_country_bucket
 
@@ -53,7 +55,7 @@ class GreenhouseConnector(Connector):
         against the very endpoint ingest will call."""
         region = board_region({"region": region})
         template = cls.BASE if region == US else cls.REGION_BASES[region]
-        return template.format(slug=slug)
+        return template.format(slug=path_id(slug, "Greenhouse board"))
 
     def fetch_raw(self, company: dict[str, Any]) -> Any:
         url = self.list_url(company["slug"], company.get("region"))
@@ -71,7 +73,7 @@ class GreenhouseConnector(Connector):
             department = departments[0].get("name") if departments else None
             url = j.get("absolute_url") or ""
             if not url and slug and j.get("id"):
-                url = f"{board_host}/{slug}/jobs/{j['id']}"
+                url = f"{board_host}/{quote(slug, safe='')}/jobs/{quote(str(j['id']), safe='')}"
             jobs.append(
                 Job(
                     source=self.source,

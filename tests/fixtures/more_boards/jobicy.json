@@ -1,0 +1,124 @@
+{
+ "apiVersion": "2.2.19",
+ "documentationUrl": "https://jobi.cy/apidocs",
+ "friendlyNotice": "Thanks for using Jobicy API! Please ensure Jobicy is clearly credited with a direct link to the source, and all application buttons redirect to the original job URL provided in this feed. That’s all! You might be building something amazing, we wish you the best of luck!",
+ "jobCount": 5,
+ "lastUpdate": "2026-11-11T14:54:01+00:00",
+ "nextCursor": "AgAAAABq9LopAAAAAGrz1-4AAAAAAAJdePCMbjB8sINcYk7NRP2xofQd5-x_X5XVSCOxxNa_yjRTR2NUrnq2dor0hB9bd-zv0H3WMOztEt7X2OAq6LPUbrU",
+ "hasMore": true,
+ "appliedFilters": {
+  "count": 20,
+  "geo": "apac"
+ },
+ "jobs": [
+  {
+   "id": 161303,
+   "url": "https://jobicy.com/jobs/161303-engineering-manager-network-team-lead-2",
+   "jobSlug": "161303-engineering-manager-network-team-lead-2",
+   "jobTitle": "Engineering Manager/Network Team Lead",
+   "companyName": "Nebius",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2026/06/d90c0566-221.webp",
+   "jobIndustry": [
+    "DevOps & Infrastructure"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "APAC",
+   "jobLevel": "Senior",
+   "jobExcerpt": "About Nebius: Nebius is leading a new era in cloud infrastructure for the global AI economy. We are building a full-stac …",
+   "jobDescription": "<p><strong>About <a href=\"https://jobicy.com/company/nebius\" target=\"_blank\" rel=\"noopener\">Nebius</a>:</strong></p>\n<p>Nebius is leading a new era in cloud infrastructure for the global AI economy. We are building a full-stack AI cloud platform that supports developers and enterprises from data and …",
+   "pubDate": "2026-11-11T14:54:01+00:00"
+  },
+  {
+   "id": 161297,
+   "url": "https://jobicy.com/jobs/161297-manager-security-operations-center-2",
+   "jobSlug": "161297-manager-security-operations-center-2",
+   "jobTitle": "Manager, Security Operations Center",
+   "companyName": "Huntress",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2025/06/91eae3ae-221.jpg",
+   "jobIndustry": [
+    "Cybersecurity"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "Australia",
+   "jobLevel": "Senior",
+   "jobExcerpt": "What We Do: Cybercrime is growing, and more businesses are getting hit by threats that used to target only the biggest o …",
+   "jobDescription": "\n<p><strong>What We Do:</strong></p>\n<p>Cybercrime is growing, and more businesses are getting hit by threats that used to target only the biggest organizations. That pushes defenders like us to operate at the highest level, and it deepens our need for good people who want to make a meaningful impac …",
+   "pubDate": "2026-11-11T14:49:29+00:00",
+   "salaryMin": 170000,
+   "salaryMax": 210000,
+   "salaryCurrency": "AUD",
+   "salaryPeriod": "yearly"
+  },
+  {
+   "id": 155031,
+   "url": "https://jobicy.com/jobs/155031-compliance-analyst-senior-compliance-analyst-special-investigations",
+   "jobSlug": "155031-compliance-analyst-senior-compliance-analyst-special-investigations",
+   "jobTitle": "Compliance Analyst / Senior Compliance Analyst (Special Investigations)",
+   "companyName": "OKX",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2025/06/c6a69151-221-1.png",
+   "jobIndustry": [
+    "Legal & Compliance"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "APAC,  EMEA",
+   "jobLevel": "Senior",
+   "jobExcerpt": "Who We Are At OKX, we believe that the future will be reshaped by crypto, and ultimately contribute to every individual' …",
+   "jobDescription": "<h3><strong>Who We Are</strong></h3>\n<p>At OKX, we believe that the future will be reshaped by crypto, and ultimately contribute to every individual's freedom.</p>\n<p>OKX is a leading crypto exchange, and the developer of OKX Wallet, giving millions access to crypto trading and decentralized crypto  …",
+   "pubDate": "2026-11-11T02:55:07+00:00"
+  },
+  {
+   "id": 161302,
+   "url": "https://jobicy.com/jobs/161302-field-marketing-manager-australia",
+   "jobSlug": "161302-field-marketing-manager-australia",
+   "jobTitle": "Field Marketing Manager, Australia",
+   "companyName": "Horizon3.ai",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2026/11/0f27161cfbcc-221.webp",
+   "jobIndustry": [
+    "Marketing & Sales"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "Australia",
+   "jobLevel": "Director",
+   "jobExcerpt": "Get to Know Us Horizon3.ai is a fast-growing, remote cybersecurity company dedicated to the mission of enabling organiza …",
+   "jobDescription": "<p><strong>Get to Know Us</strong></p>\n<p><a href=\"https://jobicy.com/company/horizon3-ai\" target=\"_blank\" rel=\"noopener\">Horizon3.ai</a> is a fast-growing, remote cybersecurity company dedicated to the mission of enabling organizations to proactively find, fix and verify exploitable attack vectors  …",
+   "pubDate": "2026-11-11T14:53:40+00:00",
+   "salaryMin": 140000,
+   "salaryMax": 190000,
+   "salaryCurrency": "AUD",
+   "salaryPeriod": "yearly"
+  },
+  {
+   "id": 155000,
+   "url": "https://jobicy.com/jobs/155000-talent-analyst-specialist-fully-remote",
+   "jobSlug": "155000-talent-analyst-specialist-fully-remote",
+   "jobTitle": "Talent Analyst Specialist (Fully Remote)",
+   "companyName": "Luxury Presence",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2022/05/f2b241fb769140fff2f70e8efaf5c0ff.jpg",
+   "jobIndustry": [
+    "HR & Recruiting"
+   ],
+   "jobType": [
+    "Contract"
+   ],
+   "jobGeo": "Philippines",
+   "jobLevel": "Director",
+   "jobExcerpt": "Luxury Presence is building the AI growth platform for real estate. Backed by Bessemer Venture Partners and other top in …",
+   "jobDescription": "<p><strong>Luxury Presence </strong>is building the AI growth platform for real estate. Backed by Bessemer Venture Partners and other top investors, we're a Series C company that has hit $100M in annual recurring revenue. More than 90,000 real estate professionals, including over 30% of the WSJ Real …",
+   "pubDate": "2026-11-11T02:50:22+00:00",
+   "salaryMin": 1000,
+   "salaryMax": 1000,
+   "salaryCurrency": "USD",
+   "salaryPeriod": "monthly"
+  }
+ ],
+ "statusCode": 200,
+ "success": true
+}

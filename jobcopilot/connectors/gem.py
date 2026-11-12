@@ -19,7 +19,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from urllib.parse import quote
+
 from .base import Connector, DEFAULT_HEADERS
+from ..ats_detect import path_id
 from ..models import Job
 from ..normalize import (
     strip_html, normalize_workplace, infer_workplace_type, infer_country_bucket,
@@ -42,7 +45,7 @@ class GemConnector(Connector):
 
     @classmethod
     def list_url(cls, slug: str) -> str:
-        return cls.BASE.format(slug=slug)
+        return cls.BASE.format(slug=path_id(slug, "Gem board"))
 
     def fetch_raw(self, company: dict[str, Any]) -> Any:
         return self.client.get_json(
@@ -60,7 +63,7 @@ class GemConnector(Connector):
             workplace = normalize_workplace(p.get("location_type")) or infer_workplace_type(location)
             departments = p.get("departments") or []
             pid = str(p.get("id") or "")
-            url = p.get("absolute_url") or (self.BOARD.format(slug=slug, id=pid) if slug and pid else "")
+            url = p.get("absolute_url") or (self.BOARD.format(slug=quote(slug, safe=''), id=quote(pid, safe='')) if slug and pid else "")
             jobs.append(
                 Job(
                     source=self.source,

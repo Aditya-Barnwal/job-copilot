@@ -48,10 +48,12 @@ def test_profile_uses_confirmed_and_unconfirmed_never_pending(prof):
 
 def test_profile_config(prof, tmp_path, monkeypatch):
     assert prof.user_yoe == 1 and "bengaluru" in prof.preferred_cities
-    assert prof.role_families == ["backend", "fullstack", "ml", "ai", "sde"]
+    assert {"sde", "backend", "ml", "ai", "data_science", "fde"} <= set(prof.role_families)
+    assert "fullstack" not in prof.role_families            # secondary tier
     p = fit.load_profile(EXAMPLE, cfg={"filters": {"yoe": {"user_yoe": 2},
-                                                   "roles": {"families": ["data engineer", "ml engineer"]}}})
-    assert p.user_yoe == 2 and p.role_families == ["data_engineering", "ml"]
+                                                   "roles": {"families": {"fullstack": "primary",
+                                                                          "sde": "off"}}}})
+    assert p.user_yoe == 2 and "fullstack" in p.role_families and "sde" not in p.role_families
 
 
 def test_missing_facts_file_degrades(tmp_path):
@@ -91,10 +93,19 @@ def test_top_n_and_must_first(prof):
 # --------------------------------------------------------------------- role
 
 @pytest.mark.parametrize("title, fam, pts", [
-    ("Backend Engineer", "backend", 100), ("Full-Stack Developer", "fullstack", 100),
-    ("Machine Learning Engineer", "ml", 100), ("GenAI Engineer", "ai", 100),
-    ("Software Engineer", "sde", 85), ("Data Engineer", "data_engineering", 70),
-    ("Frontend Engineer", "frontend", 55), ("QA Engineer", "qa", 35), ("Account Executive", "other", 20),
+    # primary 100 / secondary 85 / startup_only 60 (config/scoring.yaml role.tier_scores)
+    ("Backend Engineer", "backend", 100), ("Machine Learning Engineer", "ml", 100),
+    ("GenAI Engineer", "ai", 100), ("Software Engineer", "sde", 100), ("Data Engineer", "data_engineering", 100),
+    ("Data Scientist II", "data_science", 100), ("FDE - Bengaluru", "fde", 100),
+    ("Associate Member of Technical Staff", "amts", 100),
+    ("Full-Stack Developer", "fullstack", 85), ("Data Analyst", "data_analyst", 85),
+    ("Analytics Engineer", "analytics_engineering", 85), ("MLOps Engineer", "mlops", 85),
+    ("Platform Engineer", "platform", 60), ("DevOps Engineer", "devops", 60), ("QA Engineer", "qa", 60),
+    ("Frontend Engineer", "frontend", 55), ("Mechanical Engineer", "other_engineering", 40),
+    ("Account Executive", "other", 20),
+    # E2/E12: the eligibility gate - non-engineering functions are "other"
+    ("Marketing AI Engineer", "other", 20), ("Data Validator – AI/ML Systems", "other", 20),
+    ("Software Engineer - Infrastructure", "sde", 100), ("Software Engineer, Quality", "sde", 100),
 ])
 def test_role(prof, title, fam, pts):
     r = fit.score(mk(title=title), profile=prof, cfg=NOSEM)
@@ -240,7 +251,7 @@ def test_model_unavailable_skips(prof, monkeypatch):
     def boom():
         raise ImportError("no model here")
     monkeypatch.setattr("jobcopilot.scoring.get_model", boom)
-    r = fit.score(mk(description_text="Python"), profile=prof, cfg={"semantic": True})
+    r = fit.score(mk(description_text="Python backend services"), profile=prof, cfg={"semantic": True})
     assert "semantic" not in r.components and "semantic_skipped" in r.flags
 
 
@@ -286,7 +297,7 @@ def test_end_to_end_ordering(prof):
         ("apac", REMOTE_PY, {"tier": "funded", "funding_stage": "Series B"}),
     ]}
     assert sc["blr"] > sc["us"] and sc["apac"] > sc["us"]
-    assert sc["us"] < 50
+    assert sc["us"] < 60          # senior + not India-eligible; the role itself (Rails backend) is a target
 
 
 def test_why_sentence(prof):
@@ -295,7 +306,7 @@ def test_why_sentence(prof):
     assert r.why.startswith("Strong match: Go, PostgreSQL, REST APIs")
     assert "new-grad friendly" in r.why and "Bengaluru" in r.why and "funded (YC W23)" in r.why
     r2 = fit.score(US_RUBY, profile=prof, cfg=NOSEM)
-    assert "missing Ruby on Rails" in r2.why and r2.why.startswith("Weak match")
+    assert "missing Ruby on Rails" in r2.why and r2.why.startswith(("Weak match", "Partial match"))
 
 
 def test_deterministic_and_accepts_job_objects(prof):
@@ -306,3 +317,37 @@ def test_deterministic_and_accepts_job_objects(prof):
     a = fit.score(job, profile=prof, cfg=NOSEM)
     b = fit.score(job.to_dict(), profile=prof, cfg=NOSEM)
     assert a == b and a.components["skills"] == 100 and a.to_dict()["score"] == a.score
+
+
+# ------------------------------------------------- Phase 2 review fixes (E10/E12)
+
+def test_e10_empty_description_never_outranks_real_jd(prof):
+    real = mk(title="Backend Engineer", description_text="Requirements:\n- Go\n- PostgreSQL\n- Kafka\n- Rust")
+    empty = mk(title="Backend Engineer (Python, Go, PostgreSQL)", description_text="")
+    enc = FakeEncoder()
+    r_real = fit.score(real, profile=prof, cfg={"semantic": True}, encoder=enc)
+    r_empty = fit.score(empty, profile=prof, cfg={"semantic": True}, encoder=enc)
+    assert "no_description" in r_empty.flags
+    assert r_empty.components["skills"] == 50 and r_empty.matched_skills == []   # title is not a JD
+    assert r_empty.components["semantic"] == 50                                   # neutral, not dropped
+    assert r_empty.weights["semantic"] == pytest.approx(0.10)                     # no upward renormalising
+    assert r_real.score > r_empty.score
+
+
+def test_e10_skills_from_description_not_title(prof):
+    r = fit.score(mk(title="Python Developer", description_text="Requirements:\n- Rust and Kafka"),
+                  profile=prof, cfg=NOSEM)
+    assert "Python" not in r.matched_skills and set(r.missing_skills) == {"Rust", "Kafka"}
+
+
+def test_e11_any_of_counts_once(prof):
+    r = fit.score(mk(description_text="Requirements:\n- Python, Java, or Go\n- Kafka"), profile=prof, cfg=NOSEM)
+    # one any-of unit met (Python/Go), Kafka missing -> 50% of must
+    assert r.components["skills"] == pytest.approx(50.0)
+    assert "Kafka" in r.missing_skills and "Java" not in r.missing_skills
+
+
+def test_e11_employer_name_is_not_a_skill(prof):
+    jd = "Requirements:\n- Python\n- Experience building on Snowflake is great"
+    r = fit.score(mk(company="Snowflake", description_text=jd), profile=prof, cfg=NOSEM)
+    assert "Snowflake" not in r.matched_skills + r.missing_skills

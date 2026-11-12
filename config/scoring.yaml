@@ -22,20 +22,19 @@ skills:
   must_weight: 0.7      # share of the skills score from must-haves
   nice_weight: 0.3      # ... and from nice-to-haves (renormalised if a JD has only one kind)
   no_skills_score: 50   # JD names no known skill: neutral, flagged low_confidence_skills
+  min_description_chars: 15     # shorter / empty JD: skills = no_skills_score, flag no_description
+  no_description_semantic: 50   # ... and semantic = this (not dropped, so weights never renormalise up)
   top_n: 8              # matched / missing lists shown on the card (must-haves first)
 
 role:
-  target_families: []   # empty -> derived from filters.yaml roles.families, else
-                        # [backend, fullstack, ml, ai, sde]
-  target_score: 100     # title in one of your target families
-  generic_sde: 85       # "Software Engineer" with no specialisation
-  scores:               # everything else (adjacent families)
-    data_engineering: 70
-    data_science: 75
+  # Points per tier of the title's family; tiers are set in filters.yaml roles.families.
+  tier_scores:
+    primary: 100        # SDE / backend / Java / Python / AI / GenAI / ML / CV / NLP / data eng / DS / FDE ...
+    secondary: 85       # data analyst / analytics engineer / MLOps / full-stack
+    startup_only: 60    # platform / cloud / SRE / DevOps / QA / research ... (funded / watchlist only)
+  scores:               # families that are "off" (eligibility normally excludes them) and the rest
     frontend: 55
-    devops: 55
     mobile: 45
-    qa: 35
     other_engineering: 40
     other: 20
 

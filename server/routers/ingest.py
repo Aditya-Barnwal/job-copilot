@@ -5,9 +5,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, HTTPException
 
+import dataclasses
+
 from jobcopilot import scoring, store
-from jobcopilot.filters import DEFAULT_TARGET_ROLES, FilterConfig
-from jobcopilot.ingest import run_pipeline
+from jobcopilot.ingest import default_filter_cfg, run_pipeline
 
 from ..deps import ROOT
 
@@ -23,13 +24,23 @@ def run_ingest(body: Optional[dict] = Body(default=None)):
     `manual`, `by_connector` and the dedupe counts.
     """
     body = body or {}
-    filter_cfg = FilterConfig(
-        min_lpa=float(body.get("min_lpa", 15.0)),
-        sectors=set(body["sectors"]) if body.get("sectors") else None,
-        usd_to_inr=float(body.get("usd_to_inr", 83.0)),
-        target_roles=body.get("roles") or list(DEFAULT_TARGET_ROLES),
-        max_age_days=body.get("max_age_days"),
-    )
+    # Same config/filters.yaml baseline as the nightly run; only keys present
+    # in the body override it.
+    overrides: dict = {}
+    try:
+        if body.get("min_lpa") is not None:
+            overrides["min_lpa"] = float(body["min_lpa"])
+        if body.get("usd_to_inr") is not None:
+            overrides["usd_to_inr"] = float(body["usd_to_inr"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="min_lpa / usd_to_inr must be numbers")
+    if body.get("sectors"):
+        overrides["sectors"] = set(body["sectors"])
+    if body.get("roles"):
+        overrides["target_roles"] = list(body["roles"])
+    if "max_age_days" in body:
+        overrides["max_age_days"] = body["max_age_days"]
+    filter_cfg = dataclasses.replace(default_filter_cfg(), **overrides)
     return run_pipeline(
         companies_path=body.get("companies"),
         include_boards=bool(body.get("boards", True)),

@@ -17,6 +17,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -514,6 +515,54 @@ def _fallback_decision(job: Job, company: Optional[dict], filter_cfg: FilterConf
                            salary_annual_inr=inr)
 
 
+def default_filter_cfg() -> FilterConfig:
+    """The FilterConfig built from config/filters.yaml — the nightly run's and
+    POST /api/ingest's starting point (the API overrides only keys it is sent)."""
+    f = _config.filters()
+    roles = list((f.get("roles") or {}).get("families") or DEFAULT_TARGET_ROLES)
+    inr_floor = float((f.get("salary_floors") or {}).get("INR", 1_500_000))
+    usd = float((f.get("fx_to_inr") or {}).get("USD", 83.0))
+    keep_unknown = bool((f.get("geo") or {}).get("keep_unknown_country", True))
+    return FilterConfig(min_lpa=inr_floor / 100_000, usd_to_inr=usd, target_roles=roles,
+                        keep_unknown_country=keep_unknown)
+
+
+def eligibility_config(filter_cfg: Optional[FilterConfig] = None) -> dict:
+    """The cfg dict eligibility.evaluate() gets for `filter_cfg` (default: filters.yaml).
+    Its store.config_hash() is stamped on every decision made with it."""
+    filter_cfg = filter_cfg or default_filter_cfg()
+    try:   # filters.yaml merged with the explicit FilterConfig knobs (roles, floors)
+        from .filters import eligibility_cfg
+        return eligibility_cfg(filter_cfg)
+    except Exception:  # noqa: BLE001 — older filters.py
+        return _config.filters()
+
+
+_ENG_SIGNAL_RE = re.compile(r"\b(engineer|developer|programmer|sde|swe|sdet|mle|scientist|"
+                            r"technical staff|mts)\b", re.I)
+
+
+def _engineering_signal(title: Optional[str]) -> bool:
+    """filters.engineering_signal when available, else the same idea as a regex."""
+    try:
+        from .filters import engineering_signal
+    except ImportError:
+        return bool(_ENG_SIGNAL_RE.search(title or ""))
+    return bool(engineering_signal(title or ""))
+
+
+def _role_excluded_row(job: Job, cfg_hash: Optional[str]) -> dict[str, Any]:
+    """Decision columns for an off-target title that still looks like engineering:
+    stored as excluded with rule 'role' (D8) so a wrongly rejected title is visible."""
+    return {"lane": "excluded", "excluded": 1,
+            "exclusion_reasons": [{"rule": "role", "detail": "title is not one of the target roles",
+                                   "excerpt": (job.title or "")[:200] or None}],
+            "flags": [], "min_yoe_required": job.min_yoe_required, "yoe_max": None,
+            "yoe_is_preferred": int(bool(job.yoe_is_preferred)), "yoe_evidence": None,
+            "fresher_friendly": 0, "india_eligible": None, "salary_annual_inr": None,
+            "eval_cfg_hash": cfg_hash}
+
+
 def _eligibility_evaluate() -> Optional[Callable[..., Any]]:
     try:
         from . import eligibility
@@ -555,21 +604,35 @@ def evaluate_jobs(jobs: list[Job], filter_cfg: FilterConfig, *, db_path: Any = N
     evaluate = _eligibility_evaluate()
     lookup = _company_lookup(db_path)
     if cfg is None:
-        try:   # filters.yaml merged with the explicit FilterConfig knobs (roles, floors)
-            from .filters import eligibility_cfg
-            cfg = eligibility_cfg(filter_cfg)
-        except Exception:  # noqa: BLE001 — older filters.py
-            cfg = _config.filters()
+        cfg = eligibility_config(filter_cfg)
+    from .store import config_hash
+    cfg_hash = config_hash(cfg)
     by_id = {id(r.job): r for r in (passed or [])}
     out: list[FilterResult] = []
     stats: dict[str, Any] = {"mode": "eligibility" if evaluate else "fallback", "off_target": 0,
-                             "main": 0, "extended": 0, "excluded": 0, "errors": 0, "by_rule": {}}
+                             "main": 0, "extended": 0, "excluded": 0, "errors": 0, "by_rule": {},
+                             "off_target_stored": 0}
     from .filters import is_seniority_high, passes_salary
     from .yoe import extract_min_yoe
     for job in jobs:
         family = passes_role(job.title, filter_cfg.target_roles)
         if family is None:
             stats["off_target"] += 1
+            if not _engineering_signal(job.title):
+                continue            # sales, recruiting, ...: counted, never stored
+            # An engineering-looking title the role gate rejected: store it as
+            # excluded (rule 'role') so a wrong rejection is visible, not lost.
+            job.seniority_high = is_seniority_high(job.title)
+            job.min_yoe_required, job.yoe_is_preferred = extract_min_yoe(job.description_text)
+            _ok, estimated = passes_salary(job, filter_cfg.min_lpa, filter_cfg.usd_to_inr)
+            r = FilterResult(job=job, package_estimated=estimated,
+                             country_uncertain=job.country_bucket not in ("IN", "non-IN"))
+            r.evaluation = _role_excluded_row(job, cfg_hash)   # type: ignore[attr-defined]
+            r.decision = None   # type: ignore[attr-defined]
+            stats["off_target_stored"] += 1
+            stats["excluded"] += 1
+            stats["by_rule"]["role"] = stats["by_rule"].get("role", 0) + 1
+            out.append(r)
             continue
         if id(job) not in by_id:      # apply_filters() annotated passing jobs already
             job.role_family = family
@@ -583,9 +646,12 @@ def evaluate_jobs(jobs: list[Job], filter_cfg: FilterConfig, *, db_path: Any = N
             except Exception as exc:  # noqa: BLE001 — one bad job never aborts the run
                 stats["errors"] += 1
                 log.warning("eligibility failed key=%s exc=%s", job.key, exc)
+        real = decision is not None
         if decision is None:
             decision = _fallback_decision(job, company, filter_cfg)
         row = _decision_row(decision)
+        # A fallback decision carries no hash, so the catch-up step retries it.
+        row["eval_cfg_hash"] = cfg_hash if real else None
         job.min_yoe_required = row["min_yoe_required"]
         job.yoe_is_preferred = bool(row["yoe_is_preferred"])
         r = by_id.get(id(job))
@@ -685,6 +751,12 @@ def persist(run: IngestRun, *, enrich_workday: bool = True, rescore: bool = True
     inserted, updated = _store.upsert_jobs(rows, db_path=db_path)
     purged = _store.purge_expired(_today(), db_path=db_path)
     _store.set_meta("last_ingest", str(time.time()), db_path)
+    try:   # postings every source stopped listing leave the queue / matches
+        from .queue import queue_config
+        retired = _store.retire_unlisted(float(queue_config()["gone_after_days"]), db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 — never fails the ingest
+        log.warning("retire_unlisted failed: %s: %s", type(exc).__name__, exc)
+        retired = {"error": f"{type(exc).__name__}: {exc}"}
 
     rescored = 0
     if rescore and filled and _store.get_resume(db_path):
@@ -704,7 +776,7 @@ def persist(run: IngestRun, *, enrich_workday: bool = True, rescore: bool = True
             log.warning("fit scoring failed: %s: %s", type(exc).__name__, exc)
             fit = {"error": f"{type(exc).__name__}: {exc}"}
     return {"inserted": inserted, "updated": updated, "workday_details_filled": len(filled),
-            "rescored": rescored, "purged_expired": purged, "fit": fit}
+            "rescored": rescored, "purged_expired": purged, "fit": fit, "retired": retired}
 
 
 _PROBLEM_STATUSES = {"robots_disallowed", "robots_unavailable", "denied_host", "unavailable", "error"}
@@ -728,6 +800,7 @@ def summarize(run: IngestRun, persisted: Optional[dict[str, Any]] = None) -> dic
         "duplicates_merged": run.raw_count - run.expired_dropped - len(run.merged),
         "expired_dropped": run.expired_dropped,
         "purged_expired": persisted.get("purged_expired", 0),
+        "retired": persisted.get("retired", {}),
         "by_connector": by_connector,
         "sources": {o.source: {k: v for k, v in o.as_dict().items() if k != "source"}
                     for o in run.outcomes if o.status != "manual"},

@@ -49,7 +49,7 @@ _DUP_PAREN_RE = re.compile(r"\b(\d{1,2})\s*\(\s*\1\s*\)")      # "3 (3) years" -
 
 def _normalise(text: str) -> str:
     """Same-length-insensitive cleanup; positions are not reused afterwards."""
-    t = _DASHES.sub("-", text).replace(" ", " ")
+    t = _DASHES.sub("-", text).replace(" ", " ").replace("\u2019", "'").replace("\u2018", "'")
     t = _NUM_WORD_RE.sub(lambda m: str(_NUM_WORDS[m.group(1).lower()]), t)
     t = _A_YEAR_RE.sub("1 ", t)
     t = _DUP_PAREN_RE.sub(r"\1", t)
@@ -88,6 +88,7 @@ _EXPERIENCE_CTX = re.compile(
 # Guards: text right BEFORE the number that makes it not a YOE bar.
 _GUARD_BEFORE = re.compile(
     r"(?:founded|since|combined|collectively|cohort|established|company\s+has|we\s+have\s+been|"
+    r"we(?:'ve|\s+have)\s+spent|(?:we|our\s+(?:team|company))\s+(?:has|have)\s+(?:had|over|nearly|almost|about)?|"
     r"we've\s+been|team\s+(?:has|have|with|brings)|over\s+the\s+(?:past|last|next)|"
     r"(?:in|for|during)\s+the\s+(?:past|last|next|first)|within(?:\s+the\s+(?:past|last))?|"
     r"for\s+over|graduated\s+(?:in|within)|bond\s+(?:of|for)|commit(?:ment)?\s+(?:of|to|for)|"
@@ -136,6 +137,10 @@ _FRESHER_NEG_RE = re.compile(
     r"not\s+for\s+(?:freshers|new\s+grads)|is\s+not\s+an?\s+(?:entry|junior)",
     re.I)
 
+_FRESHER_OTHER_ROLE_RE = re.compile(
+    r"\bother\s+(?:roles?|positions?|openings?|opportunities)\b|\balso\s+(?:hire|hiring|run|offer|have)\b|"
+    r"\bseparate\b|\b(?:see|check(?:\s+out)?)\s+our\b|\bour\s+(?:new[- ]grad|graduate|early[- ]career|university)\b",
+    re.I)
 _TITLE_FRESHER_RE = re.compile(
     r"\bintern(?:ship)?s?\b|\bnew[- ]grad|\bgraduate\b|\bentry[- ]level\b|\bearly[- ]career\b|"
     r"\bfreshers?\b|\btrainee\b|\bapprentice|\buniversity\b|\bcampus\b|"
@@ -145,11 +150,29 @@ _TITLE_JUNIOR_RE = re.compile(
     r"\bjunior\b|\bjr\.?\b|\bassociate\b|"
     r"\b(?:engineer|developer|sde|swe|scientist|analyst)\s*[-,]?\s*(?:ii|2)\b|\bsde\s*-?\s*(?:ii|2)\b|\bL3\b",
     re.I)
-_TITLE_SENIOR_RE = re.compile(
-    r"\bsenior\b|\bsr\b\.?|\bstaff\b|\bprincipal\b|\bdistinguished\b|\bdirector\b|\barchitect\b|"
-    r"\blead\b|\bmanager\b|\bhead\s+of\b|\bvp\b|\bvice\s+president\b|\bL[4-9]\b|\bSDE\s*-?\s*(?:III|[3-9])\b|"
-    r"\b(?:engineer|developer|scientist|sde|analyst|researcher)\s*[-,]?\s*(?:iii|iv|v|vi|[3-9])\b",
+# ONE seniority reading shared by filters.is_seniority_high, title_level and fit (E9).
+# Whole words only: "Leadership Development Program" is not "lead", "Data Architecture"
+# is not "architect", "Member of Technical Staff" is not "staff"; "VP, Data Engineer" is.
+SENIOR_TITLE_RE = re.compile(
+    r"\b(?:senior|sr|staff|principal|distinguished|director|architect|lead|manager|head\s+of|"
+    r"vp|svp|evp|avp|vice\s+president|chief)\b|\bL[4-9]\b|\bSDE\s*-?\s*(?:III|IV|[3-9])\b|"
+    r"\b(?:engineer|developer|scientist|sde|swe|analyst|researcher)\s*[-,]?\s*(?:iii|iv|v|vi|[3-9])\b",
     re.I)
+_TITLE_SENIOR_RE = SENIOR_TITLE_RE
+_MTS_RE = re.compile(r"member\s+of\s+(?:the\s+)?technical\s+staff", re.I)
+
+
+def _mask_title(title: Optional[str]) -> str:
+    """Title with 4-digit years and "Member of Technical Staff" masked out."""
+    t = re.sub(r"\b(?:19|20)\d{2}\b", "", title or "")
+    return _MTS_RE.sub("MTS", t)
+
+
+def is_senior_title(title: Optional[str]) -> bool:
+    """Senior+ title (senior / sr / staff / principal / lead / architect / manager / director /
+    head of / VP / L4+ / SDE 3 / Engineer III ...), on word boundaries."""
+    return bool(SENIOR_TITLE_RE.search(_mask_title(title)))
+
 
 # --------------------------------------------------------------------------
 # Sections
@@ -169,7 +192,11 @@ _REQ_HEAD = (
     r"you\s+(?:have|should\s+have|will\s+have|bring|might\s+be\s+a\s+fit)|about\s+you|your\s+profile|"
     r"(?:skills|experience)\s+(?:and|&)\s+(?:experience|skills|qualifications)|eligibility|"
     r"desired\s+candidate\s+profile|candidate\s+profile|ideal\s+(?:candidate|profile)|"
-    r"required\s+skills|experience\s+required|what\s+it\s+takes|to\s+be\s+successful"
+    r"required\s+skills|experience\s+required|what\s+it\s+takes|to\s+be\s+successful|"
+    r"what\s+you(?:'ll|\s+will)\s+bring(?:\s+to\s+the\s+(?:role|team))?|education\s+(?:and|&)\s+experience|"
+    r"experience\s*$|you(?:'re|\s+are)\s+a\s+(?:good\s+|great\s+|strong\s+)?fit\s+if|"
+    r"what\s+(?:would\s+make|makes)\s+you\s+a\s+(?:good|great|strong)\s+fit|minimum\s+qualifications|"
+    r"basic\s+qualifications|must[- ]haves?"
 )
 _OTHER_HEAD = (
     r"responsibilities|what\s+you(?:'ll|\s+will)\s+(?:do|work\s+on|be\s+doing)|about\s+the\s+(?:role|"
@@ -228,18 +255,45 @@ def _inline_kind(h: str) -> str:
     return OTHER
 
 
+_INLINE_PREF_LABEL_RE = re.compile(
+    r"(?:^|(?<=[\s(]))(?P<h>preferred(?:\s+(?:qualifications|skills|experience))?|nice[- ]to[- ]haves?|"
+    r"good[- ]to[- ]haves?|bonus(?:\s+points)?|plus)\s*:\s*\S", re.I)
+
+
 def _section_events(text: str) -> list[tuple[int, str]]:
+    """(position, kind) section changes. A heading line opens a section; an inline
+    "Preferred: ..." / "Good to have: ..." label with content after it covers only its own
+    line / bullet (E8), after which the enclosing section resumes."""
     events: list[tuple[int, str]] = []
     pos = 0
+    block = NONE
     for line in text.split("\n"):
         kind = _heading_kind(line)
         if kind:
             events.append((pos, kind))
+            block = kind
         else:
+            scoped = False
+            for m in _INLINE_PREF_LABEL_RE.finditer(line):
+                head = _BULLET_RE.sub("", line).strip().lower()
+                if not head.startswith(m.group("h").lower()) and \
+                        not re.search(r"[.!?;|]\s*$", line[:m.start("h")]):
+                    continue        # "... is a plus: ..." mid-sentence is not a label
+                events.append((pos + m.start("h"), PREFERRED))
+                scoped = True
             for m in _INLINE_HEAD_RE.finditer(line):
-                events.append((pos + m.start("h"), _inline_kind(m.group("h"))))
+                k = _inline_kind(m.group("h"))
+                if k == PREFERRED and scoped:
+                    continue
+                events.append((pos + m.start("h"), k))
+                if k != PREFERRED:
+                    block = k
+                else:
+                    scoped = True
+            if scoped:
+                events.append((pos + len(line), block))
         pos += len(line) + 1
-    events.sort()
+    events.sort(key=lambda e: e[0])
     return events
 
 
@@ -301,6 +355,8 @@ class YoeCandidate:
     pos: int
     kind: str = "years"              # years | cap | fresher
     other_level: bool = False
+    alt_path: bool = False           # the PhD / Master's route ("or PhD with 1+ year")
+    narrow: bool = False             # a tool / domain sub-bar ("1+ years with Airflow")
 
 
 @dataclass
@@ -326,8 +382,7 @@ class YoeResult:
 
 def title_level(title: Optional[str]) -> str:
     """'senior', 'junior' or 'neutral' from the job title alone."""
-    t = re.sub(r"\b(?:19|20)\d{2}\b", "", title or "")
-    t = re.sub(r"member\s+of\s+(?:the\s+)?technical\s+staff", "mts", t, flags=re.I)
+    t = _mask_title(title)
     if _TITLE_SENIOR_RE.search(t):
         return "senior"
     if _TITLE_FRESHER_RE.search(t) or _TITLE_JUNIOR_RE.search(t):
@@ -336,8 +391,44 @@ def title_level(title: Optional[str]) -> str:
 
 
 def title_is_fresher(title: Optional[str]) -> bool:
-    t = re.sub(r"\b(?:19|20)\d{2}\b", "", title or "")
+    t = _mask_title(title)
     return bool(_TITLE_FRESHER_RE.search(t)) and not _TITLE_SENIOR_RE.search(t)
+
+
+_ADV_DEGREE_RE = re.compile(r"\bph\.?\s?d\b|\bdoctora(?:te|l)\b|\bmaster'?s\b|\bmasters\b|\bm\.?\s?tech\b|"
+                            r"\bm\.?sc\b|\bMS\b|\bM\.S\.", re.I)
+_ANY_DEGREE_RE = re.compile(_ADV_DEGREE_RE.pattern + r"|\bbachelor'?s?\b|\bb\.?\s?tech\b|\bBS\b|\bB\.S\.|"
+                            r"\bb\.?sc\b|\bBE\b|\bundergrad\w*", re.I)
+_ALT_AFTER_RE = re.compile(r"^[^,.;\n]{0,25}?\b(?:with|holding|and)\s+(?:a\s+|an\s+)?(?:ph\.?\s?d|doctorate|"
+                           r"master'?s|masters|m\.?\s?tech|ms\b|m\.?sc)|^[^,.;\n]{0,25}?\bpost[- ]?(?:degree|doctoral|phd)",
+                           re.I)
+_GENERAL_FIELD = (r"(?:data\s+science|data\s+engineering|data\s+analy\w+|software|engineering|industry|"
+                  r"tech(?:nology)?|ml|machine\s+learning|ai|analytics|backend|back-end|full[- ]?stack|product|"
+                  r"professional|relevant|related|similar|comparable|the\s+(?:industry|field|tech)|roles?|"
+                  r"positions?|an?\s+(?:similar|software|data|ml|machine|backend|full|engineering|analyst|ai|"
+                  r"professional|technical|fast|startup|product|high)|full-time|applied|a\s+focus)")
+_NARROW_AFTER_RE = re.compile(
+    r"^\s*(?:of\s+)?(?:(?:hands[- ]on|professional|practical|working|relevant|proven|prior|strong|"
+    r"demonstrated|solid)\s+)*(?:experience\s+)?(?:in|with|using|working|building|designing|developing|"
+    r"implementing|processing|on|writing|managing|leading|deploying|operating|maintaining|creating)\b"
+    r"(?!\s+" + _GENERAL_FIELD + r"\b)", re.I)
+# E6: "3+ years in data science", "2+ years of backend" - a field right after the unit.
+_FIELD_AFTER_RE = re.compile(r"^\s*(?:of|in)\s+(?!the\s+(?:past|last|next|first)\b)(?:[a-z][\w/&+.-]*\s*){1,5}", re.I)
+_DEGREE_WITH_RE = re.compile(
+    r"(?:\bdegree|\bbachelor'?s|\bmaster'?s|\bBS|\bB\.?Tech|\bBE|\bMS|\bM\.?Tech|\bPhD|\bgraduate)\b"
+    r"[^.\n]{0,25}?\b(?:with|and|plus)\s+(?:at\s+least\s+|a\s+minimum\s+of\s+|minimum\s+)?$", re.I)
+_BLURB_RE = re.compile(r"\b(?:we|we've|our|us|company|founded|customers?|clients?)\b", re.I)
+_MIN_PREFIX = ("minimum", "minimum of", "min", "a minimum of")
+
+
+def _is_alt_path(text: str, sub_lo: int, start: int, end: int) -> bool:
+    """A bar on the PhD / Master's route: the nearest degree before the number in its
+    sub-clause is an advanced one ("or Master's with 1+ years"), or the bar itself is
+    conditioned on one ("2+ years with a PhD", "post-degree experience")."""
+    degs = list(_ANY_DEGREE_RE.finditer(text[sub_lo:start]))
+    if degs and _ADV_DEGREE_RE.fullmatch(degs[-1].group(0)):
+        return True
+    return bool(_ALT_AFTER_RE.search(text[end:end + 60]))
 
 
 def _candidates(text: str) -> list[YoeCandidate]:
@@ -360,8 +451,15 @@ def _candidates(text: str) -> list[YoeCandidate]:
             continue
         c_lo, c_hi = _clause(text, m.start(), m.end())
         clause = text[c_lo:c_hi]
+        section = _section_at(events, m.start())
         # "... and 3 years of\nexperience": a wrapped line still counts.
-        if not (_EXPERIENCE_CTX.search(clause) or _EXPERIENCE_CTX.search(re.split(r"[.!?;]", after[:30])[0])):
+        ctx = bool(_EXPERIENCE_CTX.search(clause) or _EXPERIENCE_CTX.search(re.split(r"[.!?;]", after[:30])[0]))
+        if not ctx and _DEGREE_WITH_RE.search(before) and section != OTHER:
+            ctx = True        # E6: "Bachelor's degree with 4+ years OR Master's with 3+"
+        if not ctx and _FIELD_AFTER_RE.match(after) and (
+                section == REQUIRED or (section == NONE and not _BLURB_RE.search(clause))):
+            ctx = True        # E6: "3+ years in data science" under Requirements
+        if not ctx:
             continue
         prefix = re.sub(r"\s+", " ", (m.group("prefix") or "").strip().lower()).rstrip(".")
         kind = "years"
@@ -370,17 +468,28 @@ def _candidates(text: str) -> list[YoeCandidate]:
         else:
             mn, mx = lo_v, hi_v
         sub = _subclause(text, c_lo, c_hi, m.start(), m.end())
-        section = _section_at(events, m.start())
-        pref = bool(_SOFT_RE.search(sub)) or section == PREFERRED
+        soft = bool(_SOFT_RE.search(sub))
+        # E5: an explicit "Minimum of N years" stays hard even under a Preferred heading.
+        pref = soft or (section == PREFERRED and prefix not in _MIN_PREFIX)
+        sub_lo = c_lo
+        for b in _SUBCLAUSE_BREAK.finditer(text, c_lo, m.start()):
+            sub_lo = b.end()
         out.append(YoeCandidate(
             min_years=mn, max_years=mx, is_preferred=pref, section=section,
             evidence=_evidence(text, c_lo, c_hi, m.start(), m.end()), pos=m.start(), kind=kind,
-            other_level=bool(_OTHER_LEVEL_RE.search(sub))))
+            other_level=bool(_OTHER_LEVEL_RE.search(sub)),
+            alt_path=_is_alt_path(text, sub_lo, m.start(), m.end()),
+            narrow=bool(_NARROW_AFTER_RE.match(after))))
     for m in _FRESHER_RE.finditer(text):
         c_lo, c_hi = _clause(text, m.start(), m.end())
-        if _FRESHER_NEG_RE.search(text[c_lo:c_hi]):
+        clause = text[c_lo:c_hi]
+        if _FRESHER_NEG_RE.search(clause):
             continue
         section = _section_at(events, m.start())
+        # E5: a fresher phrase counts only where requirements are stated (or the JD has no
+        # sections) and when it is about this role, not "our other new-grad programs".
+        if section in (PREFERRED, OTHER) or _FRESHER_OTHER_ROLE_RE.search(clause):
+            continue
         out.append(YoeCandidate(
             min_years=0.0, max_years=None, is_preferred=False, section=section,
             evidence=_evidence(text, c_lo, c_hi, m.start(), m.end()), pos=m.start(), kind="fresher"))
@@ -399,7 +508,10 @@ def extract_yoe(description_text: Optional[str], title: Optional[str] = None) ->
     text = _normalise(description_text)
     cands = _candidates(text)
     pool = list(cands)
-    if level != "senior":
+    if level == "senior":
+        # E5: a senior title never passes on a fresher-only reading.
+        pool = [c for c in pool if c.kind != "fresher"]
+    else:
         same_level = [c for c in pool if not c.other_level]
         pool = same_level or pool
     hard = [c for c in pool if not c.is_preferred]
@@ -410,20 +522,25 @@ def extract_yoe(description_text: Optional[str], title: Optional[str] = None) ->
     else:
         not_other = [c for c in use if c.section != OTHER]
         use = not_other or use
-    fresher_text = any(c.kind == "fresher" for c in cands)
     if not use:
-        return YoeResult(min_years=0.0 if t_fresh else None, fresher_friendly=t_fresh,
+        return YoeResult(min_years=0.0 if t_fresh else None, fresher_friendly=t_fresh and level != "senior",
                          evidence=(f"title: {title}"[:EVIDENCE_MAX] if t_fresh else None),
                          title_level=level, candidates=cands)
     numeric = [c for c in use if c.kind != "fresher"]
-    if level == "junior":
-        chosen = min(use, key=lambda c: (c.min_years, c.kind == "fresher", c.pos))
+    # E7: the PhD / Master's route never sets the bar when a general route exists.
+    numeric = [c for c in numeric if not c.alt_path] or numeric
+    if level == "junior" and numeric:
+        # Lowest floor among GENERAL experience bars (tool / domain sub-bars don't lower it).
+        general = [c for c in numeric if not c.narrow]
+        chosen = min(general or numeric, key=lambda c: (c.min_years, c.pos))
     else:
-        # Strictest bar; a fresher phrase only decides when no number does.
+        # Strictest bar; a fresher phrase only decides when no number does (E5).
         chosen = max(numeric or use, key=lambda c: (c.min_years, -c.pos))
-    floors = {round(c.min_years, 2) for c in use}
+    floors = {round(c.min_years, 2) for c in (numeric or use)}
+    # E5: fresher_friendly from the chosen bar only (plus a fresher title with a sub-1 bar).
     fresher = (level != "senior") and (
-        t_fresh or fresher_text or (not chosen.is_preferred and chosen.min_years < 1))
+        chosen.kind == "fresher" or (not chosen.is_preferred and chosen.min_years < 1)
+        or (t_fresh and chosen.min_years < 1))
     return YoeResult(
         min_years=chosen.min_years, max_years=chosen.max_years, is_preferred=chosen.is_preferred,
         evidence=chosen.evidence, fresher_friendly=fresher, section=chosen.section,

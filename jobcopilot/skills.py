@@ -60,7 +60,11 @@ SKILLS: dict[str, list[str]] = {
     "Flask": ["flask"],
     "FastAPI": ["fastapi", "fast api"],
     "Node.js": ["node.js", "nodejs", "node js", "cs!:Node"],
-    "Express": ["express.js", "expressjs", "cs!:Express"],
+    # Only as the framework: Express.js / ExpressJS / "Node + Express" (E11) - never the
+    # English word ("express interest", "Express Scripts").
+    "Express": ["express.js", "expressjs",
+                r"re:(?:Node(?:\.js|JS)?|node\.js|nodejs)\s*(?:\+|/|&|and|,|with)\s*(?P<s>Express)(?![A-Za-z])",
+                r"re:(?<![A-Za-z])(?P<s>Express)\s*(?:\+|/|&|and|,)\s*(?:Node|node)"],
     "NestJS": ["nestjs", "nest.js"],
     ".NET": [".net", "dotnet", "asp.net", ".net core"],
     "Ruby on Rails": ["ruby on rails", "ror", "cs!:Rails"],
@@ -254,11 +258,12 @@ def _matches(text: str) -> list[tuple[int, int, str]]:
     for canon, aliases in _compiled():
         for al in aliases:
             for m in al.regex.finditer(text):
-                if m.end() == m.start():
+                a, b = m.span("s") if "s" in al.regex.groupindex else m.span()
+                if b == a:
                     continue
-                if al.mid_only and _at_sentence_start(text, m.start()):
+                if al.mid_only and _at_sentence_start(text, a):
                     continue
-                hits.append((m.start(), m.end(), canon))
+                hits.append((a, b, canon))
     hits.sort(key=lambda h: (-(h[1] - h[0]), h[0]))
     kept: list[tuple[int, int, str]] = []
     for s, e, c in hits:
@@ -331,6 +336,7 @@ _BODY_HEAD = (r"responsibilities|what you(?:'ll| will)? do|the role|about the ro
 
 _HEAD_PARTS = {"ignore": _IGNORE_HEAD, "nice": _NICE_HEAD, "must": _MUST_HEAD, "body": _BODY_HEAD}
 _HEAD_RES = {k: re.compile(r"^(?:[\W_]*)(?:\w+\s+){0,3}?(?:" + v + r")\b", re.I) for k, v in _HEAD_PARTS.items()}
+_HEAD_START_RES = {k: re.compile(r"^\W*(?:" + v + r")\b", re.I) for k, v in _HEAD_PARTS.items()}
 _ALL_HEAD = "|".join(_HEAD_PARTS.values())
 _INLINE_HEAD = re.compile(r"(?i)(?<=[\s.!?])((?:\w+\s+){0,2}(?:" + _ALL_HEAD + r"))\s*:")
 _LINE_NICE = re.compile(
@@ -346,14 +352,32 @@ class SkillHits:
     must: list[str] = field(default_factory=list)   # canonical, first-appearance order
     nice: list[str] = field(default_factory=list)
     sections_found: bool = False                     # an explicit must or nice section was seen
+    # Requirement units: one tuple per requirement; ("Python", "Java", "Go") is ONE any-of
+    # requirement ("Python, Java, or Go"). Skills not in any group are singleton units.
+    must_groups: list[tuple[str, ...]] = field(default_factory=list)
+    nice_groups: list[tuple[str, ...]] = field(default_factory=list)
 
     @property
     def all(self) -> list[str]:
         return self.must + [s for s in self.nice if s not in self.must]
 
 
-def _heading_kind(seg: str) -> tuple[Optional[str], str]:
-    """(kind, rest) if `seg` is a heading (optionally with inline content after a colon)."""
+_SMALL_WORDS = {"a", "an", "and", "or", "of", "to", "the", "for", "in", "on", "with", "you", "we", "&",
+                "you'll", "you're", "we're", "will", "be", "is", "are", "what", "who", "your", "our"}
+
+
+def _title_case(words: list[str]) -> bool:
+    return all(w[:1].isupper() or not w[:1].isalpha() or w.lower() in _SMALL_WORDS for w in words)
+
+
+def _heading_kind(seg: str, bullet: bool = False) -> tuple[Optional[str], str]:
+    """(kind, rest) if `seg` is a heading (optionally with inline content after a colon).
+
+    E11: a bullet item is never a heading; without a colon a heading is Title Case or
+    ALL CAPS and at most 4 words; a line starting with "experience ..." (a requirement
+    sentence) or "not required" is never a heading."""
+    if bullet:
+        return None, seg
     s = seg.strip().strip("#*_ ").strip()
     if not s:
         return None, seg
@@ -361,51 +385,111 @@ def _heading_kind(seg: str) -> tuple[Optional[str], str]:
     words = head.split()
     if not words or len(words) > 8:
         return None, seg
-    is_heading = bool(colon) or (len(words) <= 6 and not re.search(r"[.!?]$", s)
-                                 and not find_skills(head))
+    if re.match(r"(?i)\W*not\s+required\b", head) or \
+            (re.match(r"(?i)\W*(?:experience|expertise)\b", head) and len(words) > 2):
+        return None, seg
+    if colon:
+        is_heading = True
+    else:
+        # Title Case / ALL CAPS, or a known heading phrase from its first word ("Nice to have").
+        is_heading = (len(words) <= 4 and not re.search(r"[.!?,]$", s) and not find_skills(head)
+                      and (_title_case(words) or head.isupper()
+                           or any(r.match(head) for r in _HEAD_START_RES.values())))
     if not is_heading:
         return None, seg
     for kind in ("ignore", "nice", "must", "body"):
         if _HEAD_RES[kind].search(head):
-            # "Experience with Java" without a colon is a sentence, not a heading.
-            if kind == "must" and not colon and re.match(r"(?i)\W*(experience|expertise)\b", head) and len(words) > 2:
-                return None, seg
             return kind, rest if colon else ""
     return None, seg
 
 
-def _segments(text: str) -> list[str]:
+_LINE_BULLET = re.compile(r"^\s*(?:[-–*•·▪●◦]|\d{1,2}[.)])\s+")
+
+
+def _segments(text: str) -> list[tuple[str, bool]]:
+    """(segment, is_bullet_item) in order."""
     text = _INLINE_HEAD.sub(lambda m: "\n" + m.group(1) + ":", text)
-    out: list[str] = []
+    out: list[tuple[str, bool]] = []
     for line in text.splitlines():
-        for part in _BULLET.split(line):
+        line_bullet = bool(_LINE_BULLET.match(line))
+        for i, part in enumerate(_BULLET.split(line)):
+            bullet = line_bullet or i > 0
             # Keep a heading's colon with the heading; split long prose into sentences.
-            out.extend(p for p in _SENT.split(part) if p.strip())
+            out.extend((p, bullet) for p in _SENT.split(part) if p.strip())
     return out
 
 
-def extract(text: Optional[str]) -> SkillHits:
+_OR_SEP = re.compile(r"^\s*(?:,\s*)?(?:(?:and/)?or|and/or)\s+$|^\s*,\s*$|^\s*/\s*$", re.I)
+_HAS_OR = re.compile(r"\b(?:or|and/or)\b", re.I)
+
+
+def _any_of_groups(seg: str, drop: set[str]) -> list[tuple[str, ...]]:
+    """Runs of skills joined by commas / "or" that contain an "or": "Python, Java, or Go"."""
+    hits = [h for h in _matches(seg) if h[2] not in drop]
+    groups: list[tuple[str, ...]] = []
+    run = hits[:1]
+    seps: list[str] = []
+
+    def close() -> None:
+        names = list(dict.fromkeys(h[2] for h in run))
+        if len(names) >= 2 and any(_HAS_OR.search(x) for x in seps):
+            groups.append(tuple(names))
+
+    for prev, cur in zip(hits, hits[1:]):
+        gap = seg[prev[1]:cur[0]]
+        if _OR_SEP.match(gap):
+            run.append(cur)
+            seps.append(gap)
+        else:
+            close()
+            run, seps = [cur], []
+    if run:
+        close()
+    return groups
+
+
+def _employer_skills(company: Optional[str]) -> set[str]:
+    """Canonical skills that are just the employer's name (Snowflake at Snowflake)."""
+    if not company:
+        return set()
+    from .normalize import normalize_company_name
+    key = normalize_company_name(company)
+    out = set()
+    for canon, aliases in SKILLS.items():
+        names = {canon.lower()} | {a.split(":", 1)[-1].lower() for a in aliases if not a.startswith("re:")}
+        if key in names or key.replace(" ", "") in names:
+            out.add(canon)
+    return out
+
+
+def extract(text: Optional[str], company: Optional[str] = None) -> SkillHits:
     """Must-have vs nice-to-have skills in a job description.
 
     Sections: a heading switches the state (must / nice / body / ignore). A line
     with its own soft cue ("... is a plus", "preferred") is nice even inside a
     must section. Skills seen only in body text (responsibilities, intro) are
     must-haves when the JD has no explicit requirements section, else nice.
-    Benefits / about-us sections are ignored. A skill that is a must anywhere is
-    a must.
+    Benefits / about-us sections are ignored; so is the company blurb before the
+    first heading when a role section follows. A skill that is a must anywhere is
+    a must. Skills equal to the employer's name are dropped. "A, B, or C" is one
+    any-of requirement (must_groups / nice_groups).
     """
     hits = SkillHits()
     if not text:
         return hits
+    drop = _employer_skills(company)
     state = "body"
     must: dict[str, None] = {}
     nice: dict[str, None] = {}
     body: dict[str, None] = {}
-    saw_must = False
-    for seg in _segments(text):
-        kind, rest = _heading_kind(seg)
+    pre: dict[str, None] = {}            # body text before the first heading (company blurb)
+    groups: dict[str, list[tuple[str, ...]]] = {"must": [], "nice": [], "body": [], "pre": []}
+    saw_must = saw_heading = False
+    for seg, bullet in _segments(text):
+        kind, rest = _heading_kind(seg, bullet)
         if kind:
             state = kind
+            saw_heading = True
             if kind in ("must", "nice"):
                 hits.sections_found = True
                 saw_must = saw_must or kind == "must"
@@ -414,16 +498,51 @@ def extract(text: Optional[str]) -> SkillHits:
                 continue
         if state == "ignore":
             continue
-        found = find_skills(seg)
+        found = [f for f in find_skills(seg) if f not in drop]
         if not found:
             continue
         soft = bool(_LINE_NICE.search(seg))
-        target = nice if (state == "nice" or soft) else (must if state == "must" else body)
+        if state == "nice" or soft:
+            target, gk = nice, "nice"
+        elif state == "must":
+            target, gk = must, "must"
+        elif saw_heading:
+            target, gk = body, "body"
+        else:
+            target, gk = pre, "pre"
         for s in found:
             target.setdefault(s, None)
-    body_to = nice if saw_must else must
+        groups[gk].extend(_any_of_groups(seg, drop))
+    if not saw_heading:              # no structure at all: the whole text is the role
+        for s in pre:
+            body.setdefault(s, None)
+        groups["body"] += groups["pre"]
+    body_to, body_g = (nice, "nice") if saw_must else (must, "must")
     for s in body:
         body_to.setdefault(s, None)
+    groups[body_g] += groups["body"]
     hits.must = list(must)
     hits.nice = [s for s in nice if s not in must]
+    hits.must_groups = [g for g in groups["must"] if all(x in must for x in g)]
+    hits.nice_groups = [g for g in groups["nice"] if all(x in hits.nice for x in g)]
     return hits
+
+
+def units(hits: SkillHits, kind: str = "must") -> list[tuple[str, ...]]:
+    """Requirement units of one kind: any-of groups first claim their members, the rest
+    are singletons. Order follows first appearance."""
+    flat = hits.must if kind == "must" else hits.nice
+    groups = hits.must_groups if kind == "must" else hits.nice_groups
+    out: list[tuple[str, ...]] = []
+    claimed: set[str] = set()
+    for s in flat:
+        if s in claimed:
+            continue
+        g = next((g for g in groups if s in g and not claimed & set(g)), None)
+        if g:
+            out.append(g)
+            claimed.update(g)
+        else:
+            out.append((s,))
+            claimed.add(s)
+    return out

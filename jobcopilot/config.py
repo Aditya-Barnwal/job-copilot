@@ -39,7 +39,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "scan_description": True,    # "US only" / "must be based in the EU" in the JD body
         },
         "seniority": {"exclude_senior_titles": True, "allow_if_jd_yoe_within_max": True},
-        "roles": {"families": [], "exclude_internships": True},  # empty -> built-in DEFAULT_TARGET_ROLES
+        # families: {family: primary|secondary|startup_only|off}; empty -> filters.DEFAULT_ROLE_TIERS
+        "roles": {"families": {}, "startup_tiers": ["funded", "watchlist"], "allow_analyst_titles": True,
+                  "extra_phrases": [], "exclude_internships": True},
         "companies": {
             "require_tier": ["brand", "funded"],
             "funded_min_stage": "series_a",

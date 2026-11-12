@@ -105,3 +105,51 @@ def test_scoring_vocab_extended_and_callers_still_work():
     assert "java" in scoring.extract_keywords("Java") and "java" not in scoring.extract_keywords("JavaScript")
     cov, missing = scoring.compute_coverage(["java", "drools"], ["java"])
     assert cov == 0.5 and missing == ["drools"]
+
+
+# ------------------------------------------------- Phase 2 review fixes (E11)
+
+def test_e11_bullet_items_are_never_headings():
+    h = S.extract("Requirements:\n- Python\n- Experience\n- Nice to have\n- Kafka")
+    assert h.must == ["Python", "Kafka"] and h.nice == []
+
+
+def test_e11_experience_lines_are_not_headings():
+    h = S.extract("Requirements:\nExperience with Kafka and Go\nNot required: Rust\nPython")
+    assert set(h.must) == {"Kafka", "Go", "Python"}
+
+
+def test_e11_sentence_case_non_heading_line_is_content():
+    # "Strong background in python" is not Title Case and not a heading phrase
+    h = S.extract("Nice to have\n- Docker\nStrong backend skills\n- Rust")
+    assert set(h.nice) == {"Docker", "Rust"} and h.must == []
+
+
+def test_e11_any_of_group():
+    h = S.extract("Requirements:\n- Python, Java, or Go\n- Kafka")
+    assert ("Python", "Java", "Go") in h.must_groups
+    assert S.units(h, "must") == [("Python", "Java", "Go"), ("Kafka",)]
+
+
+def test_e11_employer_named_skill_dropped():
+    h = S.extract("Requirements:\n- SQL and Snowflake", company="Snowflake Inc.")
+    assert h.must == ["SQL"]
+
+
+def test_e11_pre_heading_blurb_ignored_when_role_sections_follow():
+    jd = ("Acme builds Kafka and Kubernetes tooling for banks.\n"
+          "Requirements:\n- Python\n- SQL")
+    h = S.extract(jd)
+    assert h.must == ["Python", "SQL"] and "Kafka" not in h.all
+    # no structure at all: the text is the role
+    assert S.extract("We use Kafka and Python.").must == ["Kafka", "Python"]
+
+
+@pytest.mark.parametrize("text,has", [
+    ("Node.js + Express", True), ("Node/Express APIs", True), ("Express.js", True), ("ExpressJS", True),
+    ("Express and Node services", True),
+    ("Please Express interest via the form", False), ("We use American Express rails", False),
+    ("Express your ideas", False),
+])
+def test_e11_express_only_as_framework(text, has):
+    assert ("Express" in S.find_skills(text)) is has

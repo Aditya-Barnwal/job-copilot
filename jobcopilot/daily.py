@@ -70,15 +70,9 @@ def discovery_steps(*, no_network: bool, db_path: Any = None) -> dict[str, StepF
 
 
 def _filter_cfg() -> Any:
-    """The v1 FilterConfig the pipeline still uses for role matching + jsonl."""
-    from .filters import DEFAULT_TARGET_ROLES, FilterConfig
-    f = _config.filters()
-    roles = list((f.get("roles") or {}).get("families") or DEFAULT_TARGET_ROLES)
-    inr_floor = float((f.get("salary_floors") or {}).get("INR", 1_500_000))
-    usd = float((f.get("fx_to_inr") or {}).get("USD", 83.0))
-    keep_unknown = bool((f.get("geo") or {}).get("keep_unknown_country", True))
-    return FilterConfig(min_lpa=inr_floor / 100_000, usd_to_inr=usd, target_roles=roles,
-                        keep_unknown_country=keep_unknown)
+    """The FilterConfig from config/filters.yaml (shared with POST /api/ingest)."""
+    from .ingest import default_filter_cfg
+    return default_filter_cfg()
 
 
 def _compact_ingest(summary: dict) -> dict:
@@ -114,6 +108,24 @@ def run(*, skip_discovery: bool = False, no_network: bool = False,
     """
     store.init_db(db_path)
     run_id = run_id if run_id is not None else store.start_run(RUN_KIND, db_path)
+    try:
+        return _run_steps(run_id, skip_discovery=skip_discovery, no_network=no_network,
+                          fixtures_dir=fixtures_dir, db_path=db_path, day=day,
+                          discovery=discovery, ingest_kwargs=ingest_kwargs)
+    except BaseException as exc:   # incl. KeyboardInterrupt / SystemExit: never leave 'running'
+        log.error("daily run %s aborted: %s\n%s", run_id, exc, traceback.format_exc())
+        try:
+            store.update_run(run_id, status="failed", finished=True, db_path=db_path,
+                             error=f"aborted: {type(exc).__name__}: {exc}")
+        except Exception:  # noqa: BLE001 — the original error matters more
+            log.exception("could not mark run %s failed", run_id)
+        raise
+
+
+def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
+               fixtures_dir: Path | str | None, db_path: Any, day: Optional[str],
+               discovery: Optional[dict[str, StepFn]],
+               ingest_kwargs: Optional[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"mode": "fixtures" if no_network else "live",
                                "skip_discovery": skip_discovery, "steps": []}
     results: dict[str, Any] = {}
@@ -149,17 +161,25 @@ def run(*, skip_discovery: bool = False, no_network: bool = False,
 
     # 2. ingest (+ eligibility on every job + fit scores for the eligible)
     from . import ingest as _ingest
-    kw: dict[str, Any] = {"filter_cfg": _filter_cfg(), "db_path": db_path}
-    if no_network:
-        kw.update(fixtures_dir=Path(fixtures_dir or DEFAULT_FIXTURES), enrich_workday=False)
-    kw.update(ingest_kwargs or {})
-    ingest_summary = step("ingest", lambda: _ingest.run_pipeline(**kw))
+
+    def do_ingest() -> Any:
+        # config is read inside the step: a broken filters.yaml fails this step, not the run
+        kw: dict[str, Any] = {"filter_cfg": _filter_cfg(), "db_path": db_path}
+        if no_network:
+            kw.update(fixtures_dir=Path(fixtures_dir or DEFAULT_FIXTURES), enrich_workday=False)
+        kw.update(ingest_kwargs or {})
+        return _ingest.run_pipeline(**kw)
+    ingest_summary = step("ingest", do_ingest)
     if results["ingest"]["status"] == "ok":
         results["ingest"]["result"] = _compact_ingest(ingest_summary or {})
         store.update_run(run_id, summary=summary, db_path=db_path)
 
     # 3-4. catch-up for rows the ingest didn't decide/score (legacy rows, crashes)
     from . import queue as _queue
+    # postings every source stopped listing leave the queue (also done by the ingest;
+    # repeated here so a failed ingest still retires against earlier runs)
+    step("retire", lambda: store.retire_unlisted(
+        float(_queue.queue_config()["gone_after_days"]), db_path=db_path))
     step("evaluate", lambda: _queue.evaluate_pending(db_path=db_path))
     step("score", lambda: _queue.score_pending(db_path=db_path))
 
@@ -215,18 +235,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--fixtures", default=None, help=f"fixtures dir for --no-network (default {DEFAULT_FIXTURES})")
     ap.add_argument("--day", default=None, help="queue day YYYY-MM-DD (default: today in the schedule tz)")
     ap.add_argument("--db", default=None, help="SQLite path (default: $JOBCOPILOT_DB or data/jobcopilot.db; "
-                                               "--no-network defaults to data/daily-fixtures.db)")
+                                               "--no-network: <data dir>/daily-fixtures.db)")
+    ap.add_argument("--scheduled", action="store_true",
+                    help="launched by the LaunchAgent: run only inside the daily slot, once a day")
     args = ap.parse_args(argv)
 
     db_path: Any = args.db
-    if db_path is None and args.no_network and not os.environ.get("JOBCOPILOT_DB"):
-        # Fixture jobs must never land in your real tracker DB.
-        db_path = store.data_dir() / "daily-fixtures.db"
+    if args.no_network:
+        # Fixture jobs must never land in your real tracker DB: ignore $JOBCOPILOT_DB.
+        db_path = Path(args.db) if args.db else store.data_dir() / "daily-fixtures.db"
+        bad = _real_db_paths()
+        if _same_path(db_path, bad):
+            print(f"refusing --no-network: {db_path} is a real tracker DB; pass --db <scratch path>",
+                  file=sys.stderr)
+            return 2
     from .ingest import setup_logging
     setup_logging(store.data_dir() / "logs")
     store.init_db(db_path)
-    live = store.running_run(RUN_KIND, db_path=db_path)
-    if live:
+    if args.scheduled:
+        why = scheduled_skip_reason(db_path=db_path)
+        if why:
+            log.info("scheduled daily run skipped: %s", why)
+            print(f"scheduled run skipped: {why}", file=sys.stderr)
+            return 0
+    run_id, live = store.claim_run(RUN_KIND, db_path=db_path)
+    if run_id is None:
         print(f"a daily run (#{live['id']}) is already running; not starting another", file=sys.stderr)
         return 0
     if args.no_network:
@@ -234,9 +267,64 @@ def main(argv: Optional[list[str]] = None) -> int:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         print(f"FIXTURE MODE: no network; DB = {store.resolve_db_path(db_path)}", file=sys.stderr)
     result = run(skip_discovery=args.skip_discovery, no_network=args.no_network,
-                 fixtures_dir=args.fixtures, day=args.day, db_path=db_path)
+                 fixtures_dir=args.fixtures, day=args.day, db_path=db_path, run_id=run_id)
     print_summary(result)
     return 1 if result["all_sources_failed"] else 0
+
+
+def _real_db_paths() -> list[Path]:
+    """Every path that may be the user's real tracker DB."""
+    out = [store._REPO_DATA_DIR / "jobcopilot.db", store.resolve_db_path()]
+    env = os.environ.get("JOBCOPILOT_DB")
+    if env:
+        out.append(Path(env))
+    return out
+
+
+def _same_path(p: Any, others: list[Path]) -> bool:
+    mine = Path(p).expanduser().resolve()
+    return any(mine == Path(o).expanduser().resolve() for o in others)
+
+
+# --- the scheduled slot (P8) ---------------------------------------------------
+
+def _schedule_tz() -> Any:
+    name = schedule_config().get("timezone") or "Asia/Kolkata"
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def slot_bounds(now: Optional[float] = None) -> tuple[float, float]:
+    """(start, end) epoch seconds of today's run slot in the schedule tz:
+    daily_run (HH:MM) for run_window_minutes (default 60)."""
+    sched = schedule_config()
+    h, _, m = str(sched.get("daily_run") or "19:00").partition(":")
+    window = float(sched.get("run_window_minutes") or 60) * 60
+    tz = _schedule_tz()
+    import datetime as _dt
+    local = _dt.datetime.fromtimestamp(time.time() if now is None else now, tz)
+    start = local.replace(hour=int(h), minute=int(m or 0), second=0, microsecond=0)
+    return start.timestamp(), start.timestamp() + window
+
+
+def scheduled_skip_reason(now: Optional[float] = None, db_path: Any = None) -> Optional[str]:
+    """Why a LaunchAgent firing should NOT run now (None = run). launchd fires in
+    local time and the plist holds every local hour the slot can map to (DST),
+    so this check keeps exactly one run per day, inside the slot."""
+    now = time.time() if now is None else now
+    start, end = slot_bounds(now)
+    if not (start <= now < end):
+        import datetime as _dt
+        tz = _schedule_tz()
+        fmt = lambda t: _dt.datetime.fromtimestamp(t, tz).strftime("%H:%M")  # noqa: E731
+        return f"outside the daily slot {fmt(start)}-{fmt(end)} ({getattr(tz, 'key', 'local')})"
+    for r in store.list_runs(kind=RUN_KIND, limit=20, db_path=db_path):
+        if r["started_at"] >= start and r["status"] in ("running", "ok", "partial"):
+            return f"run #{r['id']} already ran in today's slot ({r['status']})"
+    return None
 
 
 if __name__ == "__main__":

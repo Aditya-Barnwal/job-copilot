@@ -44,12 +44,13 @@ DEFAULTS: dict[str, Any] = {
                 "company": 0.10, "salary": 0.05, "freshness": 0.05, "semantic": 0.10},
     "semantic": True,
     "semantic_cosine_range": [0.15, 0.65],   # MiniLM résumé/JD cosines map linearly onto 0-100
-    "skills": {"must_weight": 0.7, "nice_weight": 0.3, "no_skills_score": 50, "top_n": 8},
+    "skills": {"must_weight": 0.7, "nice_weight": 0.3, "no_skills_score": 50, "top_n": 8,
+               "min_description_chars": 15, "no_description_semantic": 50},
     "role": {
-        "target_families": [],               # empty -> filters.yaml roles.families, else built-in
-        "target_score": 100, "generic_sde": 85,
-        "scores": {"data_engineering": 70, "data_science": 75, "frontend": 55, "devops": 55,
-                   "mobile": 45, "qa": 35, "other_engineering": 40, "other": 20},
+        # tier from filters.yaml roles.families -> points
+        "tier_scores": {"primary": 100, "secondary": 85, "startup_only": 60},
+        # families that are "off" (normally excluded by eligibility) and non-family titles
+        "scores": {"frontend": 55, "mobile": 45, "other_engineering": 40, "other": 20},
     },
     "seniority": {"fresher": 100, "at_or_below_user": 100, "one_above_user": 85,
                   "preferred_stretch": 60, "preferred_far": 40, "hard_above": 20,
@@ -67,7 +68,8 @@ DEFAULTS: dict[str, Any] = {
     "why_bands": [[75, "Strong match"], [55, "Good match"], [40, "Partial match"], [0, "Weak match"]],
 }
 
-DEFAULT_TARGET_FAMILIES = ["backend", "fullstack", "ml", "ai", "sde"]
+DEFAULT_TARGET_FAMILIES = ["sde", "backend", "java", "python", "ai", "nlp", "ml", "cv",
+                           "data_engineering", "data_science", "fde", "founding", "amts"]
 
 
 # ------------------------------------------------------------------- config
@@ -111,45 +113,24 @@ def _filters(cfg: Mapping) -> dict[str, Any]:
 
 # ------------------------------------------------------------------- titles
 
-_TITLE_RULES: list[tuple[str, re.Pattern]] = [
-    ("intern", re.compile(r"\b(intern|internship|trainee|apprentice)\b", re.I)),
-    ("ai", re.compile(r"\b(gen\s?ai|generative ai|llm|genai|ai engineer|ai developer|artificial intelligence|"
-                      r"ai/ml|ml/ai|ai\s*&\s*ml|prompt engineer|applied ai|ai research)\b", re.I)),
-    ("ml", re.compile(r"\b(machine learning|ml|mlops|deep learning|nlp|computer vision|applied scientist)\b", re.I)),
-    ("data_engineering", re.compile(r"\b(data engineer|analytics engineer|etl|big data|data platform)\b", re.I)),
-    ("data_science", re.compile(r"\b(data scientist|research scientist|data science|quant)\b", re.I)),
-    ("fullstack", re.compile(r"\b(full[\s-]?stack)\b", re.I)),
-    ("backend", re.compile(r"\b(back[\s-]?end|server[\s-]side|api engineer|java developer|python developer|"
-                           r"golang developer|go developer|node(?:\.js)? developer|distributed systems)\b", re.I)),
-    ("frontend", re.compile(r"\b(front[\s-]?end|ui engineer|ui developer|react developer|web developer)\b", re.I)),
-    ("mobile", re.compile(r"\b(android|ios|mobile|flutter|react native)\b", re.I)),
-    ("devops", re.compile(r"\b(devops|sre|site reliability|infrastructure|platform engineer|cloud engineer|"
-                          r"devsecops|security engineer)\b", re.I)),
-    ("qa", re.compile(r"\b(qa|sdet|quality|test engineer|automation tester|tester)\b", re.I)),
-    ("sde", re.compile(r"\b(software|sde|swe|developer|programmer|member of technical staff|mts|"
-                       r"product engineer|founding engineer)\b", re.I)),
-    ("other_engineering", re.compile(r"\b(engineer|engineering)\b", re.I)),
-]
+_INTERN_RE = re.compile(r"\b(intern|internship|apprentice|apprenticeship|co-?op)\b", re.I)
 
 
-def classify_title(title: Optional[str]) -> str:
-    """Role family of a title ('Backend Engineer' -> 'backend'); 'other' if nothing fits.
-    'intern' is reported separately via is_intern(); the family ignores it."""
-    t = title or ""
-    for fam, rx in _TITLE_RULES:
-        if fam == "intern":
-            continue
-        if rx.search(t):
-            return fam
-    return "other"
+def classify_title(title: Optional[str], roles_cfg: Optional[Mapping] = None) -> str:
+    """Role family of a title from the ONE taxonomy in filters (same gate as eligibility):
+    'Backend Engineer' -> 'backend', 'Software Engineer, Infrastructure' -> 'sde',
+    'Mechanical Engineer' -> 'other_engineering', 'Marketing AI Engineer' / 'Data Validator'
+    -> 'other'. Internships are reported separately via is_intern()."""
+    from .filters import role_match
+    m = role_match(title or "", dict(roles_cfg) if roles_cfg is not None else None)
+    return m[0] if m else "other"
 
 
 def is_intern(title: Optional[str]) -> bool:
-    return bool(_TITLE_RULES[0][1].search(title or ""))
+    # "Graduate Engineer Trainee" / "Trainee Software Engineer" are full-time fresher roles.
+    return bool(_INTERN_RE.search(title or ""))
 
 
-_SENIOR_TITLE = re.compile(r"\b(senior|sr\.?|staff|principal|lead|manager|director|head of|architect|"
-                           r"vp|vice president|distinguished)\b|\b(?:sde|engineer|developer)\s*(?:iii|iv|[3-9])\b|\bL[5-9]\b", re.I)
 _JUNIOR_TITLE = re.compile(r"\b(junior|jr\.?|associate|entry[\s-]level|graduate|new grad|fresher|"
                            r"early career|university grad)\b|\b(?:sde|engineer|developer|swe)\s*(?:i|1)\b", re.I)
 _FRESHER_TEXT = re.compile(r"\b(freshers?|new grads?|new graduates?|recent graduates?|entry[\s-]level|"
@@ -160,11 +141,17 @@ _FRESHER_TEXT = re.compile(r"\b(freshers?|new grads?|new graduates?|recent gradu
 
 # ------------------------------------------------------------------ profile
 
+def _senior_title(title: str) -> bool:
+    from .yoe import is_senior_title
+    return is_senior_title(title)
+
+
 @dataclass
 class Profile:
     skills: set[str] = field(default_factory=set)          # canonical, closed under skills.IMPLIES
     direct_skills: set[str] = field(default_factory=set)   # named by a fact (before IMPLIES)
-    role_families: list[str] = field(default_factory=lambda: list(DEFAULT_TARGET_FAMILIES))
+    role_families: list[str] = field(default_factory=lambda: list(DEFAULT_TARGET_FAMILIES))  # primary tier
+    roles_cfg: dict = field(default_factory=dict)          # filters.yaml `roles` (tiers per family)
     user_yoe: int = 1
     preferred_cities: list[str] = field(default_factory=lambda: ["bengaluru", "bangalore"])
     resume_text: str = ""
@@ -188,17 +175,6 @@ def _scoring_facts(facts: Any) -> list:
     return F.usable_facts(promoted)
 
 
-def _families_from_config(phrases: list) -> list[str]:
-    fams: list[str] = []
-    known = {fam for fam, _ in _TITLE_RULES} | {"other"}
-    for p in phrases or []:
-        p = str(p).strip().lower()
-        fam = p if p in known else classify_title(p)
-        if fam not in fams and fam != "other":
-            fams.append(fam)
-    return fams
-
-
 def load_profile(facts_path: Path | str | None = None, *, cfg: Mapping | None = None) -> Profile:
     """Profile for scoring from résumé facts + config.
 
@@ -213,8 +189,9 @@ def load_profile(facts_path: Path | str | None = None, *, cfg: Mapping | None = 
         user_yoe=int((flt.get("yoe") or {}).get("user_yoe") or 1),
         preferred_cities=[str(x).lower() for x in (flt.get("geo") or {}).get("india_preferred_cities") or []],
     )
-    fams = c["role"].get("target_families") or _families_from_config((flt.get("roles") or {}).get("families"))
-    prof.role_families = list(fams) or list(DEFAULT_TARGET_FAMILIES)
+    from .filters import TIER_PRIMARY, role_tiers
+    prof.roles_cfg = dict(flt.get("roles") or {})
+    prof.role_families = [f for f, t in role_tiers(prof.roles_cfg).items() if t == TIER_PRIMARY]
     try:
         rf = F.load(facts_path)
     except Exception as e:  # noqa: BLE001 - a broken facts file must not break ranking
@@ -272,35 +249,50 @@ def _job_text(job: Mapping) -> str:
 # --------------------------------------------------------------- components
 
 def _skills_component(jd: SK.SkillHits, profile: Profile, c: dict) -> tuple[float, list[str], list[str], bool]:
+    """Coverage of the JD's requirement units; an any-of unit ("Python, Java, or Go") counts
+    as met when the profile has any one of them, and as ONE miss otherwise."""
     kc = c["skills"]
-    must, nice = jd.must, jd.nice
     have = profile.skills
-    m_hit = [s for s in must if s in have]
-    n_hit = [s for s in nice if s in have]
-    m_miss = [s for s in must if s not in have]
-    n_miss = [s for s in nice if s not in have]
+    must_u, nice_u = SK.units(jd, "must"), SK.units(jd, "nice")
     top = int(kc.get("top_n") or 8)
-    matched, missing = (m_hit + n_hit)[:top], (m_miss + n_miss)[:top]
-    if not must and not nice:
+    if not must_u and not nice_u:
         return float(kc["no_skills_score"]), [], [], True
+
+    def split(units: list[tuple[str, ...]]) -> tuple[list[str], list[str], int]:
+        hit, miss, n = [], [], 0
+        for u in units:
+            got = [x for x in u if x in have]
+            if got:
+                n += 1
+                hit.extend(got)
+            else:
+                miss.extend(u)
+        return hit, miss, n
+
+    m_hit, m_miss, m_n = split(must_u)
+    n_hit, n_miss, n_n = split(nice_u)
+    matched = list(dict.fromkeys(m_hit + n_hit))[:top]
+    missing = list(dict.fromkeys(m_miss + n_miss))[:top]
     parts = []
-    if must:
-        parts.append((float(kc["must_weight"]), len(m_hit) / len(must)))
-    if nice:
-        parts.append((float(kc["nice_weight"]), len(n_hit) / len(nice)))
+    if must_u:
+        parts.append((float(kc["must_weight"]), m_n / len(must_u)))
+    if nice_u:
+        parts.append((float(kc["nice_weight"]), n_n / len(nice_u)))
     wsum = sum(w for w, _ in parts) or 1.0
     return 100.0 * sum(w * v for w, v in parts) / wsum, matched, missing, False
 
 
 def _role_component(title: str, profile: Profile, c: dict) -> tuple[float, str]:
+    from .filters import TIER_OFF, role_tiers
     rc = c["role"]
-    fam = classify_title(title)
-    targets = set(profile.role_families)
-    if fam == "sde":
-        return float(rc["target_score"] if "sde" in targets and targets == {"sde"} else rc["generic_sde"]), fam
-    if fam in targets:
-        return float(rc["target_score"]), fam
-    return float(rc["scores"].get(fam, rc["scores"].get("other", 20))), fam
+    fam = classify_title(title, profile.roles_cfg)
+    tier = role_tiers(profile.roles_cfg).get(fam, TIER_OFF)
+    tscores = rc.get("tier_scores") or {}
+    if tier != TIER_OFF and tier in tscores:
+        return float(tscores[tier]), fam
+    sc = rc.get("scores") or {}
+    default = sc.get("other_engineering", 40) if fam != "other" else sc.get("other", 20)
+    return float(sc.get(fam, default)), fam
 
 
 def _seniority_component(job: Mapping, decision: Any, profile: Profile, c: dict) -> tuple[float, str]:
@@ -317,7 +309,7 @@ def _seniority_component(job: Mapping, decision: Any, profile: Profile, c: dict)
     if fresher is None:
         fresher = bool(_JUNIOR_TITLE.search(title) and re.search(r"(?i)graduate|new grad|fresher|entry", title)) \
             or bool(_FRESHER_TEXT.search(text))
-    senior = bool(_SENIOR_TITLE.search(title)) or bool(job.get("seniority_high"))
+    senior = _senior_title(title) or bool(job.get("seniority_high"))
     u = profile.user_yoe
     if is_intern(title):
         return float(sc["intern"]), "internship"
@@ -565,10 +557,15 @@ def score(job: Mapping | Any, *, profile: Profile, cfg: Mapping | None = None,
     flt = _filters(c)
     flags: list[str] = []
 
-    jd = SK.extract(_job_text(job))
+    desc = (job.get("description_text") or "").strip()
+    no_desc = len(desc) < int(c["skills"].get("min_description_chars", 15) or 0)
+    # E10: JD skills come from the description only (a title is not a requirements list).
+    jd = SK.extract(desc, company=job.get("company")) if not no_desc else SK.SkillHits()
     comp: dict[str, float] = {}
     comp["skills"], matched, missing, low_conf = _skills_component(jd, profile, c)
-    if low_conf:
+    if no_desc:
+        flags.append("no_description")
+    elif low_conf:
         flags.append("low_confidence_skills")
     comp["role"], family = _role_component(job.get("title") or "", profile, c)
     comp["seniority"], sen_note = _seniority_component(job, decision, profile, c)
@@ -576,8 +573,12 @@ def score(job: Mapping | Any, *, profile: Profile, cfg: Mapping | None = None,
     comp["company"], co_note = _company_component(job, company, c)
     comp["salary"], pay_note = _salary_component(job, decision, flt, c)
     comp["freshness"] = _freshness_component(job, c, now)
-    sem = _semantic_component(job, profile, c, encoder)
-    if sem is None:
+    sem = None if no_desc else _semantic_component(job, profile, c, encoder)
+    if no_desc and c.get("semantic"):
+        # Neutral instead of dropped: dropping would renormalise the other (high) components
+        # upward and let an empty JD outrank real ones.
+        comp["semantic"] = float(c["skills"].get("no_description_semantic", 50))
+    elif sem is None:
         flags.append("semantic_skipped")
     else:
         comp["semantic"] = sem
@@ -585,7 +586,8 @@ def score(job: Mapping | Any, *, profile: Profile, cfg: Mapping | None = None,
     weights = normalise_weights(c["weights"], set(comp))
     total = round(sum(comp[k] * weights.get(k, 0.0) for k in comp), 1)
     comp = {k: round(v, 1) for k, v in comp.items()}
-    missing_must = [s for s in jd.must if s not in profile.skills]
+    missing_must = [s for unit in SK.units(jd, "must") if not any(x in profile.skills for x in unit)
+                    for s in unit[:1]]
     why = _why(total, c, matched, missing, missing_must, [sen_note, loc_note, co_note,
                                                  pay_note if pay_note == "pay below floor" else ""])
     return FitResult(score=total, components=comp, weights={k: round(v, 4) for k, v in weights.items()},

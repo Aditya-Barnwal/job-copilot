@@ -6,7 +6,11 @@
   python scripts/schedule.py render      # print the plist that install would write
 
 The time comes from config/schedule.yaml (`daily_run`, in `timezone`) and is
-converted to this Mac's local time, which is what launchd uses.
+converted to this Mac's local time, which is what launchd uses. DST moves that
+conversion during the year, so the plist holds EVERY local time the slot maps
+to (usually one, two across a DST change) and the job is started with
+`--scheduled`: jobcopilot.daily then exits early unless the current time in
+the schedule tz is inside the slot and no run already happened in it.
 """
 from __future__ import annotations
 
@@ -57,9 +61,63 @@ def local_run_time(daily_run: str, tzname: Optional[str]) -> tuple[int, int]:
     return local.hour, local.minute
 
 
-def render_plist(*, hour: int, minute: int, repo: Path = REPO, python: Optional[Path] = None,
-                 log_dir: Optional[Path] = None, template: Path = TEMPLATE) -> bytes:
-    """Fill the template; the result is validated by plistlib before it is returned."""
+def local_run_times(daily_run: str, tzname: Optional[str], year_start: Optional[dt.date] = None,
+                    local_tz: Any = None) -> list[tuple[int, int]]:
+    """Every local (hour, minute) the slot maps to over the next year (DST),
+    sorted. Sampled daily, so any DST rule on either side is covered."""
+    hour, minute = parse_hhmm(daily_run)
+    if not tzname:
+        return [(hour, minute)]
+    try:
+        from zoneinfo import ZoneInfo
+        src = ZoneInfo(tzname)
+    except Exception:  # noqa: BLE001
+        return [(hour, minute)]
+    start = year_start or dt.datetime.now(src).date()
+    seen = set()
+    for d in range(0, 366):
+        day = start + dt.timedelta(days=d)
+        loc = dt.datetime.combine(day, dt.time(hour, minute), src).astimezone(local_tz)
+        seen.add((loc.hour, loc.minute))
+    return sorted(seen)
+
+
+def zone_mismatch_warning(tzname: Optional[str], local_tz: Any = None,
+                          year_start: Optional[dt.date] = None) -> Optional[str]:
+    """A warning when this machine's zone isn't the schedule zone (offsets differ
+    on any day of the coming year)."""
+    if not tzname:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        src = ZoneInfo(tzname)
+    except Exception:  # noqa: BLE001
+        return f"unknown schedule timezone {tzname!r}; using local time"
+    start = year_start or dt.datetime.now(src).date()
+    for d in range(0, 366, 1):
+        t = dt.datetime.combine(start + dt.timedelta(days=d), dt.time(12), src)
+        if t.utcoffset() != t.astimezone(local_tz).utcoffset():
+            return (f"this machine's time zone differs from the schedule's ({tzname}); launchd fires "
+                    f"in local time, so every local time the slot maps to is installed and the run "
+                    f"itself checks the {tzname} slot")
+    return None
+
+
+def _calendar_xml(times: list[tuple[int, int]]) -> str:
+    return "\n".join(f"    <dict><key>Hour</key><integer>{int(h)}</integer>"
+                     f"<key>Minute</key><integer>{int(m)}</integer></dict>" for h, m in times)
+
+
+def render_plist(*, hour: Optional[int] = None, minute: Optional[int] = None,
+                 times: Optional[list[tuple[int, int]]] = None, repo: Path = REPO,
+                 python: Optional[Path] = None, log_dir: Optional[Path] = None,
+                 template: Path = TEMPLATE) -> bytes:
+    """Fill the template; the result is validated by plistlib before it is returned.
+    `times` = every local (hour, minute) to fire at; or one `hour` + `minute`."""
+    times = list(times) if times else [(int(hour), int(minute))]
+    for h, m in times:
+        if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+            raise ValueError(f"bad run time {h}:{m}")
     repo = Path(repo).resolve()
     python = Path(python) if python else repo / ".venv" / "bin" / "python"
     log_dir = Path(log_dir) if log_dir else repo / "data" / "logs"
@@ -67,10 +125,11 @@ def render_plist(*, hour: int, minute: int, repo: Path = REPO, python: Optional[
         if not p.is_absolute():
             raise ValueError(f"path must be absolute: {p}")
     values = {"LABEL": LABEL, "PYTHON": str(python), "REPO": str(repo),
-              "LOG_DIR": str(log_dir), "HOUR": str(int(hour)), "MINUTE": str(int(minute))}
+              "LOG_DIR": str(log_dir)}
     text = template.read_text(encoding="utf-8")
     for k, v in values.items():
         text = text.replace("{{" + k + "}}", escape(v))
+    text = text.replace("{{CALENDAR}}", _calendar_xml(times))
     left = re.findall(r"\{\{[A-Z_]+\}\}", text)
     if left:
         raise ValueError(f"unfilled placeholder(s) in plist template: {left}")
@@ -82,8 +141,14 @@ def render_plist(*, hour: int, minute: int, repo: Path = REPO, python: Optional[
 def config_plist(**kw: Any) -> bytes:
     from jobcopilot import config
     sched = config.schedule()
-    hour, minute = local_run_time(sched.get("daily_run") or "19:00", sched.get("timezone"))
-    return render_plist(hour=hour, minute=minute, **kw)
+    times = local_run_times(sched.get("daily_run") or "19:00", sched.get("timezone"))
+    return render_plist(times=times, **kw)
+
+
+def _times(p: dict) -> list[tuple[int, int]]:
+    cal = p["StartCalendarInterval"]
+    cal = cal if isinstance(cal, list) else [cal]
+    return [(int(c["Hour"]), int(c.get("Minute", 0))) for c in cal]
 
 
 def next_run(hour: int, minute: int, now: Optional[dt.datetime] = None) -> dt.datetime:
@@ -101,6 +166,10 @@ def _domain() -> str:
 
 
 def install() -> int:
+    from jobcopilot import config
+    warn = zone_mismatch_warning(config.schedule().get("timezone"))
+    if warn:
+        print(f"warning: {warn}", file=sys.stderr)
     data = config_plist()
     (REPO / "data" / "logs").mkdir(parents=True, exist_ok=True)
     target = plist_path()
@@ -112,8 +181,8 @@ def install() -> int:
     if r.returncode != 0:
         print(f"launchctl bootstrap failed: {r.stderr.strip()}", file=sys.stderr)
         return 1
-    p = plistlib.loads(data)["StartCalendarInterval"]
-    print(f"installed {target}; runs daily at {p['Hour']:02d}:{p['Minute']:02d} local time")
+    when = ", ".join(f"{h:02d}:{m:02d}" for h, m in _times(plistlib.loads(data)))
+    print(f"installed {target}; fires daily at {when} local time (runs once, inside the slot)")
     print(f"run it now with: launchctl kickstart -k {_domain()}/{LABEL}")
     return 0
 
@@ -136,8 +205,8 @@ def status() -> int:
     print(f"plist:  {target} ({'installed' if installed else 'not installed'})")
     print(f"loaded: {'yes' if loaded else 'no'}")
     if installed:
-        p = plistlib.loads(target.read_bytes())["StartCalendarInterval"]
-        print(f"next:   {next_run(p['Hour'], p['Minute']):%Y-%m-%d %H:%M} local")
+        nxt = min(next_run(h, m) for h, m in _times(plistlib.loads(target.read_bytes())))
+        print(f"next:   {nxt:%Y-%m-%d %H:%M} local")
     try:
         from jobcopilot import store
         store.init_db()

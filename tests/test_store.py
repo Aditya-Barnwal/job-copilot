@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -251,3 +252,50 @@ def test_fit_score_rounding_matches_sql_filter(tmp_path):
     assert job["fit_score"] == 62.3
     assert [r["key"] for r in store.list_jobs(min_score=62.3, db_path=db)] == ["k1"]
     assert store.list_jobs(min_score=62.4, db_path=db) == []
+
+
+# --- runs: atomic claim, abandoned rows (P2 / P10) ---------------------------
+
+def test_claim_run_is_exclusive():
+    rid, live = store.claim_run("daily")
+    assert rid and live is None
+    again, live = store.claim_run("daily")
+    assert again is None and live["id"] == rid
+    assert store.claim_run("other")[0]                 # per kind
+
+
+def test_claim_run_is_atomic_across_threads():
+    import threading
+    got, barrier = [], threading.Barrier(8)
+
+    def go():
+        barrier.wait()
+        got.append(store.claim_run("daily")[0])
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len([g for g in got if g]) == 1
+
+
+def test_running_run_abandons_dead_or_stale_rows():
+    import subprocess
+    import sys as _sys
+    proc = subprocess.Popen([_sys.executable, "-c", "pass"])
+    proc.wait()                                         # a pid that no longer exists
+    dead = store.start_run("daily")
+    old = store.start_run("daily")
+    with store.connect() as conn:
+        conn.execute("UPDATE runs SET pid = ? WHERE id = ?", (proc.pid, dead))
+        conn.execute("UPDATE runs SET started_at = ? WHERE id = ?", (time.time() - 7 * 3600, old))
+    assert store.running_run("daily") is None
+    for rid in (dead, old):
+        row = store.get_run(rid)
+        assert row["status"] == "failed" and row["error"].startswith("abandoned") and row["finished_at"]
+    assert store.claim_run("daily")[0]
+
+
+def test_connect_uses_wal_and_a_busy_timeout():
+    with store.connect() as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

@@ -32,7 +32,50 @@ geo:
   keep_unknown_country: true                    # unknown country: kept, flagged
 
 roles:
-  families: []         # empty = built-in list (SDE / backend / full-stack / ML / AI / GenAI / data)
+  # Role taxonomy (approved 2026-11-12). Every family is matched on whole words in the title
+  # (jobcopilot/filters.py _FAMILY_RULES); set its tier here:
+  #   primary | secondary   target everywhere (fit role score 100 / 85, config/scoring.yaml)
+  #   startup_only          target only at funded / watchlist companies (flag role:startup-only,
+  #                         role score 60); at brand / unknown companies: excluded, reason "role"
+  #   off                   not a target: excluded with reason "role" (still shown in Excluded)
+  # Non-engineering functions (sales / marketing / support / customer success / recruiter /
+  # trainer / tutor / annotator / validator / product-program-project manager) never match.
+  families:
+    sde: primary               # Software Engineer / SDE / SWE (I/II), associate, graduate, trainee, GET
+    backend: primary           # Backend Engineer / Developer, Go / Node / ... developer
+    java: primary              # Java / Spring Boot Developer
+    python: primary            # Python / Django Developer
+    ai: primary                # AI / Applied AI / GenAI / LLM / agentic / prompt / conversational / voice / speech
+    nlp: primary
+    ml: primary                # ML Engineer / MLE / deep learning
+    cv: primary                # Computer Vision Engineer / CV Engineer
+    data_engineering: primary  # Data Engineer / Big Data Engineer
+    data_science: primary      # Data Scientist / DS / Applied Scientist
+    fde: primary               # FDE / Forward Deployed (AI / Software) Engineer
+    founding: primary          # Founding Engineer / Product Engineer
+    amts: primary              # Associate Member of Technical Staff / AMTS (entry level)
+    data_analyst: secondary    # "Data Analyst" / DA only (plain / business / financial analyst never)
+    analytics_engineering: secondary
+    mlops: secondary
+    fullstack: secondary
+    platform: startup_only
+    cloud: startup_only        # Cloud / GCP / AWS / Azure Engineer
+    integration: startup_only  # Integration / API Engineer
+    research_engineering: startup_only
+    research_science: startup_only   # Research Scientist / AI researcher (degree rule still applies)
+    sre: startup_only
+    observability: startup_only
+    devops: startup_only
+    qa: startup_only           # SDET / Software Engineer in Test / QA Automation
+    solutions: startup_only    # Solutions Engineer (Sales Engineer is always rejected)
+    mts: "off"                 # Member of Technical Staff reads as senior; AMTS is kept
+    etl: "off"                 # ETL Developer (Data Engineer covers it)
+    rules_engine: "off"        # Rules engine / BRMS / Drools developer
+    mobile: "off"
+    frontend: "off"            # frontend-only ("Software Engineer, Frontend")
+  startup_tiers: [funded, watchlist]   # company tiers where startup_only families count
+  allow_analyst_titles: true  # false switches the data_analyst family off
+  extra_phrases: []           # extra title phrases to accept (whole words), e.g. ["solutions architect"]
   exclude_internships: true   # intern / co-op / apprentice titles are excluded (reason "role")
 
 companies:

@@ -35,7 +35,7 @@ def test_steps_are_isolated_and_recorded(monkeypatch):
         raise RuntimeError("yc down")
     res = daily.run(discovery={"yc": broken, "tiers": lambda: {"brand": 3}})
     names = [s["name"] for s in res["steps"]]
-    assert names == ["discovery.yc", "discovery.tiers", "ingest", "evaluate", "score", "queue",
+    assert names == ["discovery.yc", "discovery.tiers", "ingest", "retire", "evaluate", "score", "queue",
                      "tailor", "fill_plan"]
     by = {s["name"]: s for s in res["steps"]}
     assert by["discovery.yc"]["status"] == "error" and "yc down" in by["discovery.yc"]["error"]
@@ -73,6 +73,99 @@ def test_main_refuses_while_a_run_is_live(monkeypatch, capsys):
     store.start_run("daily")
     assert daily.main([]) == 0 and called == []
     assert "already running" in capsys.readouterr().err
+
+
+def test_main_claims_the_run_atomically(monkeypatch):
+    monkeypatch.setattr(ingest_mod, "setup_logging", lambda _d: None)
+    seen = {}
+
+    def fake_run(**kw):
+        seen.update(kw)
+        live = store.get_run(kw["run_id"])
+        assert live["status"] == "running" and live["pid"] and live["hostname"]
+        store.update_run(kw["run_id"], status="ok", finished=True)
+        return {"run_id": kw["run_id"], "status": "ok", "all_sources_failed": False, "steps": [],
+                "queue": None}
+    monkeypatch.setattr(daily, "run", fake_run)
+    assert daily.main(["--skip-discovery"]) == 0 and seen["run_id"]
+
+
+def test_a_run_aborted_outside_a_step_is_finalised_as_failed(monkeypatch):
+    """P2: anything escaping the step guard (here Ctrl-C) must not leave 'running'."""
+    def interrupt():
+        raise KeyboardInterrupt
+    run_id = store.start_run("daily")
+    with pytest.raises(KeyboardInterrupt):
+        daily.run(run_id=run_id, discovery={"yc": interrupt})
+    row = store.get_run(run_id)
+    assert row["status"] == "failed" and row["finished_at"] and "KeyboardInterrupt" in row["error"]
+    assert store.running_run("daily") is None
+
+
+def test_bad_filters_config_fails_the_ingest_step_not_the_run(monkeypatch):
+    def broken():
+        raise ValueError("filters.yaml: bad INR floor")
+    monkeypatch.setattr(daily, "_filter_cfg", broken)
+    res = daily.run(skip_discovery=True)
+    by = {s["name"]: s for s in res["steps"]}
+    assert by["ingest"]["status"] == "error" and "bad INR floor" in by["ingest"]["error"]
+    assert res["status"] == "failed" and store.get_run(res["run_id"])["finished_at"]
+
+
+def test_no_network_ignores_jobcopilot_db_env(monkeypatch):
+    """P5: $JOBCOPILOT_DB is the real tracker; fixtures still go to daily-fixtures.db."""
+    monkeypatch.setattr(ingest_mod, "setup_logging", lambda _d: None)
+    seen = {}
+
+    def fake_run(**kw):
+        seen.update(kw)
+        return {"run_id": 1, "status": "ok", "all_sources_failed": False, "steps": [], "queue": None}
+    monkeypatch.setattr(daily, "run", fake_run)
+    import os
+    assert os.environ.get("JOBCOPILOT_DB")                  # conftest sets it
+    assert daily.main(["--no-network"]) == 0
+    assert Path(seen["db_path"]) == store.data_dir() / "daily-fixtures.db"
+
+
+def test_no_network_refuses_the_real_db(monkeypatch, capsys):
+    import os
+    monkeypatch.setattr(ingest_mod, "setup_logging", lambda _d: None)
+    monkeypatch.setattr(daily, "run", lambda **kw: pytest.fail("must not run"))
+    assert daily.main(["--no-network", "--db", os.environ["JOBCOPILOT_DB"]]) == 2
+    assert daily.main(["--no-network", "--db", str(store._REPO_DATA_DIR / "jobcopilot.db")]) == 2
+    assert "refusing" in capsys.readouterr().err
+
+
+@pytest.fixture
+def ist_schedule(monkeypatch, tmp_path):
+    cfg = tmp_path / "cfgdir"; cfg.mkdir()
+    (cfg / "schedule.yaml").write_text('timezone: Asia/Kolkata\ndaily_run: "19:00"\n')
+    monkeypatch.setenv("JOBCOPILOT_CONFIG_DIR", str(cfg))
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    return lambda h, m: dt.datetime(2026, 11, 12, h, m, tzinfo=ZoneInfo("Asia/Kolkata")).timestamp()
+
+
+def test_scheduled_run_only_inside_the_slot_once(ist_schedule, monkeypatch):
+    at = ist_schedule
+    assert daily.scheduled_skip_reason(now=at(19, 10)) is None
+    assert "outside the daily slot 19:00-20:00" in daily.scheduled_skip_reason(now=at(18, 0))
+    assert "outside" in daily.scheduled_skip_reason(now=at(20, 0))
+    rid = store.start_run("daily")
+    with store.connect() as conn:
+        conn.execute("UPDATE runs SET started_at = ?, status = 'ok' WHERE id = ?", (at(19, 0) + 60, rid))
+    assert "already ran" in daily.scheduled_skip_reason(now=at(19, 30))
+    with store.connect() as conn:                       # a failed run may be retried
+        conn.execute("UPDATE runs SET status = 'failed' WHERE id = ?", (rid,))
+    assert daily.scheduled_skip_reason(now=at(19, 30)) is None
+
+
+def test_scheduled_main_exits_early_outside_the_slot(ist_schedule, monkeypatch, capsys):
+    monkeypatch.setattr(ingest_mod, "setup_logging", lambda _d: None)
+    monkeypatch.setattr(daily, "scheduled_skip_reason", lambda **kw: "outside the daily slot")
+    monkeypatch.setattr(daily, "run", lambda **kw: pytest.fail("must not run"))
+    assert daily.main(["--scheduled"]) == 0
+    assert "skipped" in capsys.readouterr().err and store.list_runs() == []
 
 
 def test_no_network_defaults_to_a_separate_db(monkeypatch, tmp_path):
@@ -143,8 +236,9 @@ def test_plist_round_trip(schedule_mod, tmp_path):
     data = schedule_mod.render_plist(hour=19, minute=5, repo=ROOT)
     p = plistlib.loads(data)
     assert p["Label"] == "com.jobcopilot.daily"
-    assert p["StartCalendarInterval"] == {"Hour": 19, "Minute": 5}
-    assert p["ProgramArguments"] == [str(ROOT / ".venv" / "bin" / "python"), "-m", "jobcopilot.daily"]
+    assert p["StartCalendarInterval"] == [{"Hour": 19, "Minute": 5}]
+    assert p["ProgramArguments"] == [str(ROOT / ".venv" / "bin" / "python"), "-m", "jobcopilot.daily",
+                                     "--scheduled"]
     assert p["WorkingDirectory"] == str(ROOT)
     for k in ("StandardOutPath", "StandardErrorPath"):
         assert Path(p[k]).is_absolute() and Path(p[k]).parent == ROOT / "data" / "logs"
@@ -165,13 +259,27 @@ def test_plist_time_comes_from_schedule_config(schedule_mod, monkeypatch, tmp_pa
     time.tzset()
     try:
         p = plistlib.loads(schedule_mod.config_plist(repo=ROOT))
-        assert p["StartCalendarInterval"] == {"Hour": 13, "Minute": 30}     # 19:00 IST = 13:30 UTC
+        assert p["StartCalendarInterval"] == [{"Hour": 13, "Minute": 30}]   # 19:00 IST = 13:30 UTC
         assert schedule_mod.local_run_time("07:45", None) == (7, 45)
     finally:
         monkeypatch.undo()
         time.tzset()
     with pytest.raises(ValueError):
         schedule_mod.parse_hhmm("25:00")
+
+
+def test_plist_covers_both_dst_hours(schedule_mod):
+    """P8: 19:00 IST is 09:30 in New York in summer and 08:30 in winter."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    ny = ZoneInfo("America/New_York")
+    times = schedule_mod.local_run_times("19:00", "Asia/Kolkata", dt.date(2026, 1, 1), local_tz=ny)
+    assert times == [(8, 30), (9, 30)]
+    p = plistlib.loads(schedule_mod.render_plist(times=times, repo=ROOT))
+    assert p["StartCalendarInterval"] == [{"Hour": 8, "Minute": 30}, {"Hour": 9, "Minute": 30}]
+    assert "differs" in schedule_mod.zone_mismatch_warning("Asia/Kolkata", local_tz=ny)
+    assert schedule_mod.zone_mismatch_warning("Asia/Kolkata", local_tz=ZoneInfo("Asia/Kolkata")) is None
+    assert schedule_mod.local_run_times("19:00", "Asia/Kolkata", local_tz=ZoneInfo("Asia/Kolkata")) == [(19, 0)]
 
 
 def test_next_run(schedule_mod):

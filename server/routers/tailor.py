@@ -103,6 +103,16 @@ def _grounding_gate(key: str, job: dict, text: str, body: dict) -> Optional[JSON
     return None
 
 
+# Approving a résumé moves a job to ready only from these tracker columns; a job
+# already ready, submitted (or later) or dismissed keeps its status.
+_ADVANCE_FROM = frozenset({"found", "tailored"})
+
+
+def _advance_to_ready(key: str, job: dict) -> None:
+    if store.canonical_status(job.get("status")) in _ADVANCE_FROM:
+        store.set_status(key, "ready", source="system")
+
+
 @router.post("/api/jobs/{key}/approve")
 def approve_job(key: str, body: dict = Body(...)):
     job = store.get_job(key)
@@ -126,7 +136,7 @@ def approve_job(key: str, body: dict = Body(...)):
         if blocked is not None:
             return blocked
         store.link_job_version(key, vid)
-        store.set_status(key, "ready", source="system")
+        _advance_to_ready(key, job)
         return {"ok": True, "mode": "reuse", "version_id": version["id"],
                 "pdf_path": version["pdf_path"]}
 
@@ -153,7 +163,7 @@ def approve_job(key: str, body: dict = Body(...)):
         base_ats_coverage=new_coverage,
     )
     store.link_job_version(key, int(version["id"]))
-    store.set_status(key, "ready", source="system")
+    _advance_to_ready(key, job)
     return {"ok": True, "mode": "fresh", "version_id": version["id"],
             "pdf_path": version["pdf_path"], "new_ats_coverage": new_coverage}
 

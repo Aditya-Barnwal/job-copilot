@@ -67,8 +67,8 @@ def test_v3_upgrades_a_legacy_v2_db_and_keeps_rows(tmp_path):
     con.execute("INSERT INTO companies(name, normalized_name, ats_evidence) VALUES ('Acme', 'acme', 'probe')")
     con.commit(); con.close()
 
-    assert store.init_db(db) == 3 == migrations.latest_version()
-    assert store.init_db(db) == 3            # idempotent
+    assert store.init_db(db) == 4 == migrations.latest_version()
+    assert store.init_db(db) == 4            # idempotent
     con = sqlite3.connect(db)
     cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
     assert {"lane", "excluded", "exclusion_reasons", "flags", "yoe_max", "yoe_evidence",
@@ -262,14 +262,131 @@ def test_tracker_columns_ready_reminders_and_followups():
     assert t["followups_due"][0]["days_since_submit"] == 8
 
 
-def test_ready_posting_gone_when_ingest_stopped_seeing_it():
+def _age_listing(key: str, days: float) -> None:
+    """Pretend every listing of `key` was last seen `days` ago."""
+    at = time.time() - days * DAY
+    with store.connect() as conn:
+        conn.execute("UPDATE jobs SET last_seen = ? WHERE key = ?", (at, key))
+        conn.execute("UPDATE job_sources SET last_seen = ? WHERE job_key = ?", (at, key))
+
+
+def test_ready_posting_gone_when_its_source_ran_without_it():
+    key = seed("r")
+    store.set_status(key, "ready_to_submit")
+    _age_listing(key, 10)
+    store.set_source_state("greenhouse:acme", last_ok=time.time())   # Acme's board ran fine today
+    assert store.retire_unlisted(3) == {"gone": 1, "newly_gone": 1, "relisted": 0}
+    item = jq.ready_to_submit()[0]
+    assert item["posting_gone"] is True and item["warning"] == "posting no longer listed"
+    card = {c["status"]: c for c in jq.tracker()["columns"]}["ready_to_submit"]["items"][0]
+    assert card["key"] == key and card["warning"] == "posting no longer listed"
+
+
+def test_posting_not_gone_when_its_source_failed_despite_a_recent_ingest():
+    """P7: the global last_ingest says nothing about THIS job's source."""
+    key = seed("r")
+    store.set_status(key, "ready_to_submit")
+    _age_listing(key, 10)
+    store.set_meta("last_ingest", str(time.time()))                       # other sources ran
+    store.set_source_state("greenhouse:acme", last_ok=time.time() - 9 * DAY,  # Acme's board broke
+                           last_error="error: 500")
+    assert store.retire_unlisted(3)["gone"] == 0
+    item = jq.ready_to_submit()[0]
+    assert item["posting_gone"] is False and item["warning"] is None
+
+
+def test_gone_postings_leave_queue_and_matches_but_not_the_tracker(cfg):
+    """P1: 4 of a day's 25 'fresh' main picks had not been listed for months."""
+    live = seed("live", fit=60.0)
+    old = seed("old", fit=90.0, posted_at="2026-06-01T00:00:00+00:00", posted_age_days=1,
+               freshness="fresh")
+    ready = seed("ready", fit=80.0)
+    store.set_status(ready, "ready_to_submit")
+    for k in (old, ready):
+        _age_listing(k, 120)
+    # no source_state at all (fixture runs): the board listing `live` today is the evidence
+    assert store.retire_unlisted(3)["gone"] == 2
+    q = jq.build_daily_queue(day="2026-11-12", cfg=cfg)
+    assert [c["key"] for c in q["main"]] == [live]
+    assert [i["key"] for i in jq.list_queue(day="2026-11-12")["items"]] == [live]
+    assert [i["key"] for i in jq.list_matches()["items"]] == [live]
+    assert jq.ready_to_submit()[0]["warning"] == "posting no longer listed"
+    # listed again -> live again
+    seed("old", fit=90.0)
+    assert store.get_job(old)["gone_at"] is None
+    assert store.retire_unlisted(3)["gone"] == 1
+
+
+def test_gone_needs_every_source_to_have_run_without_it():
+    from jobcopilot.dedupe import occurrence
+    job = make_job("m1")
+    board = make_job("b1", source="remoteok")
+    job.sources = [occurrence(job), occurrence(board)]
+    store.upsert_jobs([FilterResult(job=job, package_estimated=True, country_uncertain=False)])
+    _age_listing(job.key, 10)
+    store.set_source_state("greenhouse:acme", last_ok=time.time())
+    store.set_source_state("remoteok", last_ok=time.time() - 8 * DAY)   # board down since
+    assert store.retire_unlisted(3)["gone"] == 0
+    store.set_source_state("remoteok", last_ok=time.time())
+    assert store.retire_unlisted(3)["gone"] == 1
+
+
+def test_age_and_freshness_are_computed_at_read_time():
+    now = time.time()
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 160 * DAY))
+    a = seed("a", posted_at=iso, posted_age_days=21, freshness="fresh")       # stale stored values
+    w = seed("w", source="workday", title="Data Engineer", posted_at="Posted 3 Days Ago", posted_age_days=3, freshness="fresh")
+    n = seed("n", title="Backend Engineer")                                  # no posted date
+    with store.connect() as conn:
+        conn.execute("UPDATE jobs SET last_seen = ? WHERE key = ?", (now - 10 * DAY, w))
+        conn.execute("UPDATE jobs SET first_seen = ? WHERE key = ?", (now - 40 * DAY, n))
+    cards = {c["key"]: c for c in jq.list_matches(sort="age")["items"]}
+    assert cards[a]["age_days"] == 160 and cards[a]["freshness"] == "aging"
+    assert cards[w]["age_days"] == 13 and cards[w]["freshness"] == "fresh"
+    assert cards[n]["age_days"] == 40 and cards[n]["freshness"] == "recent"
+    assert [c["key"] for c in jq.list_matches(sort="age")["items"]] == [w, n, a]
+
+
+def test_system_status_never_regresses_a_submission():
+    key = seed("s")
+    store.set_status(key, "submitted")
+    assert store.set_status(key, "ready", source="system") is True
+    assert store.get_job(key)["status"] == "submitted"
+    assert [h["status"] for h in store.status_history(key)] == ["submitted"]
+    store.set_status(key, "ready_to_submit")                     # the user may undo
+    assert store.get_job(key)["status"] == "ready_to_submit"
+
+
+def test_v4_backfills_tracker_dates(tmp_path):
+    db = tmp_path / "v3.db"
+    assert migrations.migrate(db, steps=migrations.MIGRATIONS[:3]) == 3
+    con = sqlite3.connect(db)
+    for k, st in (("a", "applied"), ("s", "submitted"), ("i", "interested"), ("r", "ready"), ("n", "new")):
+        con.execute("INSERT INTO jobs(key, source, company, title, status, first_seen, last_seen) "
+                    "VALUES (?, 'greenhouse', 'Acme', 'SWE', ?, 1000.0, 9000.0)", (k, st))
+    con.execute("INSERT INTO status_history(job_key, status, at, source) VALUES ('r', 'ready', 5000.0, 'user')")
+    con.commit(); con.close()
+    assert store.init_db(db) == 4
+    rows = {r["key"]: r for r in (store.get_job(k, db_path=db) for k in "asirn")}
+    assert rows["n"]["status_changed_at"] is None
+    assert rows["i"]["status_changed_at"] == rows["a"]["status_changed_at"] == 1000.0
+    assert rows["r"]["status_changed_at"] == 5000.0                          # history beats first_seen
+    assert rows["a"]["submitted_at"] == rows["s"]["submitted_at"] == 1000.0
+    assert rows["i"]["submitted_at"] is None
+    hist = store.status_history("a", db_path=db)
+    assert hist == [{"status": "applied", "at": 1000.0, "source": "system",
+                     "note": "submission date backfilled by migration v4"}]
+    assert store.status_history("i", db_path=db) == []
+
+
+def test_ready_since_falls_back_to_first_seen_not_last_seen():
     key = seed("r")
     store.set_status(key, "ready_to_submit")
     with store.connect() as conn:
-        conn.execute("UPDATE jobs SET last_seen = ? WHERE key = ?", (time.time() - 10 * DAY, key))
-    store.set_meta("last_ingest", str(time.time()))
-    item = jq.ready_to_submit()[0]
-    assert item["posting_gone"] is True and item["warning"] == "posting no longer listed"
+        conn.execute("UPDATE jobs SET status_changed_at = NULL, first_seen = 1000.0, last_seen = 9e9 "
+                     "WHERE key = ?", (key,))
+        conn.execute("DELETE FROM status_history WHERE job_key = ?", (key,))
+    assert jq.ready_to_submit()[0]["ready_since"] == 1000.0
 
 
 # --- scoring / evaluation catch-up + pipeline ------------------------------------
@@ -335,6 +452,50 @@ def test_evaluate_pending_decides_legacy_rows(fake_eligibility):
     j = store.get_job(job.key)
     assert j["lane"] == "excluded" and j["yoe_evidence"] == "5+ years"
     assert [f["rule"] for f in j["flags"]] == ["flag:no_salary"]
+
+
+def test_evaluate_pending_reevaluates_every_row_when_the_config_changes(fake_eligibility):
+    a = seed("a", title="Senior Engineer")           # stored lane main, but the fake says excluded
+    b = seed("b")
+    gone = seed("g", title="Senior Engineer")
+    with store.connect() as conn:
+        conn.execute("UPDATE jobs SET gone_at = 1 WHERE key = ?", (gone,))
+    cfg_a, cfg_b = {"salary_floors": {"INR": 1}}, {"salary_floors": {"INR": 2}}
+    out = jq.evaluate_pending(cfg=cfg_a)             # rows from before v4 carry no hash
+    assert out["evaluated"] == 2 and store.get_job(a)["lane"] == "excluded"
+    assert store.get_job(gone)["lane"] == "main"    # gone rows are left alone
+    assert jq.evaluate_pending(cfg=cfg_a)["evaluated"] == 0          # same config: nothing to do
+    assert jq.evaluate_pending(cfg=cfg_b)["evaluated"] == 2          # changed: ALL rows, not lane IS NULL
+    assert store.get_job(b)["eval_cfg_hash"] == store.config_hash(cfg_b)
+
+
+def test_ingest_and_catch_up_agree_on_the_config_hash(fake_eligibility, fake_fit):
+    """The nightly ingest stamps the same hash the catch-up computes, so an
+    unchanged filters.yaml never triggers a full re-evaluation."""
+    run = ingest_mod.IngestRun(roster=[], raw_count=1, merged=[make_job("1")], results=[])
+    run.evaluated, run.evaluation = ingest_mod.evaluate_jobs(run.merged, ingest_mod.default_filter_cfg())
+    ingest_mod.persist(run, enrich_workday=False)
+    assert store.get_job("greenhouse:Acme:1")["eval_cfg_hash"]
+    assert jq.evaluate_pending()["evaluated"] == 0
+
+
+def test_off_target_engineering_titles_are_stored_as_role_exclusions(fake_eligibility, fake_fit):
+    from jobcopilot.filters import passes_role
+    roles = ["software engineer"]
+    jobs = [make_job("1"), make_job("2", title="Mechanical Design Engineer"),
+            make_job("3", title="Account Executive")]
+    assert passes_role(jobs[1].title, roles) is None and passes_role(jobs[2].title, roles) is None
+    run = ingest_mod.IngestRun(roster=[], raw_count=3, merged=jobs, results=[])
+    run.evaluated, run.evaluation = ingest_mod.evaluate_jobs(jobs, FilterConfig(target_roles=roles))
+    assert run.evaluation["off_target"] == 2 and run.evaluation["off_target_stored"] == 1
+    assert run.evaluation["by_rule"] == {"role": 1}
+    assert ingest_mod.persist(run, enrich_workday=False)["inserted"] == 2
+    eng = store.get_job("greenhouse:Acme:2")
+    assert eng["excluded"] == 1 and eng["lane"] == "excluded"
+    assert [r["rule"] for r in eng["exclusion_reasons"]] == ["role"]
+    assert eng["fit_score_v2"] is None
+    assert store.get_job("greenhouse:Acme:3") is None            # sales: counted, never stored
+    assert jq.list_excluded(rule="role")["total"] == 1
 
 
 def test_pipeline_stores_excluded_jobs_with_reasons_and_scores_the_rest(fake_eligibility, fake_fit):

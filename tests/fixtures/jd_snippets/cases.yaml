@@ -273,3 +273,137 @@ cases:
     title: "Software Engineer"
     text: "You love building products and have shipped something you are proud of."
     expect: {min: null, max: null, preferred: false, fresher: false}
+
+  # --- Phase 2 review fixes (E5-E8), trimmed from a temp copy of the local DB ----------
+  - id: e7_hinge_de2_general_bar
+    source: db-copy
+    title: "Data Engineer II"
+    text: |
+      BASIC QUALIFICATIONS
+      - 3+ years of data engineering experience
+      - 2+ years of experience in processing and storing large scale data using distributed systems
+      - 2+ years of experience working with broad spectrum of OLTP data stores like PostgreSQL, MySQL
+      - 1+ years of experience building data pipelines using Spark, Kafka, Airflow
+      - 1+ years of experience designing and implementing data warehouse models (e.g., STAR, Snowflake)
+      PREFERRED QUALIFICATIONS
+      - 1+ year experience working with dbt
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e7_satsure_ds2_phd_route
+    source: db-copy
+    title: "Data Scientist - 2"
+    text: |
+      Must Have
+      3+ years of applied ML/Computer Vision experience, or PhD with 1+ year of post-degree experience, in CS, EE, or a related field.
+      Good to Have
+      Experience with PyTorch.
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e7_brex_ds2_phd_route
+    source: db-copy
+    title: "Data Scientist II, Applied ML"
+    text: |
+      Requirements
+      3+ years of experience in Data Science/ML roles, or 2+ years with a PhD in a quantitative field
+      Nice to Have
+      Experience with experimentation platforms.
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e7_brex_swe2_domain_subbar
+    source: db-copy
+    title: "Software Engineer II, Backend"
+    text: |
+      Requirements
+      2+ years of full-time software engineering experience with a focus on backend development.
+      1+ year of experience in financial systems, payments, underwriting, or a fintech application.
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: e6_years_in_field
+    source: written
+    title: "Data Scientist"
+    text: |
+      Requirements
+      - 3–5 years in data science or analytics
+      - Strong SQL
+    expect: {min: 3, max: 5, preferred: false, fresher: false}
+
+  - id: e6_degree_with_years_takes_bachelor_bar
+    source: written
+    title: "Machine Learning Engineer II"
+    text: |
+      Minimum Qualifications
+      - Bachelor's degree with 3+ years of relevant experience, or Master's degree with 1+ years
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e6_blurb_years_in_field_ignored
+    source: written
+    title: "Backend Engineer"
+    text: |
+      We have spent 10 years in fintech building payment rails for our customers.
+      Requirements
+      - Python and Postgres
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: e5_fresher_not_hard_when_numeric_bar
+    source: written
+    title: "Software Engineer II"
+    text: |
+      Requirements
+      - 3+ years of professional software engineering experience
+      - New grads with strong internships are also encouraged to read on
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e5_fresher_in_benefits_ignored
+    source: written
+    title: "Software Engineer"
+    text: |
+      Requirements
+      - Python and SQL
+      Benefits
+      - Mentorship for new grads and early-career engineers
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: e5_minimum_under_preferred_stays_hard
+    source: written
+    title: "Backend Engineer"
+    text: |
+      Preferred Qualifications
+      - Minimum of 4 years of experience building distributed systems
+    expect: {min: 4, max: null, preferred: false, fresher: false}
+
+  - id: e5_senior_title_fresher_only
+    source: written
+    title: "Senior Software Engineer"
+    text: |
+      Requirements
+      - Entry level candidates welcome; strong Python
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: e8_inline_preferred_label_scoped
+    source: written
+    title: "Backend Engineer"
+    text: |
+      What you'll bring
+      - Preferred: 1+ years with Kafka
+      - 3+ years of backend engineering experience
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: e8_education_and_experience_heading
+    source: written
+    title: "Data Engineer"
+    text: |
+      About us
+      Our team of 5+ years in data has grown fast.
+      Education & Experience
+      - 2+ years of experience in data engineering
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: e6_inmobi_degree_with_years
+    source: db-copy
+    title: "Machine Learning Engineer II - Backend"
+    text: |
+      About the role
+      Experience: 2-5 years development
+      Requirements
+      Bachelor's degree with 4+ years OR Master's degree with 3+ years in Computer Science, Machine Learning, Data Science, or related
+    expect: {min: 4, max: null, preferred: false, fresher: false}

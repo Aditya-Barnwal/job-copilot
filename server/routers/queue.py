@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException
 
@@ -19,7 +20,6 @@ from jobcopilot import store
 router = APIRouter()
 log = logging.getLogger("jobcopilot.server")
 
-_run_lock = threading.Lock()
 _LANES = ("main", "extended", "near_miss")
 
 
@@ -74,12 +74,10 @@ def _run_daily(run_id: int, skip_discovery: bool) -> None:
 def start_daily_run(body: Optional[dict] = Body(default=None)):
     """'Run now': start the nightly pipeline in a background thread; 409 if one is running."""
     body = body or {}
-    with _run_lock:
-        live = store.running_run("daily")
-        if live:
-            raise HTTPException(status_code=409, detail={"error": "a daily run is already running",
-                                                         "run_id": live["id"]})
-        run_id = store.start_run("daily")
+    run_id, live = store.claim_run("daily")     # atomic; shared with the CLI / LaunchAgent
+    if run_id is None:
+        raise HTTPException(status_code=409, detail={"error": "a daily run is already running",
+                                                     "run_id": live["id"]})
     t = threading.Thread(target=_run_daily, args=(run_id, bool(body.get("skip_discovery"))),
                          name=f"daily-run-{run_id}", daemon=True)
     t.start()
@@ -101,6 +99,23 @@ def get_status_history(key: str):
     return {"key": key, "history": store.status_history(key)}
 
 
+MAX_NOTE_LEN = 2000
+
+
+def _proof_path(raw: Any) -> Optional[str]:
+    """A submission proof must live under <data dir>/proofs; stored relative to it."""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str) or "\x00" in raw:
+        raise HTTPException(status_code=400, detail="proof_path must be a string")
+    root = (store.data_dir() / "proofs").resolve()
+    p = Path(raw).expanduser()
+    resolved = (p if p.is_absolute() else root / p).resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="proof_path must be inside the data dir's proofs/ folder")
+    return resolved.relative_to(root).as_posix()
+
+
 @router.post("/api/jobs/{key}/status")
 def set_status(key: str, body: dict = Body(...)):
     """{status, source?: user|detected|system, note?, proof_path?} — also the v1
@@ -112,9 +127,13 @@ def set_status(key: str, body: dict = Body(...)):
     source = body.get("source") or "user"
     if source not in store.STATUS_SOURCES:
         raise HTTPException(status_code=400, detail="invalid source")
-    proof = body.get("proof_path")
-    if proof is not None and not isinstance(proof, str):
-        raise HTTPException(status_code=400, detail="proof_path must be a string")
+    for field in ("notes", "note"):
+        v = body.get(field)
+        if v is not None and not isinstance(v, str):
+            raise HTTPException(status_code=400, detail=f"{field} must be a string")
+        if isinstance(v, str) and len(v) > MAX_NOTE_LEN:
+            raise HTTPException(status_code=400, detail=f"{field} is longer than {MAX_NOTE_LEN} characters")
+    proof = _proof_path(body.get("proof_path"))
     ok = store.set_status(key, status, notes=body.get("notes"), source=source,
                           note=body.get("note"), proof_path=proof)
     if not ok:

@@ -181,12 +181,28 @@ def _best_overlap(offsets: list[float], tol: float, workday: float) -> float:
     return best
 
 
+_NO_PLACE_EXTRA_RE = re.compile(
+    r"\b\d+\s+locations?\b|\bin[- ]office\b|\bhome\s*office\b|\bhomeoffice\b|\bhq\b|\bheadquarters\b|"
+    r"\bsee\s+(?:job\s+)?description\b|\bna\b|\bnone\b|\bwork\s+from\s+anywhere\b|\bdays?\b|\bweek\b|"
+    r"\bremotely\b|\bglobal\b|\bin\b|\bor\b|\band\b|\bthe\b|\ba\b|\bper\b|\d+", re.I)
+
+
 def _place_left(text: str) -> str:
-    """What remains of a location string once the no-place words are removed."""
-    return _NO_PLACE_RE.sub(" ", text or "").strip()
+    """What remains of a location string once the no-place words are removed
+    ("" when nothing that could be a place is left)."""
+    left = _NO_PLACE_RE.sub(" ", _NO_PLACE_EXTRA_RE.sub(" ", text or ""))
+    left = re.sub(r"\s+", " ", left).strip()
+    return left if len(re.sub(r"[^A-Za-zÀ-ÿ]", "", left)) >= 2 else ""
 
 
-def _geo(job: Any, gcfg: Mapping[str, Any], reasons: list[dict]) -> Optional[bool]:
+def _india_cue(text: str) -> bool:
+    from .normalize import has_india_signal
+    return bool(text) and bool(_INDIA_OK_RE.search(text) or has_india_signal(text))
+
+
+def _geo(job: Any, gcfg: Mapping[str, Any], reasons: list[dict],
+         company: Optional[Mapping[str, Any]] = None) -> Optional[bool]:
+    from .normalize import infer_country_bucket
     bucket = _get(job, "country_bucket", "unknown")
     wtype = (_get(job, "workplace_type", "unknown") or "unknown").lower()
     location = _get(job, "location_text", "") or ""
@@ -196,6 +212,20 @@ def _geo(job: Any, gcfg: Mapping[str, Any], reasons: list[dict]) -> Optional[boo
     tz_text = _get(job, "tz_requirement_text", "") or ""
     min_overlap = float(gcfg.get("min_ist_overlap_hours", 3) or 0)
     workday = float(gcfg.get("workday_hours", 8) or 8)
+
+    # E1: the stored bucket may predate the current place lists; an unknown bucket is
+    # re-read from the location, and a location that still names a place with no India
+    # cue is treated as outside India ("Peninsula (Onsite)", "Trento").
+    placeless = False
+    if bucket not in (IN, NON_IN):
+        bucket = infer_country_bucket(location)
+    if bucket not in (IN, NON_IN):
+        from .regions import partition_location
+        loc_places = " ".join(partition_location(location)[0]) if location else ""
+        if _place_left(loc_places) and not _india_cue(location):
+            bucket = NON_IN
+        elif not _place_left(loc_places):
+            placeless = True
 
     if bucket == IN:
         allow = [str(a).lower() for a in gcfg.get("india_allow") or []]
@@ -263,7 +293,12 @@ def _geo(job: Any, gcfg: Mapping[str, Any], reasons: list[dict]) -> Optional[boo
             eligible = True if eligible is None else eligible
 
     if bucket != NON_IN:
+        if eligible is None and company and _india_cue(str(company.get("hq_location") or "")):
+            eligible = True       # placeless posting from an India-headquartered employer
         reasons.append(_reason("flag:country_unknown", "country unknown; kept (keep_unknown_country)", location))
+        if eligible is None and placeless:
+            reasons.append(_reason("flag:geo_placeless", "no place and no India / worldwide cue; "
+                                   "extended lane, never main", location or "(no location)"))
         return eligible
     return True if eligible is None else eligible
 
@@ -346,10 +381,114 @@ def _company(job: Any, company: Optional[Mapping[str, Any]], cfg: Mapping[str, A
 # --------------------------------------------------------------------------
 # main entry
 # --------------------------------------------------------------------------
-def _role_families(cfg: Mapping[str, Any]) -> list[str]:
-    from .filters import DEFAULT_TARGET_ROLES
-    fams = (cfg.get("roles") or {}).get("families") or []
-    return [str(f) for f in fams] or list(DEFAULT_TARGET_ROLES)
+def _extra_phrases(cfg: Mapping[str, Any]) -> list[str]:
+    """Custom target phrases: roles.extra_phrases, or a v1-style list in roles.families."""
+    rc = cfg.get("roles") or {}
+    out = [str(x) for x in rc.get("extra_phrases") or []]
+    if isinstance(rc.get("families"), (list, tuple)):
+        out += [str(x) for x in rc["families"]]
+    return out
+
+
+def _company_tier(job: Any, company: Optional[Mapping[str, Any]]) -> Optional[str]:
+    tier = (company or {}).get("tier") if company else None
+    tier = tier or _get(job, "company_tier") or _get(job, "tier")
+    return str(tier).lower() if tier else None
+
+
+def _role(job: Any, title: str, company: Optional[Mapping[str, Any]], cfg: Mapping[str, Any],
+          reasons: list[dict]) -> tuple[Optional[str], Optional[str]]:
+    """(family, tier) of the title; appends the "role" exclusion / startup-only flag."""
+    from .filters import OFF_FAMILY_DETAIL, TIER_OFF, TIER_STARTUP, passes_role, role_match
+    rc = cfg.get("roles") or {}
+    m = role_match(title, rc)
+    if m is None or m[1] == TIER_OFF:
+        extra = passes_role(title, _extra_phrases(cfg), rc) if (m is None or m[0] == "other_engineering") \
+            else None
+        if extra:
+            return extra, "extra"
+        if m is None:
+            detail = "not an engineering title (or a non-target function: sales / support / marketing ...)"
+        else:
+            detail = OFF_FAMILY_DETAIL.get(m[0], f"not a target role family ({m[0]})")
+        reasons.append(_reason("role", detail, title))
+        return (m[0] if m else None), (m[1] if m else None)
+    family, tier = m
+    if tier == TIER_STARTUP:
+        ok_tiers = [str(t).lower() for t in rc.get("startup_tiers") or ["funded", "watchlist"]]
+        ctier = _company_tier(job, company)
+        if ctier in ok_tiers:
+            reasons.append(_reason("flag:role:startup-only",
+                                   f"{family} is a target only at startups (company tier {ctier})", title))
+        else:
+            reasons.append(_reason("role", "not a target role (startup-only family)",
+                                   f"{title} (company tier: {ctier or 'unknown'})"))
+    return family, tier
+
+
+# --------------------------------------------------------------------------
+# degree (E4): only a REQUIRED master's / PhD excludes
+# --------------------------------------------------------------------------
+_DEG_NORM = [
+    (re.compile(r"[\u2018\u2019\u02bc`]"), "'"),
+    (re.compile(r"\bPh\.\s?D\b\.?", re.I), "PhD"),
+    (re.compile(r"\bM\.\s?Tech\b\.?", re.I), "MTech"),
+    (re.compile(r"\bB\.\s?Tech\b\.?", re.I), "BTech"),
+    (re.compile(r"\bM\.\s?Sc\b\.?", re.I), "MSc"),
+    (re.compile(r"\bB\.\s?Sc\b\.?", re.I), "BSc"),
+    (re.compile(r"\bM\.\s?S\.(?=[\s,/)]|$)"), "MS"),
+    (re.compile(r"\bB\.\s?S\.(?=[\s,/)]|$)"), "BS"),
+    (re.compile(r"\bB\.\s?E\.(?=[\s,/)]|$)"), "BE"),
+    (re.compile(r"\bB\.\s?A\.(?=[\s,/)]|$)"), "BA"),
+]
+_ADV_DEG_RE = re.compile(
+    r"\bPhD'?s?\b|\bdoctora(?:te|l)\b|(?<!scrum\s)\bmaster'?s\b|\bmasters\b|\bMTech\b|\bMSc\b|"
+    r"\bM\.?Eng\b|\bpost[- ]?graduate\s+degree\b", re.I)
+_MS_RE = re.compile(r"\bMS\b(?!\s+(?i:office|excel|word|sql|teams|azure|access|outlook|power|dynamics|project))")
+_DEGREE_CTX_RE = re.compile(r"\bdegree\b|\bin\s+(?:computer|cs\b|engineering|a\s+(?:related|relevant|"
+                            r"quantitative|technical)|math|statistics|physics|electrical)", re.I)
+_BACHELOR_RE = re.compile(r"\bbachelor'?s?\b|\bundergrad(?:uate)?\b|\b(?:four|4)[- ]year\s+degree\b|"
+                          r"\bBTech\b|\bBSc\b|\bBCA\b", re.I)
+_BACHELOR_CS_RE = re.compile(r"\b(?:BS|BE|BA|B\.?S|B\.?E)\b")
+_DEG_ALT_RE = re.compile(r"\bequivalent\b|\bor\b[^.\n]{0,80}\b(?:years?|experience|bootcamp)\b|"
+                         r"\b(?:years?|experience)\b[^.\n]{0,80}\bor\b", re.I)
+_DEG_MUST_RE = re.compile(r"\b(?:required|requires?|must|minimum|mandatory|need(?:ed|s)?|necessary)\b", re.I)
+_TITLE_ADV_RE = re.compile(r"\bPh\.?\s?D\b|\bMSc\b|\bmaster'?s\b|\bmasters\b|\bdoctoral\b|\bpostdoc|"
+                           r"\bM\.?\s?Tech\b", re.I)
+_SENT_SPLIT_RE = re.compile(r"\n|[•·▪●|;]|(?<=[.!?])\s+")
+
+
+def _degree(job: Any, title: str, reasons: list[dict]) -> None:
+    t = title.replace("\u2019", "'")
+    if _TITLE_ADV_RE.search(t) and not _BACHELOR_RE.search(t):
+        reasons.append(_reason("degree", "title asks for a master's / PhD", title))
+        return
+    desc = _get(job, "description_text", "") or ""
+    if not desc or not (_ADV_DEG_RE.search(desc) or "MS" in desc or "Ph.D" in desc):
+        return
+    from .yoe import NONE, PREFERRED, REQUIRED, _SOFT_RE, _normalise, _section_at, _section_events
+    text = _normalise(desc)
+    for rx, rep in _DEG_NORM:
+        text = rx.sub(rep, text)
+    events = _section_events(text)
+    pos = 0
+    for sent in _SENT_SPLIT_RE.split(text):
+        start = text.find(sent, pos) if sent else pos
+        pos = max(pos, start + len(sent))
+        if not sent.strip():
+            continue
+        adv = _ADV_DEG_RE.search(sent) or (_MS_RE.search(sent) and _DEGREE_CTX_RE.search(sent))
+        if not adv:
+            continue
+        if _BACHELOR_RE.search(sent) or _BACHELOR_CS_RE.search(sent) or _DEG_ALT_RE.search(sent) \
+                or _SOFT_RE.search(sent):
+            continue
+        section = _section_at(events, start)
+        if section == PREFERRED:
+            continue
+        if section == REQUIRED or (section == NONE and _DEG_MUST_RE.search(sent)):
+            reasons.append(_reason("degree", "requires a master's / PhD (no bachelor's alternative)", sent))
+            return
 
 
 _INTERN_RE = re.compile(r"\bintern(?:ship)?s?\b|\bco-?op\b|\bapprentice(?:ship)?\b", re.I)
@@ -358,7 +497,7 @@ _INTERN_RE = re.compile(r"\bintern(?:ship)?s?\b|\bco-?op\b|\bapprentice(?:ship)?
 def evaluate(job: Job | Mapping[str, Any], *, company: Optional[Mapping[str, Any]] = None,
              cfg: Optional[Mapping[str, Any]] = None) -> Decision:
     """Apply every hard rule to one job. Never raises on missing fields."""
-    from .filters import is_seniority_high, passes_role
+    from .filters import is_seniority_high
     from .yoe import extract_yoe
 
     if cfg is None:
@@ -367,13 +506,13 @@ def evaluate(job: Job | Mapping[str, Any], *, company: Optional[Mapping[str, Any
     reasons: list[dict] = []
     title = _get(job, "title", "") or ""
 
-    # role
+    # role (+ startup-only families need a funded / watchlist company) and degree
     rcfg = cfg.get("roles") or {}
-    family = passes_role(title, _role_families(cfg))
-    if family is None:
-        reasons.append(_reason("role", "title does not match a target role family", title))
-    elif rcfg.get("exclude_internships", True) and _INTERN_RE.search(title):
+    family, _role_tier = _role(job, title, company, cfg, reasons)
+    if family is not None and not any(r["rule"] == "role" for r in reasons) \
+            and rcfg.get("exclude_internships", True) and _INTERN_RE.search(title):
         reasons.append(_reason("role", "internship / co-op title (roles.exclude_internships)", title))
+    _degree(job, title, reasons)
 
     # yoe + seniority
     ycfg = cfg.get("yoe") or {}
@@ -399,7 +538,7 @@ def evaluate(job: Job | Mapping[str, Any], *, company: Optional[Mapping[str, Any
                 "" if hard_min is None else f" asking {hard_min:g}+ years"), title))
 
     # geo / salary / company / freshness
-    india_ok = _geo(job, cfg.get("geo") or {}, reasons)
+    india_ok = _geo(job, cfg.get("geo") or {}, reasons, company)
     salary_ok, salary_inr = _salary(job, cfg, reasons)
     lane, tier = _company(job, company, cfg, reasons)
     age = _get(job, "posted_age_days")
@@ -410,6 +549,8 @@ def evaluate(job: Job | Mapping[str, Any], *, company: Optional[Mapping[str, Any
 
     if any(not r["rule"].startswith("flag:") for r in reasons):
         lane = LANE_EXCLUDED
+    elif lane == LANE_MAIN and any(r["rule"] == "flag:geo_placeless" for r in reasons):
+        lane = LANE_EXTENDED
     return Decision(
         lane=lane, reasons=reasons, yoe_min=y.yoe_min, yoe_max=y.yoe_max,
         yoe_is_preferred=y.is_preferred, yoe_evidence=y.evidence, fresher_friendly=y.fresher_friendly,

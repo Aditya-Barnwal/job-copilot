@@ -594,3 +594,63 @@ def test_runs_endpoints_start_in_background_and_refuse_a_second(client, monkeypa
     r = client.post("/api/runs/daily")
     assert r.status_code == 409 and r.json()["detail"]["run_id"] == live
     assert client.get("/api/runs/99999").status_code == 404
+
+
+# --- Phase 2 review fixes ------------------------------------------------------
+
+def test_approve_never_moves_a_submitted_job_backwards(client):
+    """P3: re-approving a résumé after submitting must keep 'submitted'."""
+    key = seed_job()
+    store.set_resume(ORIGINAL, "resume.txt")
+    store.set_status(key, "submitted")
+    r = approve(client, key, tailored_text=CLEAN)
+    assert r.status_code == 200, r.text
+    assert store.get_job(key)["status"] == "submitted"
+    vid = r.json()["version_id"]
+    assert approve(client, key, reuse_version_id=vid).status_code == 200
+    assert store.get_job(key)["status"] == "submitted"
+    store.set_status(key, "not_interested")               # dismissed stays dismissed too
+    approve(client, key, tailored_text=CLEAN)
+    assert store.get_job(key)["status"] == "not_interested"
+    store.set_status(key, "tailored")                      # tailored -> ready still works
+    approve(client, key, tailored_text=CLEAN)
+    assert store.get_job(key)["status"] == "ready"
+
+
+def test_status_endpoint_validates_notes_and_proof_path(client):
+    """P9."""
+    key = seed_job()
+    post = lambda **b: client.post(f"/api/jobs/{key}/status", json={"status": "submitted", **b})  # noqa: E731
+    assert post(notes=["x"]).status_code == 400
+    assert post(note={"a": 1}).status_code == 400
+    assert post(note="x" * 2001).status_code == 400
+    assert post(proof_path="/etc/passwd").status_code == 400
+    assert post(proof_path="../jobcopilot.db").status_code == 400
+    assert post(proof_path=str(store.data_dir() / "proofs" / ".." / "x.png")).status_code == 400
+    assert store.get_job(key)["status"] == "new"           # nothing was written
+    proofs = store.data_dir() / "proofs"
+    proofs.mkdir(parents=True, exist_ok=True)
+    r = post(note="sent", proof_path=str(proofs / "acme" / "shot.png"))
+    assert r.status_code == 200, r.text
+    assert store.get_job(key)["submit_proof_path"] == "acme/shot.png"   # stored relative
+    assert post(proof_path="acme/again.png").status_code == 200
+
+
+def test_ingest_endpoint_starts_from_filters_yaml(client, monkeypatch, tmp_path):
+    """P4: the API run uses the nightly config; only keys in the body override it."""
+    import os
+    cfg_dir = Path(os.environ["JOBCOPILOT_CONFIG_DIR"])
+    (cfg_dir / "filters.yaml").write_text(
+        "roles: {families: [data engineer]}\nsalary_floors: {INR: 2500000}\n"
+        "fx_to_inr: {USD: 90}\ngeo: {keep_unknown_country: false}\n", encoding="utf-8")
+    seen = []
+    import server.routers.ingest as ingest_router
+    monkeypatch.setattr(ingest_router, "run_pipeline", lambda **kw: seen.append(kw["filter_cfg"]) or {})
+    assert client.post("/api/ingest", json={}).status_code == 200
+    fc = seen[-1]
+    assert (fc.min_lpa, fc.usd_to_inr, fc.target_roles, fc.keep_unknown_country) == \
+        (25.0, 90.0, ["data engineer"], False)
+    assert client.post("/api/ingest", json={"min_lpa": 10}).status_code == 200
+    fc = seen[-1]
+    assert (fc.min_lpa, fc.usd_to_inr, fc.target_roles) == (10.0, 90.0, ["data engineer"])
+    assert client.post("/api/ingest", json={"min_lpa": "lots"}).status_code == 400

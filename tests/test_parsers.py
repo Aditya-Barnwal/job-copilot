@@ -127,16 +127,16 @@ def test_expected_total_passes():
     jobs = _all_jobs()
     assert len(jobs) == 13  # 3 + 4 + 3 (ashby drops 1 unlisted) + 3
     results = apply_filters(jobs, FilterConfig(min_lpa=15.0))
-    # role-targeting now drops Embedded Engineer + Site Reliability Engineer
-    # from the previous 9 -> 7
+    # role-targeting drops Embedded Engineer + Site Reliability Engineer (SRE is a
+    # startup-only family and these jobs have no funded company) from the previous 9 -> 7
     assert len(results) == 7
 
 
 def test_role_targeting_drops_non_target_titles():
     from jobcopilot.filters import passes_role, DEFAULT_TARGET_ROLES
-    assert passes_role("Software Engineer II", DEFAULT_TARGET_ROLES) == "software_engineer"
-    assert passes_role("Backend Engineer", DEFAULT_TARGET_ROLES) == "backend_engineer"
-    assert passes_role("Data Scientist", DEFAULT_TARGET_ROLES) == "data_scientist"
+    assert passes_role("Software Engineer II", DEFAULT_TARGET_ROLES) == "sde"
+    assert passes_role("Backend Engineer", DEFAULT_TARGET_ROLES) == "backend"
+    assert passes_role("Data Scientist", DEFAULT_TARGET_ROLES) == "data_science"
     # "sde" only matches on word boundaries
     assert passes_role("SDE 2 - Search", DEFAULT_TARGET_ROLES) == "sde"
     assert passes_role("Inside Sales Rep", DEFAULT_TARGET_ROLES) is None
@@ -371,21 +371,48 @@ def test_normalize_company_name_more_legal_suffixes():
 # ---- L4: country signals are whole words ------------------------------------
 
 @pytest.mark.parametrize("text,bucket", [
-    ("Indianapolis", "unknown"),
-    ("Indiana", "unknown"),
-    ("Remote - Indiana", "unknown"),
+    ("Indianapolis", NON_IN),               # a US city / state, never India
+    ("Indiana", NON_IN),
+    ("Remote - Indiana", NON_IN),
     ("Indianapolis, IN, United States", NON_IN),
     ("Bengaluru, India", IN),
     ("India", IN),
     ("Pune", IN),
     ("Remote - New Delhi", IN),
-    ("Remote, Ukraine", "unknown"),          # "uk" inside a word
-    ("Susa, Italy", "unknown"),              # "usa" inside a word
+    ("Remote, Ukraine", NON_IN),             # "uk" inside a word is not the UK - but Ukraine is a country
+    ("Susa, Italy", NON_IN),                 # "usa" inside a word; Italy names the country
+    ("Ukrainka", "unknown"),
+    ("Susa", "unknown"),
     ("Punedhar", "unknown"),
     ("London, UK", NON_IN),
     ("Delhi, NY, USA", NON_IN),              # a stated non-India country beats a bare city
     ("Remote - US or India", IN),
 ])
 def test_infer_country_bucket_uses_word_boundaries(text, bucket):
+    from jobcopilot.normalize import infer_country_bucket
+    assert infer_country_bucket(text) == bucket
+
+
+# ---- E1: country bucket coverage (real location strings from the local DB) ----------
+
+@pytest.mark.parametrize("text,bucket", [
+    ("Remote US", NON_IN), ("US-WA-Bellevue", NON_IN), ("US-CA-Menlo Park", NON_IN), ("REMOTE (US)", NON_IN),
+    ("Mountain View, CA", NON_IN), ("Denver, CO", NON_IN), ("Washington, DC", NON_IN), ("NYC", NON_IN),
+    ("sf", NON_IN), ("Vancouver, BC", NON_IN), ("Shenzhen, China", NON_IN), ("Mexico City, MX", NON_IN),
+    ("São Paulo, São Paulo, Brazil", NON_IN), ("Buenos Aires, Argentina", NON_IN), ("Bogotá, Colombia", NON_IN),
+    ("Santiago, Chile", NON_IN), ("Quezon City, Philippines", NON_IN), ("Ho Chi Minh City, Vietnam", NON_IN),
+    ("Jakarta, Indonesia", NON_IN), ("Kuala Lumpur, Malaysia", NON_IN), ("Thailand - Bangkok", NON_IN),
+    ("Dubai, United Arab Emirates", NON_IN), ("Riyadh, Saudi Arabia", NON_IN), ("Tel Aviv", NON_IN),
+    ("Istanbul, Turkey", NON_IN), ("Cairo, Egypt", NON_IN), ("Lagos, Nigeria", NON_IN), ("Nairobi, Kenya", NON_IN),
+    ("Cape Town, South Africa", NON_IN), ("Reykjavík", NON_IN), ("Aarhus, Denmark", NON_IN), ("Norway", NON_IN),
+    ("Vilnius, Lithuania", NON_IN), ("Sofia, Bulgaria", NON_IN), ("PL-Warsaw-Lixa C", NON_IN),
+    ("CH-Zurich-Observe", NON_IN), ("Zürich, CH", NON_IN), ("Tokyo", NON_IN), ("Taipei, Taiwan", NON_IN),
+    ("Seoul, South Korea", NON_IN), ("Remote - Americas", NON_IN),
+    ("Mohali, IND", IN), ("Delhi NCR", IN), ("Gurugram, HR", IN), ("Chennai, TN", IN), ("Mysuru", IN),
+    ("Bhubaneswar", IN), ("Kochi", IN), ("Trivandrum", IN), ("Chandigarh", IN), ("Bangalore, KA, IN", IN),
+    ("Remote", "unknown"), ("Hybrid", "unknown"), ("2 Locations", "unknown"), ("Join us", "unknown"),
+    ("Indore", IN), ("Bengaluru, Karnataka", IN),
+])
+def test_e1_country_bucket_coverage(text, bucket):
     from jobcopilot.normalize import infer_country_bucket
     assert infer_country_bucket(text) == bucket

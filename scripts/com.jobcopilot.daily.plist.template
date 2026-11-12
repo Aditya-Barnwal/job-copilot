@@ -5,7 +5,9 @@ job-copilot nightly run (D2). Rendered by `scripts/schedule.py install`
 (`make schedule-install`), which fills the {{...}} placeholders with absolute
 paths and the time from config/schedule.yaml (daily_run), writes
 ~/Library/LaunchAgents/com.jobcopilot.daily.plist and bootstraps it.
-If the Mac is asleep at the slot, launchd runs the job on wake.
+StartCalendarInterval lists every local time the schedule-tz slot maps to
+over a year (DST shifts it), and the scheduled flag makes jobcopilot.daily exit early
+unless it is inside the slot in the schedule tz and no run happened in it yet.
 -->
 <plist version="1.0">
 <dict>
@@ -15,13 +17,13 @@ If the Mac is asleep at the slot, launchd runs the job on wake.
     <string>{{PYTHON}}</string>
     <string>-m</string>
     <string>jobcopilot.daily</string>
+    <string>--scheduled</string>
   </array>
   <key>WorkingDirectory</key><string>{{REPO}}</string>
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key><integer>{{HOUR}}</integer>
-    <key>Minute</key><integer>{{MINUTE}}</integer>
-  </dict>
+  <array>
+{{CALENDAR}}
+  </array>
   <key>StandardOutPath</key><string>{{LOG_DIR}}/daily.out.log</string>
   <key>StandardErrorPath</key><string>{{LOG_DIR}}/daily.err.log</string>
   <key>EnvironmentVariables</key>

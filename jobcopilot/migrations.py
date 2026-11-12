@@ -280,10 +280,48 @@ def _v3_eligibility_queue(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_status_history_job ON status_history(job_key, at)")
 
 
+def _v4_gone_runs_backfill(conn: sqlite3.Connection) -> None:
+    """Phase 2 review fixes.
+
+    - jobs.gone_at: set when every source that listed the job ran successfully
+      long after it was last seen (store.retire_unlisted); such rows leave
+      Today's best / All matches but stay in the tracker with a warning.
+    - jobs.eval_cfg_hash: hash of the filters config an eligibility decision
+      was made with, so a config change re-evaluates every stored row.
+    - runs.pid / runs.hostname: lets a 'running' row whose process died be
+      recognised as abandoned instead of blocking every later run.
+    - Backfill tracker dates for rows that predate v3: status_changed_at for
+      every non-new row, and submitted_at (+ a 'system' history row) for
+      applied/submitted rows, so the tracker never falls back to last_seen.
+    """
+    for table, col, decl in (("jobs", "gone_at", "REAL"), ("jobs", "eval_cfg_hash", "TEXT"),
+                             ("runs", "pid", "INTEGER"), ("runs", "hostname", "TEXT")):
+        add_column_if_missing(conn, table, col, decl)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_gone ON jobs(gone_at)")
+
+    conn.execute(
+        "UPDATE jobs SET status_changed_at = COALESCE("
+        "  (SELECT MAX(h.at) FROM status_history h WHERE h.job_key = jobs.key AND h.status = jobs.status),"
+        "  first_seen) "
+        "WHERE status_changed_at IS NULL AND COALESCE(status, 'new') != 'new'")
+    keys = [r[0] for r in conn.execute(
+        "SELECT key FROM jobs WHERE submitted_at IS NULL AND status IN ('applied', 'submitted')")]
+    conn.execute(
+        "UPDATE jobs SET submitted_at = COALESCE(status_changed_at, first_seen) "
+        "WHERE submitted_at IS NULL AND status IN ('applied', 'submitted')")
+    for k in keys:
+        conn.execute(
+            "INSERT INTO status_history(job_key, status, at, source, note) "
+            "SELECT key, status, COALESCE(submitted_at, ?), 'system', "
+            "'submission date backfilled by migration v4' FROM jobs WHERE key = ?",
+            (time.time(), k))
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
     (3, "eligibility_queue_tracker", _v3_eligibility_queue),
+    (4, "gone_runs_tracker_backfill", _v4_gone_runs_backfill),
 ]
 
 
@@ -331,6 +369,10 @@ def migrate(db_path: Path | str, steps: list[Migration] | None = None) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None, timeout=30)
     try:
+        try:   # WAL: the server can read while the nightly run writes
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            log.warning("could not enable WAL on %s: %s", path, exc)
         conn.execute(_VERSION_TABLE)
         for version, name, fn in steps:
             conn.execute("BEGIN IMMEDIATE")

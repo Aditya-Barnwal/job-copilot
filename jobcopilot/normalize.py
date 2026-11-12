@@ -58,41 +58,150 @@ def infer_workplace_type(location_text: Optional[str]) -> str:
     return inferred if inferred else UNKNOWN
 
 
-# A small, ext-friendly set of signals for the India / non-India geo bucket.
-# This is intentionally not exhaustive; add to it as you see your real feeds.
-# Every signal is matched as a WHOLE WORD (see _signal_re): "india" must not
-# fire inside "Indianapolis" / "Indiana", nor "uk" inside "Ukraine".
-_INDIA_COUNTRY = ("india",)
+# Signals for the India / non-India geo bucket. Every signal is matched as a
+# WHOLE WORD (see _signal_re): "india" must not fire inside "Indianapolis" /
+# "Indiana", nor "uk" inside "Ukraine". Case-sensitive codes ("US", ", CA",
+# "MX") are handled separately by _US_RE / _CODE_RE.
+_INDIA_COUNTRY = ("india", "bharat")
 _INDIA_CITIES = (
-    "bengaluru", "bangalore", "hyderabad", "pune", "chennai",
-    "mumbai", "gurgaon", "gurugram", "noida", "delhi", "kolkata",
-    "ahmedabad", "kochi", "coimbatore", "thiruvananthapuram", "trivandrum",
-    "indore", "jaipur",
+    "bengaluru", "bangalore", "hyderabad", "secunderabad", "pune", "chennai", "madras",
+    "mumbai", "bombay", "navi mumbai", "thane", "gurgaon", "gurugram", "noida", "greater noida",
+    "delhi", "new delhi", "delhi ncr", "ncr", "faridabad", "ghaziabad", "kolkata", "calcutta",
+    "ahmedabad", "gandhinagar", "kochi", "cochin", "coimbatore", "thiruvananthapuram", "trivandrum",
+    "indore", "jaipur", "chandigarh", "mohali", "panchkula", "mysuru", "mysore", "bhubaneswar",
+    "visakhapatnam", "vizag", "vijayawada", "nagpur", "nashik", "vadodara", "surat", "lucknow",
+    "kanpur", "bhopal", "madurai", "tiruchirappalli", "trichy", "mangaluru", "mangalore", "hubli",
+    "dehradun", "patna", "ranchi", "guwahati", "raipur", "goa", "panaji", "manipal", "vellore",
+    "warangal", "amritsar", "ludhiana", "jodhpur", "udaipur", "karnataka", "maharashtra",
+    "telangana", "tamil nadu", "kerala", "haryana", "uttar pradesh", "west bengal", "gujarat",
+    "andhra pradesh", "rajasthan", "odisha", "punjab",
 )
 _INDIA_SIGNALS = _INDIA_COUNTRY + _INDIA_CITIES
 
 # Strong non-India signals. Presence of one of these *without* an India signal
 # pushes a posting into the non-IN bucket (where only remote roles survive).
 _NON_INDIA_COUNTRIES = (
-    "united states", "usa", "u.s.", "uk", "united kingdom", "canada",
-    "germany", "ireland", "france", "netherlands", "singapore", "australia",
-    "poland", "spain", "israel", "japan",
+    # North America
+    "united states", "united states of america", "usa", "u.s.", "u.s.a.", "america", "canada",
+    "mexico", "méxico", "puerto rico",
+    # US states (full names; "Indiana" is a state too and is NOT India)
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
+    "delaware", "florida", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky",
+    "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico",
+    "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island",
+    "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "west virginia", "wisconsin", "wyoming", "district of columbia",
+    "british columbia", "ontario", "quebec", "québec", "alberta",
+    # Latin America
+    "brazil", "brasil", "argentina", "colombia", "chile", "peru", "uruguay", "paraguay",
+    "ecuador", "bolivia", "venezuela", "costa rica", "panama", "guatemala", "dominican republic",
+    "latam", "latin america", "south america", "north america", "americas", "central america",
+    # Europe
+    "uk", "united kingdom", "england", "scotland", "wales", "great britain", "ireland",
+    "germany", "deutschland", "france", "netherlands", "the netherlands", "holland", "belgium",
+    "luxembourg", "switzerland", "austria", "italy", "spain", "portugal", "greece", "malta",
+    "cyprus", "iceland", "norway", "sweden", "denmark", "finland", "estonia", "latvia",
+    "lithuania", "poland", "czech republic", "czechia", "slovakia", "hungary", "romania",
+    "bulgaria", "serbia", "croatia", "slovenia", "bosnia", "montenegro", "albania",
+    "north macedonia", "moldova", "ukraine", "belarus", "russia", "georgia", "armenia",
+    "azerbaijan", "europe", "european union", "emea", "eu", "dach", "nordics", "baltics",
+    # Middle East / Africa
+    "israel", "turkey", "türkiye", "uae", "united arab emirates", "saudi arabia", "saudi",
+    "ksa", "qatar", "kuwait", "bahrain", "oman", "jordan", "lebanon", "egypt", "morocco", "maroc",
+    "tunisia", "algeria", "nigeria", "kenya", "ghana", "ethiopia", "rwanda", "uganda",
+    "tanzania", "south africa", "botswana", "middle east", "africa", "mena",
+    # Asia-Pacific (not India)
+    "singapore", "australia", "new zealand", "japan", "china", "taiwan", "hong kong",
+    "korea", "south korea", "philippines", "vietnam", "viet nam", "indonesia", "malaysia",
+    "thailand", "pakistan", "bangladesh", "sri lanka", "nepal", "cambodia", "myanmar",
+    "kazakhstan", "uzbekistan", "mongolia", "macau",
 )
 _NON_INDIA_CITIES = (
-    "san francisco", "new york", "seattle", "london", "berlin", "dublin",
-    "toronto", "austin", "boston", "amsterdam", "sydney", "tel aviv",
+    # US / Canada
+    "san francisco", "sf", "bay area", "sf bay area", "silicon valley", "new york", "new york city",
+    "nyc", "seattle", "bellevue", "redmond", "kirkland", "austin", "dallas", "houston",
+    "boston", "cambridge", "chicago", "los angeles", "santa monica", "san diego", "san jose",
+    "san mateo", "palo alto", "menlo park", "mountain view", "sunnyvale", "santa clara",
+    "cupertino", "redwood city", "milpitas", "oakland", "berkeley", "denver", "boulder",
+    "atlanta", "miami", "orlando", "tampa", "phoenix", "salt lake city", "portland", "pittsburgh",
+    "philadelphia", "washington dc", "washington, dc", "d.c.", "arlington", "reston", "bethesda",
+    "baltimore", "raleigh", "durham", "charlotte", "nashville", "minneapolis", "detroit",
+    "columbus", "indianapolis", "st. louis", "kansas city", "las vegas", "toronto", "vancouver",
+    "montreal", "montréal", "ottawa", "waterloo", "kitchener", "calgary", "edmonton",
+    # Latin America
+    "mexico city", "ciudad de méxico", "guadalajara", "monterrey", "puebla", "são paulo",
+    "sao paulo", "rio de janeiro", "belo horizonte", "florianópolis", "buenos aires",
+    "bogotá", "bogota", "medellín", "medellin", "santiago", "lima", "montevideo",
+    # Europe
+    "london", "manchester", "edinburgh", "cambridge uk", "dublin", "berlin", "munich", "münchen",
+    "hamburg", "frankfurt", "cologne", "paris", "amsterdam", "rotterdam", "utrecht", "brussels",
+    "zurich", "zürich", "geneva", "vienna", "milan", "rome", "turin", "madrid", "barcelona",
+    "valencia", "lisbon", "porto", "athens", "stockholm", "oslo", "copenhagen", "aarhus",
+    "helsinki", "tallinn", "riga", "vilnius", "warsaw", "krakow", "kraków", "wroclaw", "wrocław",
+    "prague", "brno", "bratislava", "budapest", "bucharest", "cluj", "sofia", "belgrade",
+    "zagreb", "ljubljana", "kyiv", "kiev", "lviv", "minsk", "moscow", "reykjavík", "reykjavik",
+    "canary wharf", "luxembourg city", "trento", "istanbul", "ankara",
+    # Middle East / Africa
+    "tel aviv", "jerusalem", "haifa", "dubai", "abu dhabi", "riyadh", "jeddah", "doha",
+    "kuwait city", "cairo", "casablanca", "lagos", "nairobi", "cape town", "johannesburg",
+    "beirut", "amman",
+    # Asia-Pacific
+    "sydney", "melbourne", "brisbane", "perth", "auckland", "tokyo", "osaka", "beijing",
+    "shanghai", "shenzhen", "guangzhou", "hangzhou", "taipei", "seoul", "seongnam", "manila",
+    "quezon city", "makati", "cebu", "ho chi minh city", "hanoi", "jakarta", "kuala lumpur",
+    "petaling jaya", "bangkok", "karachi", "lahore", "islamabad", "dhaka", "colombo",
+    "kathmandu",
 )
 _NON_INDIA_SIGNALS = _NON_INDIA_COUNTRIES + _NON_INDIA_CITIES
 
+# Case-sensitive codes. "US" / "USA" / "U.S." anywhere ("Remote US", "US-WA-Bellevue",
+# "REMOTE (US)"); ISO/US-state codes only after a comma or a "US-" / "XX-" prefix
+# ("Denver, CO", "Mexico City, MX", "PL-Warsaw", "CH-Zurich"). Codes that are also
+# Indian state codes or ambiguous (IN Indiana/India, TN, GA, OR, MN, HR, AS, MH, TG,
+# AP, PY, ML, NL, SK, MZ, AR, BR, CT, UP, WB, KA, KL, UK) are left out here.
+_US_RE = re.compile(r"(?<![A-Za-z])(?:US|USA|U\.S\.A?\.?|UNITED STATES)(?![A-Za-z])")
+_US_STATE_CODES = (
+    "AL AK AZ AR CA CO DE FL HI ID IL IA KS KY LA ME MD MA MI MS MO MT NE NV NH NJ NM NY NC ND "
+    "OH OK PA RI SC SD TX UT VT VA WA WV WI WY DC BC ON QC AB"
+).split()
+_COUNTRY_CODES = (
+    "MX CL CO PE UY EC CR GB IE DE FR BE LU CH AT IT ES PT GR IS NO SE DK FI EE LV LT PL CZ "
+    "HU RO BG RS HR SI UA BY RU IL TR AE SA QA KW EG MA NG KE ZA SG AU NZ JP CN TW HK KR PH VN "
+    "ID MY TH PK BD LK"
+).split()
+_AMBIGUOUS_CODES = {"IN", "TN", "GA", "OR", "MN", "HR", "AS", "MH", "TG", "AP", "PY", "ML",
+                    "NL", "SK", "MZ", "AR", "BR", "CT", "UP", "WB", "KA", "KL"}
+_CODES = sorted({c for c in _US_STATE_CODES + _COUNTRY_CODES if c not in _AMBIGUOUS_CODES})
+_CODE_RE = re.compile(r"(?:,\s*|^|\(|\b(?:US|[A-Z]{2})-)(?:" + "|".join(_CODES) + r")(?![A-Za-z])"
+                      r"|(?<![A-Za-z])(?:" + "|".join(_CODES) + r")-[A-Z][A-Za-z]")
+_INDIA_CODE_RE = re.compile(r"(?<![A-Za-z])IND(?![A-Za-z])|(?:,\s*)IN\s*$")
+
 
 def _signal_re(signals: tuple[str, ...]) -> "re.Pattern[str]":
-    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(x) for x in signals) + r")(?!\w)")
+    alts = sorted(set(signals), key=len, reverse=True)
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(x) for x in alts) + r")(?!\w)")
 
 
 _INDIA_COUNTRY_RE = _signal_re(_INDIA_COUNTRY)
 _INDIA_CITY_RE = _signal_re(_INDIA_CITIES)
 _NON_INDIA_COUNTRY_RE = _signal_re(_NON_INDIA_COUNTRIES)
 _NON_INDIA_RE = _signal_re(_NON_INDIA_SIGNALS)
+
+
+def has_india_signal(text: Optional[str]) -> bool:
+    """True when `text` names India or an Indian city / state (whole words)."""
+    if not text:
+        return False
+    t = text.lower()
+    return bool(_INDIA_COUNTRY_RE.search(t) or _INDIA_CITY_RE.search(t) or _INDIA_CODE_RE.search(text))
+
+
+def has_non_india_signal(text: Optional[str]) -> bool:
+    """True when `text` names a place outside India (country, city, US state, code)."""
+    if not text:
+        return False
+    return bool(_NON_INDIA_RE.search(text.lower()) or _US_RE.search(text) or _CODE_RE.search(text))
 
 
 _WORKDAY_REL_RE = re.compile(r"(\d+)\s*\+?\s*day", re.I)
@@ -151,12 +260,13 @@ def infer_country_bucket(location_text: Optional[str]) -> str:
     if not location_text:
         return COUNTRY_UNKNOWN
     t = location_text.lower()
-    if _INDIA_COUNTRY_RE.search(t):
+    non_in_country = bool(_NON_INDIA_COUNTRY_RE.search(t) or _US_RE.search(location_text))
+    if _INDIA_COUNTRY_RE.search(t) or _INDIA_CODE_RE.search(location_text):
         return IN
     if _INDIA_CITY_RE.search(t):
         # A bare city name is weaker than a stated country: "Delhi, NY, USA".
-        return NON_IN if _NON_INDIA_COUNTRY_RE.search(t) else IN
-    if _NON_INDIA_RE.search(t):
+        return NON_IN if non_in_country else IN
+    if has_non_india_signal(location_text):
         return NON_IN
     return COUNTRY_UNKNOWN
 

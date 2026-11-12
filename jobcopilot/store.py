@@ -10,9 +10,12 @@ bound at import time once let a test write into the real DB, and it made
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import math
 import os
+import socket
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -22,6 +25,7 @@ from typing import Any, Iterable, Optional
 from . import migrations
 from .filters import FilterResult
 
+log = logging.getLogger("jobcopilot.store")
 
 _REPO_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _IMPORT_DB_PATH = Path(os.environ.get("JOBCOPILOT_DB") or (_REPO_DATA_DIR / "jobcopilot.db"))
@@ -67,8 +71,14 @@ def resolve_resumes_dir() -> Path:
 def connect(db_path: Path | str | None = None):
     p = resolve_db_path(db_path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(p)
+    # 30 s busy timeout + WAL: the server reads (and the UI writes statuses)
+    # while the nightly run holds a write transaction.
+    conn = sqlite3.connect(p, timeout=30)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:   # e.g. a read-only copy; the default journal still works
+        pass
     try:
         yield conn
         conn.commit()
@@ -100,7 +110,7 @@ _JSON_LIST_FIELDS = ("region_restrictions", "timezone_restrictions")
 EVALUATION_FIELDS = (
     "lane", "excluded", "exclusion_reasons", "flags", "min_yoe_required", "yoe_max",
     "yoe_is_preferred", "yoe_evidence", "fresher_friendly", "india_eligible",
-    "salary_annual_inr",
+    "salary_annual_inr", "eval_cfg_hash",
 )
 FIT_FIELDS = ("fit_score_v2", "fit_components", "matched_skills", "missing_skills", "fit_why")
 _V3_JSON_FIELDS = ("exclusion_reasons", "flags", "fit_components", "matched_skills", "missing_skills")
@@ -330,14 +340,15 @@ def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = No
                 if source_rank(row["source"]) <= source_rank(existing["source"]):
                     set_clause = ", ".join(f"{f} = :{f}" for f in _POSTING_FIELDS)
                     conn.execute(
-                        f"UPDATE jobs SET {set_clause}, last_seen = :_last WHERE key = :_target",
+                        f"UPDATE jobs SET {set_clause}, last_seen = :_last, gone_at = NULL "
+                        "WHERE key = :_target",
                         {**row, "_last": now, "_target": target},
                     )
                 else:
                     # A lower-rank source still lists this role, so the row's
                     # expiry is the LATEST over live sources: one listing
                     # without an expiry (NULL) means it hasn't expired.
-                    conn.execute("UPDATE jobs SET last_seen = ?, "
+                    conn.execute("UPDATE jobs SET last_seen = ?, gone_at = NULL, "
                                  "company_id = COALESCE(company_id, ?), "
                                  "expires_at = CASE WHEN ? IS NULL OR expires_at IS NULL "
                                  "OR expires_at = '' THEN NULL "
@@ -379,6 +390,75 @@ def purge_expired(today: Optional[str] = None, db_path: Path | str | None = None
             conn.execute("DELETE FROM job_sources WHERE job_key = ?", (k,))
             conn.execute("DELETE FROM jobs WHERE key = ?", (k,))
     return len(keys)
+
+
+def retire_unlisted(gone_after_days: float = 3, now: Optional[float] = None,
+                    db_path: Path | str | None = None) -> dict[str, int]:
+    """Set jobs.gone_at on postings no source lists any more; clear it on re-listing.
+
+    A job is gone only when EVERY listing of it (job_sources row; the jobs row
+    itself for pre-v2 rows) belongs to a source that had a successful run more
+    than `gone_after_days` after the listing was last seen. A source's last
+    success is the latest of source_state.last_ok (board name, or
+    "<connector>:<company>") and the newest last_seen of any job that source
+    listed for the same company. A source that failed, never ran, or isn't
+    known keeps its jobs live: absence of evidence is not removal.
+    """
+    now = time.time() if now is None else float(now)
+    grace = float(gone_after_days) * 86400
+    with connect(db_path) as conn:
+        state = {r["source"]: float(r["last_ok"]) for r in conn.execute(
+            "SELECT source, last_ok FROM source_state WHERE last_ok IS NOT NULL")}
+        rows = conn.execute(
+            "SELECT j.key, j.company, j.source AS jsource, j.last_seen AS jseen, j.gone_at, "
+            "s.source AS ssource, s.last_seen AS sseen FROM jobs j "
+            "LEFT JOIN job_sources s ON s.job_key = j.key").fetchall()
+        norm: dict[str, str] = {}
+        listings: dict[str, list[tuple[str, str, Optional[float]]]] = {}
+        gone_at: dict[str, Any] = {}
+        proxy: dict[tuple[str, str], float] = {}
+        for r in rows:
+            co = norm.setdefault(r["company"] or "", _norm_company(r["company"]))
+            src, seen = (r["ssource"], r["sseen"]) if r["ssource"] is not None else (r["jsource"], r["jseen"])
+            listings.setdefault(r["key"], []).append((src, co, seen))
+            gone_at[r["key"]] = r["gone_at"]
+            if seen is not None:
+                k = (src, co)
+                proxy[k] = max(proxy.get(k, 0.0), float(seen))
+        newly = relisted = total = 0
+        for key, ls in listings.items():
+            def gone_here(src: str, co: str, seen: Optional[float]) -> bool:
+                if seen is None:
+                    return False
+                ok = max(state.get(src, 0.0), state.get(f"{src}:{co}", 0.0), proxy.get((src, co), 0.0))
+                return ok > float(seen) + grace
+            gone = all(gone_here(*x) for x in ls)
+            total += gone
+            if gone and gone_at[key] is None:
+                conn.execute("UPDATE jobs SET gone_at = ? WHERE key = ?", (now, key))
+                newly += 1
+            elif not gone and gone_at[key] is not None:
+                conn.execute("UPDATE jobs SET gone_at = NULL WHERE key = ?", (key,))
+                relisted += 1
+    return {"gone": total, "newly_gone": newly, "relisted": relisted}
+
+
+def _canon(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {str(k): _canon(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_canon(x) for x in v]
+    if isinstance(v, (set, frozenset)):
+        return sorted((_canon(x) for x in v), key=repr)
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)
+
+
+def config_hash(cfg: Any) -> str:
+    """Stable short hash of a (filters) config dict, stored with each decision."""
+    blob = json.dumps(_canon(cfg), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def job_sources(key: str, db_path: Path | str | None = None) -> list[dict]:
@@ -563,6 +643,11 @@ def set_status(key: str, status: str, notes: Optional[str] = None,
     submit_source ('user' | 'detected') unless already set; going back to a
     pre-submit status (undo) clears them, and history keeps both rows.
     Returns False when the job does not exist.
+
+    source='system' (automatic transitions, e.g. approving a tailored résumé)
+    never moves a job backwards out of submitted-or-later: such a call is
+    logged and ignored (returns True, nothing written). Only the user — or a
+    detected submission event — can undo a submission.
     """
     if source not in STATUS_SOURCES:
         raise ValueError(f"unknown status source: {source!r}")
@@ -572,6 +657,10 @@ def set_status(key: str, status: str, notes: Optional[str] = None,
         row = conn.execute("SELECT status, submitted_at FROM jobs WHERE key = ?", (key,)).fetchone()
         if row is None:
             return False
+        if (source == "system" and canonical_status(row["status"]) in SUBMITTED_OR_LATER
+                and canon not in SUBMITTED_OR_LATER):
+            log.warning("refused system status regression key=%s %s -> %s", key, row["status"], status)
+            return True
         sets: dict[str, Any] = {"status": status}
         changed = (row["status"] or "new") != status
         if changed:
@@ -816,11 +905,86 @@ def _decode_run(row: dict) -> dict:
     return row
 
 
+RUN_STALE_AFTER_SEC = 6 * 3600     # longer than any real run: a 'running' row this old crashed
+
+
+def _insert_run(conn: sqlite3.Connection, kind: str, summary: Any) -> int:
+    cur = conn.execute("INSERT INTO runs(kind, started_at, status, summary, pid, hostname) "
+                       "VALUES (?, ?, 'running', ?, ?, ?)",
+                       (kind, time.time(), _json_or_none(summary), os.getpid(), socket.gethostname()))
+    return int(cur.lastrowid)
+
+
 def start_run(kind: str, db_path: Path | str | None = None, summary: Any = None) -> int:
+    """Insert a 'running' row unconditionally (see claim_run for the exclusive form)."""
     with connect(db_path) as conn:
-        cur = conn.execute("INSERT INTO runs(kind, started_at, status, summary) VALUES (?, ?, 'running', ?)",
-                           (kind, time.time(), _json_or_none(summary)))
-        return int(cur.lastrowid)
+        return _insert_run(conn, kind, summary)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError, ValueError):
+        return True     # exists but not ours / unknowable: assume alive
+    return True
+
+
+def _abandon_reason(row: sqlite3.Row, now: float, stale_after_sec: float) -> Optional[str]:
+    if row["started_at"] is not None and float(row["started_at"]) < now - stale_after_sec:
+        return f"abandoned: still 'running' after {stale_after_sec / 3600:g} h"
+    pid, host = row["pid"], row["hostname"]
+    if pid is not None and host == socket.gethostname() and not _pid_alive(pid):
+        return f"abandoned: process {pid} is gone"
+    return None
+
+
+def _reap_and_find_live(conn: sqlite3.Connection, kind: str, stale_after_sec: float) -> Optional[sqlite3.Row]:
+    """Mark dead/stale 'running' rows of `kind` failed; return the newest live one."""
+    now = time.time()
+    live = None
+    for r in conn.execute("SELECT * FROM runs WHERE kind = ? AND status = 'running' "
+                          "ORDER BY started_at DESC, id DESC", (kind,)).fetchall():
+        why = _abandon_reason(r, now, stale_after_sec)
+        if why:
+            conn.execute("UPDATE runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ?",
+                         (now, why, r["id"]))
+            log.warning("run #%s marked failed (%s)", r["id"], why)
+        elif live is None:
+            live = r
+    return live
+
+
+def claim_run(kind: str, db_path: Path | str | None = None, summary: Any = None,
+              stale_after_sec: float = RUN_STALE_AFTER_SEC) -> tuple[Optional[int], Optional[dict]]:
+    """Atomically start a run of `kind` unless a live one exists.
+
+    One write transaction (BEGIN IMMEDIATE): reap abandoned rows, check for a
+    live run, insert ours. Returns (new_run_id, None) or (None, live_run). The
+    CLI / LaunchAgent and POST /api/runs/daily both go through here, so two
+    starters can never both get a run.
+    """
+    p = resolve_db_path(db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(p, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = _reap_and_find_live(conn, kind, stale_after_sec)
+            if live is not None:
+                conn.execute("COMMIT")      # keep the reaping
+                return None, _decode_run(dict(live))
+            run_id = _insert_run(conn, kind, summary)
+            conn.execute("COMMIT")
+            return run_id, None
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
 
 
 def update_run(run_id: int, *, status: Optional[str] = None, summary: Any = None,
@@ -858,14 +1022,12 @@ def list_runs(kind: Optional[str] = None, limit: int = 50,
         return [_decode_run(dict(r)) for r in conn.execute(sql, args).fetchall()]
 
 
-def running_run(kind: str, stale_after_sec: float = 6 * 3600,
+def running_run(kind: str, stale_after_sec: float = RUN_STALE_AFTER_SEC,
                 db_path: Path | str | None = None) -> Optional[dict]:
-    """The newest still-'running' run of `kind` started within stale_after_sec
-    (an older one is a crashed process, not a live run)."""
+    """The newest live 'running' run of `kind`. Rows older than stale_after_sec,
+    or whose process (same host) is dead, are marked failed ('abandoned')."""
     with connect(db_path) as conn:
-        row = conn.execute("SELECT * FROM runs WHERE kind = ? AND status = 'running' AND started_at > ? "
-                           "ORDER BY started_at DESC LIMIT 1",
-                           (kind, time.time() - stale_after_sec)).fetchone()
+        row = _reap_and_find_live(conn, kind, stale_after_sec)
     return _decode_run(dict(row)) if row else None
 
 

@@ -318,3 +318,42 @@ def test_check_lines_folds_accents_and_unicode_dashes():
     out = check_lines([{"text": "Engineered an LLM‑powered résumé-tailoring stage with versioned PDF storage.",
                         "fact_ids": ["f1"]}], facts)
     assert out["clean"], out["lines"][0]
+
+
+# --- capability claims (v3) ---------------------------------------------------
+from jobcopilot.grounding import capability_claims  # noqa: E402
+
+
+@pytest.mark.parametrize("text", [
+    "Built a Go order service handling 200+ requests per second in production.",
+    "Built an end-to-end Go order service handling 200+ requests per second.",
+    "Owned a Go order service handling 200+ requests per second behind a REST API.",
+    "Built a Go order service handling 200+ requests per second, showcasing deep expertise in Kafka streaming.",
+    "Built a Go order service handling 200+ requests per second; this demonstrates strong backend skills.",
+])
+def test_v3_capability_claims_flag_resume_lines(text):
+    g = _one(text, rephrased=True)
+    assert not g["clean"]
+    assert g["flags"]["unsupported_claims"] or g["flags"]["inflated_claims"], g["flags"]
+
+
+def test_v3_capability_claims_supported_by_own_fact():
+    facts = {"p": "Ran the end-to-end ingestion pipeline in production for 3 hospitals."}
+    g = check_lines([{"text": facts["p"], "fact_ids": ["p"]}], facts)
+    assert g["clean"], g["flags"]
+    assert capability_claims("I have experience with the ingestion pipeline in production.", facts["p"]) == []
+
+
+def test_v3_capability_claims_ignore_pseudo_context_and_can_be_skipped():
+    facts = {"b1": FACTS["b1"], "_role": "Forward Deployed Engineer AI agents production"}
+    line = {"text": "I bring experience scaling AI agents to production.", "fact_ids": ["b1", "_role"]}
+    g = check_lines([line], facts)
+    assert g["flags"]["unsupported_claims"], g["flags"]          # the role text is not evidence
+    g = check_lines([dict(line, check_claims=False)], facts)
+    assert g["flags"]["unsupported_claims"] == []
+
+
+def test_v3_capability_claim_phrase_reported_once():
+    out = capability_claims("This experience demonstrates my skills needed for end-to-end AI deployment.",
+                            FACTS["b1"])
+    assert len(out) == 1 and out[0].startswith("This experience demonstrates")

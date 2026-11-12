@@ -222,17 +222,33 @@ _SYNONYMS: list[set[str]] = [
 ]
 _SYN_INDEX = {w: i for i, g in enumerate(_SYNONYMS) for w in g}
 # When a chosen value isn't offered, the closest options in order (user's rule:
-# "Asian" when "South Asian" isn't offered).
-_FALLBACKS = {
-    "south asian": ["south asian", "asian indian", "indian", "asian", "asian not hispanic or latino"],
-    "indian": ["indian", "asian indian", "south asian", "asian"],
-    "asian indian": ["asian indian", "south asian", "asian"],
-    "company careers page": ["company careers page", "company website", "other"],
+# "Asian" when "South Asian" isn't offered). Keyed by the rule that may use them:
+# race fallbacks never apply to a country / nationality field.
+_FALLBACKS_BY_KIND = {
+    "race": {
+        "south asian": ["south asian", "asian indian", "indian", "asian", "asian not hispanic or latino"],
+        "indian": ["indian", "asian indian", "south asian", "asian"],
+        "asian indian": ["asian indian", "south asian", "asian"],
+    },
+    "how_heard": {
+        "company careers page": ["company careers page", "company website", "other"],
+    },
 }
+_FALLBACKS = {k: v for d in _FALLBACKS_BY_KIND.values() for k, v in d.items()}
+
+
+def _fallbacks(v: str, kind: str) -> list[str]:
+    table = _FALLBACKS_BY_KIND.get(kind) if kind else _FALLBACKS
+    return [x for x in (table or {}).get(v, []) if x != v]
+
+
 _DECLINE_RE = re.compile(r"prefer not|decline|dont wish|do not wish|do not want|not to (say|answer|disclose)|"
                          r"rather not|choose not|not specified|not disclose", re.I)
+# "Not applicable", "N/A", "None of the above": their own class, never "no".
+_NA_RE = re.compile(r"^(not applicable|n a|na|none of the above|none of these|not relevant|"
+                    r"does not apply|doesnt apply|other)$|\bnot applicable\b|\bnone of the above\b")
 _NEG_RE = re.compile(r"^(no|none|never|false|not)\b|\b(not|dont|do not|am not|have not|havent|"
-                     r"cannot|cant|will not|wont|no longer|never|without)\b")
+                     r"cannot|cant|will not|wont|no longer|never)\b")
 _YES_WORDS = {"yes", "y", "true", "i do", "i am", "i have", "i will", "agree", "yes i am",
               "yes i do", "yes i have", "yes i will"}
 _NO_WORDS = {"no", "n", "false", "i do not", "i am not", "i have not", "i will not", "none",
@@ -265,33 +281,103 @@ def _contains(hay: str, needle: str) -> bool:
 
 
 def _polarity(text: str) -> str:
+    """yes | no | decline | na | "" for an answer or option text."""
     t = norm(text)
     if _DECLINE_RE.search(t):
         return "decline"
+    if _NA_RE.search(t):
+        return "na"
     if t in _YES_WORDS or re.match(r"^yes\b", t):
         return "yes"
-    if t in _NO_WORDS or _NEG_RE.search(t):
+    if t in _NO_WORDS or re.match(r"^no\b", t) or _NEG_RE.search(t):
         return "no"
     if re.match(r"^(i am|i have|i do|i will|i identify|i can|i agree|i consent)\b", t):
         return "yes"
     return ""
 
 
+# Work authorisation / sponsorship options are matched by meaning, not by
+# negation words ("authorized ... without sponsorship" is a yes to "authorized").
+_NEGATED = r"(not|dont|do not|does not|will not|wont|never|no longer|cannot|cant|no)( \w+){0,3} "
+_NEED_SPONSOR_RE = re.compile(r"\b(require|requires|required|need|needs|needed|seek|seeking|will need)\b"
+                              r"( \w+){0,4} (sponsor\w*|visa|work permit|h ?1 ?b)")
+_NO_SPONSOR_RE = re.compile(r"\b(without|no) (\w+ ){0,2}(sponsor\w*|visa)|"
+                            + _NEGATED + r"(require|need|seek)\w*( \w+){0,4} (sponsor\w*|visa)")
+_AUTH_RE = re.compile(r"\b(authori[sz]ed|eligible|permitted|entitled|allowed|citizen|permanent resident|"
+                      r"green card|right to work|work permit holder)\b")
+_NOT_AUTH_RE = re.compile(r"\b(not|un|no longer|never)( \w+){0,3} ?(authori[sz]ed|eligible|permitted|"
+                          r"entitled|allowed)\b|\bunauthori[sz]ed\b|\bineligible\b")
+
+
+def _auth_meaning(text: str) -> tuple[Optional[bool], Optional[bool]]:
+    """(authorised?, needs sponsorship?) stated by an option; None = not stated."""
+    t = norm(text)
+    if _NO_SPONSOR_RE.search(t):
+        sponsor: Optional[bool] = False
+    elif _NEED_SPONSOR_RE.search(t):
+        sponsor = True
+    else:
+        sponsor = None
+    if _NOT_AUTH_RE.search(t):
+        auth: Optional[bool] = False
+    elif _AUTH_RE.search(t):
+        auth = True
+    else:
+        auth = None
+    return auth, sponsor
+
+
+def _option_says(option: str, kind: str) -> Optional[bool]:
+    """Whether an option answers the question yes (True) / no (False) / unclear (None)."""
+    n = norm(option)
+    if re.match(r"^yes\b", n):
+        return True
+    if re.match(r"^no\b", n) and not _NA_RE.search(n):
+        return False
+    if kind in ("work_auth", "sponsorship"):
+        auth, sponsor = _auth_meaning(n)
+        if kind == "work_auth":
+            if auth is not None and not (auth and sponsor):
+                return auth
+            if auth is None and sponsor is not None:
+                return not sponsor
+            return None                     # "authorized but will need sponsorship": ask
+        if sponsor is not None:
+            return sponsor
+        if auth is True:
+            return False                    # authorised, no sponsorship mentioned
+        return None
+    p = _polarity(n)
+    return {"yes": True, "no": False}.get(p)
+
+
+def _pick_polar(cands: list[str], score: float) -> tuple[Optional[str], float]:
+    """One option among several with the same polarity: prefer an option that
+    starts with Yes / No; if several still differ, it's ambiguous (low score)."""
+    if not cands:
+        return None, 0.0
+    lead = [o for o in cands if re.match(r"^(yes|no)\b", norm(o))]
+    pool = lead or cands
+    if len({norm(o) for o in pool}) == 1:
+        return pool[0], score
+    return min(pool, key=len), 0.5          # differing meanings: shown, needs the user
+
+
 def match_option(value: Any, options: list[str], *, kind: str = "") -> tuple[Optional[str], float]:
-    """Best option for `value`: exact → synonym → yes/no polarity → degree
+    """Best option for `value`: exact → synonym → yes/no meaning → degree
     level → whole-word containment → word overlap. (None, 0) when no option
-    scores ≥ 0.5."""
+    scores ≥ 0.5. Country kinds (nationality / citizenship / country) match a
+    country by its canonical name; anything weaker scores < 0.9."""
     if not options or _empty(value):
         return None, 0.0
     opts = [(o, norm(o)) for o in options if str(o).strip()]
     if isinstance(value, bool):
-        want = "yes" if value else "no"
-        cands = [o for o, n in opts if _polarity(n) == want]
-        if cands:
-            return min(cands, key=len), 0.95
-        return None, 0.0
+        cands = [o for o, _ in opts if _option_says(o, kind) is value]
+        return _pick_polar(cands, 0.95)
     v = norm(value)
-    tries = [v] + [x for x in _FALLBACKS.get(v, []) if x != v]
+    if kind in COUNTRY_KINDS:
+        return _match_country(v, opts)
+    tries = [v] + _fallbacks(v, kind)
     for i, t in enumerate(tries):
         decay = 1.0 - 0.05 * i
         for o, n in opts:
@@ -303,10 +389,17 @@ def match_option(value: Any, options: list[str], *, kind: str = "") -> tuple[Opt
                 if _SYN_INDEX.get(n) == g:
                     return o, round(0.95 * decay, 3)
     pol = _polarity(v)
-    if pol in ("yes", "no", "decline") and len(v.split()) <= 4:
+    if pol in ("yes", "no", "decline", "na"):
         cands = [o for o, n in opts if _polarity(n) == pol]
-        if cands:
-            return min(cands, key=len), 0.9
+        if cands and (len(v.split()) <= 4 or pol in ("decline", "na")):
+            return _pick_polar(cands, 0.9)
+        if cands and pol in ("yes", "no"):
+            # a longer statement ("I am not a protected veteran"): the same-polarity
+            # option with the most words in common
+            vw = _words(v)
+            best = max(cands, key=lambda o: len(vw & _words(o)) / len(vw | _words(o)))
+            if len(vw & _words(best)) / len(vw | _words(best)) >= 0.3:
+                return best, 0.85
     if kind == "degree" or degree_level(v):
         lvl = degree_level(v)
         cands = [o for o, n in opts if lvl and degree_level(n) == lvl]
@@ -328,6 +421,54 @@ def match_option(value: Any, options: list[str], *, kind: str = "") -> tuple[Opt
             if j > score:
                 best, score = o, j
     return (best, round(score * 0.8, 3)) if score >= 0.5 else (None, 0.0)
+
+
+# --- countries
+
+COUNTRY_KINDS = ("nationality", "citizenship", "country")
+_DEMONYMS = {
+    "indian": "india", "american": "united states", "us citizen": "united states",
+    "british": "united kingdom", "english": "united kingdom", "scottish": "united kingdom",
+    "welsh": "united kingdom", "canadian": "canada", "german": "germany", "french": "france",
+    "australian": "australia", "singaporean": "singapore", "chinese": "china", "japanese": "japan",
+    "irish": "ireland", "dutch": "netherlands", "swiss": "switzerland", "swedish": "sweden",
+    "polish": "poland", "spanish": "spain", "italian": "italy", "portuguese": "portugal",
+    "pakistani": "pakistan", "bangladeshi": "bangladesh", "nepali": "nepal", "nepalese": "nepal",
+    "sri lankan": "sri lanka", "emirati": "united arab emirates", "uae": "united arab emirates",
+    "new zealander": "new zealand", "kiwi": "new zealand", "mexican": "mexico", "brazilian": "brazil",
+    "russian": "russia", "south korean": "south korea", "korean": "south korea", "israeli": "israel",
+    "filipino": "philippines", "indonesian": "indonesia", "malaysian": "malaysia", "thai": "thailand",
+    "vietnamese": "vietnam", "nigerian": "nigeria", "kenyan": "kenya", "south african": "south africa",
+    "egyptian": "egypt", "turkish": "turkey", "belgian": "belgium", "austrian": "austria",
+    "danish": "denmark", "norwegian": "norway", "finnish": "finland", "greek": "greece",
+}
+_COUNTRY_GROUPS = {"india": _SYNONYMS[4], "united states": _SYNONYMS[5], "united kingdom": _SYNONYMS[6]}
+
+
+def canonical_country(text: Any) -> str:
+    """'india' for India / IND / Indian / Republic of India; else the normalised text."""
+    t = norm(text)
+    t = re.sub(r"^(a |an |the )", "", t)
+    t = re.sub(r" (citizen|citizenship|national|nationality)$", "", t)
+    t = _DEMONYMS.get(t, t)
+    for name, g in _COUNTRY_GROUPS.items():
+        if t in g:
+            return name
+    return t
+
+
+def _match_country(v: str, opts: list[tuple[str, str]]) -> tuple[Optional[str], float]:
+    want = canonical_country(v)
+    for o, n in opts:                       # exact / normalised equality first
+        if n == v:
+            return o, 1.0
+    eq = [o for o, n in opts if canonical_country(n) == want]
+    if eq:
+        return min(eq, key=len), 0.95
+    inside = [o for o, n in opts if _contains(n, want) or _contains(n, v)]
+    if inside:                              # "India" inside "British Indian Ocean Territory"-like: ask
+        return min(inside, key=len), 0.5
+    return None, 0.0
 
 
 # --------------------------------------------------------------------------- dates, numbers
@@ -413,7 +554,7 @@ def _job_country(ctx: _Ctx) -> str:
     """'india' | 'other' | '' from a country named in the question, else the job."""
     if re.search(r"\b(india|indian)\b", ctx.q):
         return "india"
-    if (re.search(r"\b(US|USA|U\.S\.A?\.?|UK|EU)\b", ctx.raw)
+    if (re.search(r"\b(US|USA|UK|EU)\b|\bU\.S\.?(A\.?)?(?![A-Za-z])|\bU\.K\.?(?![A-Za-z])", ctx.raw)
             or re.search(r"\b(united states|america|united kingdom|britain|canada|germany|europe|"
                          r"european union|singapore|australia|netherlands|ireland|france|uae|"
                          r"dubai|japan|new zealand|switzerland|sweden|poland|spain)\b", ctx.q)):
@@ -515,17 +656,27 @@ def h_citizenship(ctx: _Ctx) -> Answer:
     a = _from(ctx.bank, "personal.citizenship", "citizenship")
     yes_no = re.search(r"\b(are you|is your)\b", ctx.q)
     if a.value != "" and yes_no:
-        cit = norm(a.value)
+        cit = canonical_country(a.value)
         country = _job_country(ctx)
         if country == "india":
-            a.value = cit in _SYNONYMS[4] or "india" in cit
+            a.value = cit == "india"
         elif country == "other":
-            asked = [g for g in _SYNONYMS[5:7] if any(_contains(ctx.q, w) for w in g if len(w) > 2)
-                     or re.search(r"\b(US|USA|UK)\b", ctx.raw)]
+            asked = [name for name, (g, tokens) in _CITIZEN_ASK.items()
+                     if any(_contains(ctx.q, w) for w in g if len(w) > 2) or re.search(tokens, ctx.raw)]
             if not asked:
                 return Answer("", a.source, 0.0, True, "couldn't tell which country is asked", "citizenship")
-            a.value = any(_SYN_INDEX.get(cit) == _SYN_INDEX.get(next(iter(g))) for g in asked)
+            a.value = cit in asked
     return a
+
+
+# Each country is tested against its own words: a US citizen asked "Are you a UK
+# citizen?" must not answer yes.
+_CITIZEN_ASK = {
+    "united states": ({"united states", "usa", "united states of america", "america", "american"},
+                      r"\b(US|USA|U\.S\.A?\.?)(?![A-Za-z])"),
+    "united kingdom": ({"united kingdom", "great britain", "britain", "british"},
+                       r"\b(UK|U\.K\.?|GB)(?![A-Za-z])"),
+}
 
 
 def _authorised(text: str) -> Optional[bool]:
@@ -817,6 +968,80 @@ def h_emp_start(ctx: _Ctx) -> Answer:
     return _date_or_year(ctx, _from(ctx.bank, "employment.current_start_date", "employment_start"))
 
 
+_UNIT_YEARS = (("years", 1.0, r"years?|yrs?|y"), ("months", 1 / 12, r"months?|mos?|m"),
+               ("weeks", 1 / 52, r"weeks?|wks?|w"), ("days", 1 / 365, r"days?|d"))
+
+
+def _years_range(option: str) -> Optional[tuple[float, float, bool, bool]]:
+    """(lo, hi, lo_inclusive, hi_inclusive) in years for an experience option:
+    "0-6 months", "6 months - 1 year", "1-2 years", "less than 1 year",
+    "more than 5 years", "5+ years", "up to 2 years", "Fresher". None = can't tell.
+    A number takes the unit written after it, else the next unit in the text."""
+    t = norm(option).replace("+", " + ")
+    if re.fullmatch(r"(fresher|no experience|none|entry level|0)( experience)?", t.strip()):
+        return (0.0, 0.0, True, True)
+    toks = re.findall(r"\d+(?:\.\d+)?|[a-z]+|\+", t)
+    nums: list[list] = []                       # [value, unit factor or None]
+    for i, tok in enumerate(toks):
+        if re.fullmatch(r"\d+(?:\.\d+)?", tok):
+            nums.append([float(tok), None])
+            continue
+        for _, f, rx in _UNIT_YEARS:
+            if re.fullmatch(rx, tok):
+                for n in reversed(nums):
+                    if n[1] is not None:
+                        break
+                    n[1] = f
+                break
+    if not nums:
+        return None
+    if any(n[1] is None for n in nums):
+        if re.search(r"\b(years?|yrs?|months?|weeks?|days?)\b", t):
+            return None                         # a number with no unit after it, e.g. "1 year 6"
+        for n in nums:                          # no unit at all: years (the question's unit)
+            n[1] = 1.0
+    vals = [n[0] * n[1] for n in nums]
+    if re.search(r"\b(less than|under|below|fewer than)\b", t):
+        return (0.0, vals[0], True, False)
+    if re.search(r"\b(up to|upto|within|or less|at most|max|maximum)\b", t):
+        return (0.0, vals[0], True, True)
+    if re.search(r"\b(more than|over|above|greater than)\b", t):
+        return (vals[0], math.inf, False, True)
+    if re.search(r"\+|\b(or more|at least|and above|plus|min|minimum)\b", t):
+        return (vals[0], math.inf, True, True)
+    if len(vals) >= 2:
+        if not re.search(r"\d\s*[a-z.]*\s*(-|–|—|\bto\b|\band\b)\s*\d", option.lower()):
+            if nums[0][1] > nums[1][1]:         # "1 year 6 months" = 1.5 years
+                v = vals[0] + vals[1]
+                return (v, v, True, True)
+            return None
+        return (min(vals[:2]), max(vals[:2]), True, True)
+    return (vals[0], vals[0], True, True)
+
+
+def _experience_option(years: float, options: list[str]) -> tuple[Optional[str], str]:
+    """The one option whose range contains `years` (ranges share edges: "1-2" and
+    "2-5" both hold 2.0, and the one starting there wins). (None, why) otherwise."""
+    eps = 1e-9
+    hits = []
+    for o in options:
+        r = _years_range(o)
+        if not r:
+            continue
+        lo, hi, lo_in, hi_in = r
+        if (lo < years - eps or (lo_in and abs(years - lo) <= eps)) and \
+                (years < hi - eps or (hi_in and abs(years - hi) <= eps)):
+            hits.append((o, lo, hi))
+    if len(hits) > 1:                           # shared edge: prefer the range that starts there
+        starts = [h for h in hits if abs(h[1] - years) <= eps and h[2] > h[1]]
+        if len(starts) == 1:
+            hits = starts
+    if len(hits) == 1:
+        return hits[0][0], ""
+    return None, ("no option covers your experience" if not hits
+                  else "more than one option covers your experience")
+
+
 def h_experience(ctx: _Ctx) -> Answer:
     try:
         from .scoring import TECH_VOCAB
@@ -841,17 +1066,11 @@ def h_experience(ctx: _Ctx) -> Answer:
         val: Any = months if re.search(r"\bmonths?\b", ctx.q) and not re.search(r"\byears?\b", ctx.q) \
             else months // 12
         if ctx.options:
-            yrs = months / 12
-            scored = []
-            for o in ctx.options:
-                r = _days_range(re.sub(r"\byears?\b|\byrs?\b", "", o))
-                if r:
-                    dist = 0 if r[0] <= yrs <= r[1] else min(abs(yrs - r[0]), abs(yrs - r[1]))
-                    scored.append((dist, o))
-            if scored:
-                dist, best = min(scored, key=lambda x: x[0])
-                val = best
-                a.confidence = 1.0 if dist < 1e-9 else 0.6
+            best, why = _experience_option(months / 12, ctx.options)
+            if best is None:
+                return Answer("", a.source, 0.0, True, f"{why} ({fmt_years_months(months)})",
+                              "experience", a.status)
+            val = best
     else:
         val = fmt_years_months(months)
     a.value = val
@@ -864,20 +1083,49 @@ def h_experience(ctx: _Ctx) -> Answer:
 _INTERVAL_MULT = {"YEAR": 1, "MONTH": 12, "WEEK": 52, "DAY": 260, "HOUR": 2080}
 
 
+_CURRENCY_MARKS = [   # checked in order: C$ / S$ / A$ before a bare $
+    ("INR", r"\b(lpa|lakh|lakhs|lac|lacs|inr|rupees?|crore)\b", "₹"),
+    ("GBP", r"\b(gbp|pounds?( sterling)?|sterling)\b", "£"),
+    ("CAD", r"\b(cad|canadian dollars?)\b", "C$"),
+    ("SGD", r"\b(sgd|singapore dollars?)\b", "S$"),
+    ("AUD", r"\b(aud|australian dollars?)\b", "A$"),
+    ("EUR", r"\b(eur|euros?)\b", "€"),
+    ("USD", r"\b(usd|us dollars?|dollars?)\b", "$"),
+]
+
+
+def _question_currency(ctx: _Ctx) -> str:
+    raw = ctx.raw
+    for cur, rx, sym in _CURRENCY_MARKS:
+        if re.search(rx, ctx.q):
+            return cur
+        if sym == "$":
+            if re.search(r"(?<![A-Za-z])(?<!US)\$|US\$", raw) and not re.search(r"(?<![A-Za-z])[CSA]\$", raw):
+                return cur
+        elif sym in raw and (len(sym) == 1 or re.search(r"(?<![A-Za-z])" + re.escape(sym), raw)):
+            return cur
+    return ""
+
+
 def _currency(ctx: _Ctx) -> str:
-    if re.search(r"\b(lpa|lakh|lakhs|lac|inr|rupees?|ctc)\b", ctx.q) or "₹" in ctx.raw:
-        return "INR"
-    if re.search(r"\busd\b|\bdollars?\b", ctx.q) or "$" in ctx.raw:
-        return "USD"
-    if re.search(r"\beur\b|\beuros?\b", ctx.q) or "€" in ctx.raw:
-        return "EUR"
+    """The currency the answer must be in, or "" when it can't be told (ask).
+    The question's own currency wins; then the job's posted comp_currency; then
+    an Indian job (or the word CTC with nothing else) means INR. A remote /
+    unknown-country job with neither never defaults to INR or USD."""
+    q = _question_currency(ctx)
+    if q:
+        return q
     job = ctx.job or {}
-    cur = str(job.get("comp_currency") or "").upper()
-    if cur in ("INR", "USD", "EUR"):
+    cur = re.sub(r"[^A-Z]", "", str(job.get("comp_currency") or "").upper())
+    if len(cur) == 3:
         return cur
-    if job.get("country_bucket") == "non-IN":
-        return "USD"
-    return "INR"
+    if job.get("country_bucket") == "IN":
+        return "INR"
+    if re.search(r"\b(ctc|cost to company)\b", ctx.q) and job.get("country_bucket") not in ("non-IN", "unknown") \
+            and not job.get("remote") and str(job.get("workplace_type") or "").lower() != "remote" \
+            and _job_country(ctx) != "other":
+        return "INR"
+    return ""
 
 
 def _posted_range(job: dict, currency: str) -> Optional[tuple[float, float]]:
@@ -913,6 +1161,9 @@ def h_expected_ctc(ctx: _Ctx) -> Answer:
     needs = status != "approved"
     cur = _currency(ctx)
     job = ctx.job or {}
+    if not cur:
+        return Answer("", f"answers.yaml:{base}", 0.0, True,
+                      "couldn't tell which currency the answer should be in", "expected_ctc", status)
     if ctx.field_type == "textarea" and cur == "INR":
         return _from(ctx.bank, f"{base}.inr_free_text", "expected_ctc")
     if cur == "INR":
@@ -941,6 +1192,9 @@ def h_expected_ctc(ctx: _Ctx) -> Answer:
         return Answer(f"{_fmt_num(amount)} LPA", f"answers.yaml:{path}", 1.0, needs, note, "expected_ctc", status)
     k = cur.lower()
     floor, default = _num(ec.get(f"{k}_floor")), _num(ec.get(f"{k}_default"))
+    if floor is None and default is None:
+        return Answer("", f"answers.yaml:{base}.{k}_default", 0.0, True,
+                      f"no {cur} expectation (floor or default) in answers.yaml", "expected_ctc", status)
     rng = _posted_range(job, cur)
     if rng:
         amount, path = rng[0] + 0.75 * (rng[1] - rng[0]), f"{base}.rule_when_range_posted"
@@ -1078,7 +1332,9 @@ _ADDR_CTX = r"(address|residence|reside|live|living|current|permanent|home|maili
 RULES: list[tuple[str, str, Any]] = [
     ("consent", r"\b(i agree|i consent|i acknowledge|i certify|i confirm|i understand|consent|privacy (policy|notice)|"
                 r"terms (and|of)|acknowledge|attest|gdpr|data processing|subscribe|newsletter|marketing|"
-                r"signature|e signature|sign here|accurate and complete|true and complete)\b",
+                r"signature|e signature|sign here|accurate and complete|true and complete|"
+                r"i authori[sz]e|i hereby|hereby|i declare|i accept|by (checking|clicking|ticking|selecting|"
+                r"submitting)|sign|signed|signing)\b",
      h_never("consent / attestation / signature: only you can give this", "consent")),
     ("hispanic", r"hispanic|latin[oax]\b", h_eeo("voluntary_disclosures.hispanic_latino")),
     ("race", r"\b(race|racial|ethnicity|ethnic)\b", h_eeo("voluntary_disclosures.race_ethnicity")),
@@ -1196,6 +1452,32 @@ OPEN_RE = re.compile(
     r"most (challenging|interesting|significant|impactful)|a project (you|that)|why should we")
 
 
+# A checkbox that states something in the first person, or asks you to agree /
+# authorise / declare, is a consent or attestation: only the user ticks it.
+_ATTEST_RE = re.compile(
+    r"^(i|im|i am|i have|i will|i do|we)\b|\bby (checking|clicking|ticking|selecting|submitting)\b|"
+    r"\bauthori[sz](e|es|ing|ation)\b|\bdeclare\b|\bhereby\b|\baccept\b|\bagree\b|\backnowledge\b|"
+    r"\bconfirm that\b|\bcertify\b|\bconsent\b|\bterms\b|\bprivacy\b|\bpolicy\b|\battest\b|"
+    r"\bundertak(e|ing)\b|\bpermission\b")
+
+
+def _is_attestation(ctx: _Ctx) -> bool:
+    if ctx.field_type != "checkbox":
+        return False
+    texts = [ctx.q]
+    if len(ctx.options) <= 1:               # a single tick box: its label is the statement
+        texts += [norm(o) for o in ctx.options]
+    for t in texts:
+        if not t:
+            continue
+        if _ATTEST_RE.search(t):
+            if len(ctx.options) > 1 and re.match(r"^(i|im|we)\b", t) and not re.search(
+                    r"authori|declare|hereby|accept|agree|acknowledge|confirm|certify|consent|attest", t):
+                continue                    # "I identify as (select all)": a multi-choice group
+            return True
+    return False
+
+
 def _address_ok(ctx: _Ctx) -> bool:
     return len(ctx.q.split()) <= 6 or re.search(_ADDR_CTX, ctx.q) is not None
 
@@ -1211,11 +1493,12 @@ def _finalize(a: Answer, ctx: _Ctx) -> Answer:
     ft = ctx.field_type
     if opts and isinstance(a.value, str) and a.value in opts:
         return a
+    kind = "country" if a.rule == "address" and a.source.endswith(".country") else a.rule
     if opts:
         if isinstance(a.value, list):
             picked, scores = [], []
             for item in a.value:
-                o, s = match_option(item, opts)
+                o, s = match_option(item, opts, kind=kind)
                 if o and o not in picked:
                     picked.append(o)
                     scores.append(s)
@@ -1226,13 +1509,16 @@ def _finalize(a: Answer, ctx: _Ctx) -> Answer:
             a.value = picked if ft == "checkbox" else picked[0]
             a.confidence = round(a.confidence * min(scores), 3)
         else:
-            o, s = match_option(a.value, opts, kind=a.rule)
+            o, s = match_option(a.value, opts, kind=kind)
             if not o:
                 return _no_option(a)
             a.value = [o] if ft == "checkbox" else o
             a.confidence = round(a.confidence * s, 3)
             if s < 0.8:
                 a.note = (a.note + "; " if a.note else "") + "closest option, please check"
+            if kind in COUNTRY_KINDS and s < 0.9:
+                a.needs_user = True
+                a.note = (a.note + "; " if a.note else "") + "no option names that country exactly"
         if a.confidence < 0.6:
             a.needs_user = True
         return a
@@ -1289,6 +1575,8 @@ def answer_question(question: str, *, field_type: str = "text", options: Optiona
                today or dt.date.today(), company, required)
     if not ctx.q:
         return _none("empty question")
+    if _is_attestation(ctx):
+        return _none("consent / attestation / authorisation checkbox: only you can tick this", "consent")
     for name, rx, handler in _COMPILED:
         if not rx.search(ctx.q):
             continue

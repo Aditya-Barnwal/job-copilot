@@ -346,3 +346,147 @@ def test_latex_error_is_reported(tmp_path):
     with pytest.raises(L.LatexError) as e:
         L.compile_tex(r"\documentclass{article}\begin{document}\undefinedmacro\end{document}")
     assert "Undefined control sequence" in e.value.log_tail
+
+
+# --------------------------------------------------------------------------- Phase 3 review fixes
+
+def _tex_ok(body: str) -> bool:
+    pre = ("\\documentclass{article}\\usepackage[T1]{fontenc}\\usepackage[utf8]{inputenc}"
+           "\\usepackage{times}\\usepackage{textcomp}\\begin{document}\n")
+    try:
+        L.compile_tex(pre + body + "\n\\end{document}\n", jobname="probe")
+        return True
+    except L.LatexError:
+        return False
+
+
+NO_T1 = "ĦħĸĿŀŉŦŧſ"
+
+
+def test_r3_8_latin_without_t1_takes_unsupported_path():
+    for ch in NO_T1:
+        assert ch not in L.LATIN_PASSTHROUGH
+        assert L.unsupported_chars(f"a{ch}b") == [ch]
+        assert latex_escape(f"a{ch}b") == "ab"
+    assert latex_escape("Łódź Ærø Šťastný") == "Łódź Ærø Šťastný"
+
+
+@needs_tex
+def test_r3_8_every_allowed_char_compiles():
+    allowed = "".join(sorted(L.LATIN_PASSTHROUGH))
+    assert len(allowed) == 190
+    assert _tex_ok(latex_escape(allowed))
+    assert not _tex_ok("Ħ")                    # why it is excluded
+
+
+@needs_tex
+def test_r3_8_no_t1_char_in_a_bullet_still_compiles(fx, tmp_path):
+    c = build_content("backend_sde", fx, edit_plan={"rephrase": {"exp.acme.b1": "Ported the Ħſ module."}})
+    r = render(c, "backend_sde", tmp_path / "out")
+    assert r.pages == 1 and any("U+0126" in w and "exp.acme.b1" in w for w in r.warnings)
+
+
+def test_r3_7_dropped_char_in_locked_field_refuses(fx, tmp_path):
+    def setters(c):
+        acme = c.section("experience").items[0]
+        edu = c.section("education").items[0]
+        return {"title": lambda: setattr(acme, "title", "Acme ✓ Widgets"),
+                "detail": lambda: setattr(acme, "detail", "Software ✓ Engineer"),
+                "dates": lambda: setattr(acme, "detail_right", "Jan 2024 ⟶ Present"),
+                "degree": lambda: setattr(edu, "detail", "B.Sc. ✓"),
+                "grade": lambda: setattr(edu, "detail_right", "GPA: 3.7 ✓"),
+                "name": lambda: setattr(c.header, "name", "Alex ✓ Example"),
+                "contact": lambda: setattr(c.header.contact[1], "text", "+1 555 ✆ 0100"),
+                "link": lambda: setattr(c.header.links[0], "text", "LinkedIn ✓"),
+                "number": lambda: setattr(acme.bullets[0], "text", "Cut latency by 3⅓ times."),
+                "digit-adjacent": lambda: setattr(acme.bullets[0], "text", "Cut cost by 30٪.")}
+    for what in setters(build_content("backend_sde", fx)):
+        c = build_content("backend_sde", fx)
+        setters(c)[what]()
+        errors, _ = R.check_characters(c)
+        assert errors, what
+        with pytest.raises(R.UnsupportedCharacters, match="no LaTeX glyph"):
+            render(c, "backend_sde", tmp_path / what)
+
+
+def test_r3_7_dropped_char_elsewhere_is_a_warning_naming_the_field(fx):
+    c = build_content("backend_sde", fx)
+    proj = c.section("projects").items[0]
+    proj.tech = ["Python ✓"]
+    c.section("experience").items[0].bullets[0].text = "Built ✓ things."
+    c.section("skills").groups[0].heading = "Languages ✓"
+    errors, warnings = R.check_characters(c)
+    assert errors == []
+    joined = " ".join(warnings)
+    for label in ("projects[proj.widgetbot].tech", "experience[exp.acme.b1]", "skills.group[Languages ✓]"):
+        assert label in joined
+    assert "U+2713" in joined
+
+
+def test_r3_9_url_caret_and_payloads():
+    payloads = ["https://x.example/^^5cmessage^^28pwned^^29",
+                "https://x.example/a^^5cinput^^7b/etc/passwd^^7d",
+                "https://x.example/^^5cdef^^5cx^^7b^^7d~u",
+                "https://x.example/%^^5c#^"]
+    for p in payloads:
+        u = latex_url(p)
+        assert u and "^" not in u and "~" not in u, u
+        assert "\\%5E" in u
+    for bad in ("https://x.example/\x01a", "https://x.example/a\x7f", "https://x.example/é"):
+        assert latex_url(bad) == ""
+
+
+@needs_tex
+def test_r3_9_url_payloads_compile_without_control_sequences(fx, tmp_path):
+    c = build_content("backend_sde", fx)
+    c.header.links[0].url = "https://x.example/^^5cmessage^^28pwned^^29^^5cinput^^7b/etc/passwd^^7d"
+    c.header.links[1].url = "https://x.example/a^^5cdef^^5cx^^7b^^7d~u$v&w_z"
+    r = render(c, "backend_sde", tmp_path / "out")
+    from pypdf import PdfReader
+    uris = [str(a.get_object()["/A"]["/URI"]) for a in PdfReader(str(r.pdf_path)).pages[0]["/Annots"]]
+    assert "https://x.example/%5E%5E5cmessage%5E%5E28pwned%5E%5E29%5E%5E5cinput%5E%5E7b/etc/passwd%5E%5E7d" in uris
+    assert "https://x.example/a%5E%5E5cdef%5E%5E5cx%5E%5E7b%5E%5E7d%7Eu$v&w_z" in uris
+    for u in uris:
+        assert not any(x in u for x in ("\\message", "\\input", "\\def", "\\", "^"))
+
+
+REVIEWER_SENTENCE = ("Asked “why?” then ‘really?’ and said: wow!‘yes’ or ?‘no’ ,, a-b, 1–2, "
+                     "a—b, x--y, Rs. 5 Cr done")
+
+
+def test_r3_10_ligatures_judged_on_emitted_chars():
+    assert latex_escape("?‘no’") == "?{}`no'"                  # not ¿
+    assert latex_escape("!‘yes’") == "!{}`yes'"                # not ¡
+    assert latex_escape("a,,b") == "a,{},b"                    # not „
+    assert latex_escape("1-✓-2") == "1-{}-2"                   # dropped char in between: still two hyphens
+    assert latex_escape("’'") == "'{}'"
+    assert latex_escape("—-") == "---{}-"
+
+
+@needs_tex
+def test_r3_10_reviewer_sentence_round_trips(fx, tmp_path):
+    c = build_content("backend_sde", fx, edit_plan={"rephrase": {"exp.acme.b1": REVIEWER_SENTENCE}})
+    r = render(c, "backend_sde", tmp_path / "out")
+    assert REVIEWER_SENTENCE in re.sub(r"\s+", " ", r.text)
+    assert "¿" not in r.text and "¡" not in r.text and "„" not in r.text
+
+
+def test_r3_12_ats_probe_uses_escaper_mapping(fx):
+    c = build_content("backend_sde", fx)
+    c.section("experience").items[0].bullets[0].text = "Saved ₹5 Cr… for “core” teams ✓ quickly"
+    lines = []
+    for s in c.sections:
+        lines.append(s.heading)
+        for it in s.items:
+            lines += [b.text for b in it.bullets]
+    pdf_text = "\n".join(lines).replace("₹", "Rs.").replace("…", ". . .").replace("✓", "")
+    ratio, missing = R.ats_check(c, pdf_text)
+    assert ratio == 1.0, missing
+
+
+@needs_tex
+def test_r3_12_rupee_and_ellipsis_bullet_no_ats_warning(fx, tmp_path):
+    c = build_content("backend_sde", fx, edit_plan={"rephrase": {
+        "exp.acme.b1": "Saved ₹5 Cr… for “core” teams by caching widget prices."}})
+    r = render(c, "backend_sde", tmp_path / "out")
+    assert r.ats_ratio == 1.0 and r.warnings == []

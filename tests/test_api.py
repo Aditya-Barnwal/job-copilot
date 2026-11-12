@@ -747,7 +747,9 @@ def test_tailor_v2_flow_keywords_tailor_approve_pdf(client, example_profile, mon
     r = client.post(f"/api/jobs/{key}/tailor/v2", json={"struck_keywords": ["Django"]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["status"] == "needs_review" and "40%" in body["grounding"]["flags"]["new_numbers"]
+    # the unsupported rephrase is reverted to the confirmed bullet (per-line fallback)
+    assert body["status"] == "ok" and body["grounding"]["clean"]
+    assert any(k.startswith("exp.acme.b1: kept original:") and "40%" in k for k in body["kept_original"])
     assert "Kubernetes" in body["missing_keywords"] and body["diff"]
     aid = body["artifact_id"]
     assert body["pdf_url"] == f"/api/artifacts/{aid}/pdf"
@@ -755,7 +757,16 @@ def test_tailor_v2_flow_keywords_tailor_approve_pdf(client, example_profile, mon
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
 
     arts = client.get(f"/api/jobs/{key}/artifacts").json()["artifacts"]
-    assert [a["id"] for a in arts] == [aid] and arts[0]["status"] == "needs_review"
+    assert [a["id"] for a in arts] == [aid] and arts[0]["status"] == "ok"
+
+    # an artifact whose stored plan still prints an unsupported line (older version /
+    # tampered row) must pass the server-side, per-token confirmation gate
+    rf, bases, _ = tailor_v2._load(None)
+    usable = tailor_v2.F.usable_facts(rf, body["base"])
+    bad_plan = dict(body["edit_plan"], rephrase={"exp.acme.b1": B1 + " Cut costs by 40%."})
+    lines = tailor_v2.apply_plan(usable, bases[body["base"]], bad_plan)
+    store.update_artifact(aid, edit_plan=bad_plan, status="needs_review",
+                          facts_hash=tailor_v2.facts_hash(usable, lines))
 
     r = client.post(f"/api/jobs/{key}/artifacts/{aid}/approve", json={})
     assert r.status_code == 409 and r.json()["unconfirmed"] == {"new_numbers": ["40%"]}

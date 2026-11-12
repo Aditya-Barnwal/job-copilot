@@ -134,12 +134,40 @@ def test_cliche_sentences_removed(monkeypatch, facts, bank, no_company_db):
     assert style.find_cliches(d.text) == []
 
 
-def test_over_length_needs_review(monkeypatch, facts, bank, no_company_db):
+def test_over_length_retried_with_count_then_trimmed(monkeypatch, facts, bank, no_company_db):
     long_close = {"text": " ".join(["I would welcome a conversation about the role."] * 25), "fact_ids": []}
-    fake(monkeypatch, reply([OPEN, EV1, EV2, long_close]))
+    f = fake(monkeypatch, reply([OPEN, EV1, EV2, long_close]))
     d = generate_cover_letter(JOB, facts=facts, answers=bank)
-    assert d.status == "needs_review" and d.word_count > 180
-    assert any("word limit" in w for w in d.warnings)
+    assert len(f.calls) == 2
+    assert "words over the 180-word limit" in f.calls[1][1] and f.calls[1][0] == f.calls[0][0]
+    assert d.word_count <= 180, d.word_count
+    assert d.status == "ok", d.warnings
+    assert any(w.startswith("trimmed ") for w in d.warnings)
+    body = "\n\n".join(p["text"] for p in d.paragraphs)
+    assert EV1["text"] in body and EV2["text"] in body                  # cited facts kept whole
+    assert OPEN["text"].split(". ")[0] in body                          # the opening line stays
+
+
+def test_over_length_fixed_by_retry_is_not_trimmed(monkeypatch, facts, bank, no_company_db):
+    long_close = {"text": " ".join(["I would welcome a conversation about the role."] * 25), "fact_ids": []}
+    f = fake(monkeypatch, reply([OPEN, EV1, EV2, long_close]), reply(GOOD))
+    d = generate_cover_letter(JOB, facts=facts, answers=bank)
+    assert len(f.calls) == 2 and d.status == "ok"
+    assert not any(w.startswith("trimmed ") for w in d.warnings)
+
+
+def test_trim_removes_least_evidenced_whole_sentences(facts):
+    usable = common.resolve_facts(facts)
+    paras = [OPEN, EV1, {"text": EV2["text"] + " I tuned it over many careful weeks of steady work.",
+                         "fact_ids": EV2["fact_ids"]}, CLOSE]
+    g = common.ground_paragraphs(paras, usable, job=JOB, rec={"name": "Initrode"})
+    words = style.word_count(" ".join(p["text"] for p in paras))
+    out, removed = common.trim_to_limit(paras, g, usable, words - 3)
+    assert removed and all(r in " ".join(p["text"] for p in paras) for r in removed)
+    body = " ".join(p["text"] for p in out)
+    assert EV1["text"] in body and EV2["text"] in body           # never cut a cited fact
+    assert OPEN["text"].split(". ")[0] in body                    # the opening line stays
+    assert len(out) == 4                                          # no paragraph emptied
 
 
 def test_leak_phrase_retried_fresh_then_ok(monkeypatch, facts, bank, no_company_db):
@@ -147,7 +175,9 @@ def test_leak_phrase_retried_fresh_then_ok(monkeypatch, facts, bank, no_company_
     f = fake(monkeypatch, reply(leaky), reply(GOOD))
     d = generate_cover_letter(JOB, facts=facts, answers=bank)
     assert d.status == "ok" and d.attempts == 2 and len(f.calls) == 2
-    assert f.calls[0] == f.calls[1]               # fresh conversation: same prompt, no history
+    # fresh conversation: same system + prompt, plus only a note naming the problem
+    assert f.calls[0][0] == f.calls[1][0] and f.calls[1][1].startswith(f.calls[0][1])
+    assert "rejected for" in f.calls[1][1] and OPEN["text"] not in f.calls[1][1]
 
 
 def test_too_few_facts_cited(monkeypatch, facts, bank, no_company_db):
@@ -347,3 +377,92 @@ def test_router_answers(client):
     assert c.post("/api/answers/preview", json={"question": "x", "field_type": "slider"}).status_code == 400
     rep = c.get("/api/answers/review").json()
     assert rep["schema_version"] == 2 and rep["counts"]["approved"] > 10
+
+
+# --------------------------------------------------------------------------- capability claims
+# The four sentences grounding missed in the real Prodigal letter (2026-11-12),
+# rewritten onto the example facts with the same shape.
+
+BAD_CLAIMS = [
+    # wrong project + unsupported capability
+    ({"text": "At WidgetBot I built a FastAPI chat backend, showcasing prompt-engineered pipelines "
+              "and low-latency inference for voice-enabled agents.",
+      "fact_ids": ["proj.widgetbot.b1", "exp.acme.b1"]}, "showcasing"),
+    # ownership inflation
+    ({"text": "I built a Go order service handling 200+ requests per second behind a REST API, "
+              "reinforcing my backend ownership.", "fact_ids": ["exp.acme.b1"]}, "ownership"),
+    # fabricated experience claim
+    ({"text": "I would bring my experience scaling AI agents from prototype to production.",
+      "fact_ids": ["exp.acme.b1"]}, "scaling AI agents"),
+    # unsupported generalisation
+    ({"text": "This experience demonstrates my Python and data-engineering skills needed for "
+              "end-to-end AI system deployment.", "fact_ids": ["exp.acme.b2"]}, "demonstrates"),
+]
+
+
+@pytest.mark.parametrize("bad, token", BAD_CLAIMS)
+def test_capability_claims_flagged(monkeypatch, facts, bank, no_company_db, bad, token):
+    job = {**JOB, "title": "Forward Deployed Engineer - AI Agents",
+           "description_text": JD + " You will scale AI agents to production, end-to-end."}
+    fake(monkeypatch, reply([OPEN, EV1, bad, CLOSE]))
+    d = generate_cover_letter(job, facts=facts, answers=bank)
+    assert d.status == "needs_review"
+    claims = " | ".join(d.grounding["flags"]["unsupported_claims"])
+    assert token in claims, d.grounding["flags"]
+    shown = [w for w in d.warnings if w.startswith("unsupported sentence:")]
+    assert any(bad["text"] in w for w in shown)                  # the exact sentence is quoted
+
+
+def test_wrong_project_attribution_named(facts):
+    usable = common.resolve_facts(facts)
+    # the capability is true of WidgetBot's fact, but attached to Acme: flagged
+    s = {"text": "At Acme Widgets Inc. I cut nightly batch runtime by 30%, showcasing a FastAPI "
+                 "chat backend.", "fact_ids": ["exp.acme.b2", "proj.widgetbot.b1"]}
+    g = common.ground_paragraphs([s], usable, job=JOB, rec={"name": "Initrode"})
+    assert any("not in Acme Widgets Inc. facts" in c for c in g["flags"]["unsupported_claims"])
+
+
+@pytest.mark.parametrize("good", [
+    EV1, EV2,
+    {"text": "At WidgetBot I built a FastAPI chat backend that answers 5 kinds of widget question.",
+     "fact_ids": ["proj.widgetbot.b1"]},
+    {"text": "I have experience with PostgreSQL from moving widget pricing to it, which cut nightly "
+             "batch runtime by 30%.", "fact_ids": ["exp.acme.b2"]},
+    {"text": "The role asks for production experience with Go services.", "fact_ids": []},  # about them
+    # real closing line (2026-11-12): forward-looking, not a claim
+    {"text": "I would welcome a conversation about applying these experiences to Initrode's "
+             "payment platform.", "fact_ids": []},
+])
+def test_plain_fact_sentences_pass(monkeypatch, facts, bank, no_company_db, good):
+    paras = [OPEN, good, EV2 if good is not EV2 else EV1, CLOSE]
+    fake(monkeypatch, reply(paras))
+    d = generate_cover_letter(JOB, facts=facts, answers=bank)
+    assert d.grounding["flags"].get("unsupported_claims") == [], d.grounding["flags"]
+    assert d.status == "ok", d.warnings
+
+
+def test_named_project_sentence_cannot_borrow_the_jd(facts):
+    usable = common.resolve_facts(facts)
+    s = {"text": "The WidgetBot backend ran on Kubernetes.", "fact_ids": ["proj.widgetbot.b1"]}
+    job = {**JOB, "description_text": JD + " We run Kubernetes."}
+    g = common.ground_paragraphs([s], usable, job=job, rec={"name": "Initrode"})
+    assert not g["clean"] and "kubernetes" in " ".join(g["flags"]["unsupported_skills"]).lower()
+
+
+def test_unicode_hyphens_normalised(monkeypatch, facts, bank, no_company_db):
+    ev = {"text": "At Acme Widgets Inc. \u2014 my first role \u2014 I built a Go order service handling "
+                  "200+ requests per second behind a REST\u2011API.", "fact_ids": ["exp.acme.b1"]}
+    fake(monkeypatch, reply([OPEN, ev, EV2, CLOSE]))
+    d = generate_cover_letter(JOB, facts=facts, answers=bank)
+    body = "\n".join(p["text"] for p in d.paragraphs)
+    assert not any(ch in body for ch in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212")
+    assert "REST-API" in body and " - my first role - " in body
+
+
+def test_letter_prompt_structure_rules(monkeypatch, facts, bank, no_company_db):
+    f = fake(monkeypatch, reply(GOOD))
+    generate_cover_letter(JOB, facts=facts, answers=bank)
+    system, user = f.calls[0]
+    for rule in ("ONE sentence naming the role and the company", "this demonstrates",
+                 "ASCII hyphens", "HARD LIMIT: 180 words"):
+        assert rule in system + user

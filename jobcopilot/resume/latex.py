@@ -95,9 +95,20 @@ _LIGATURE_FORMS = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "
                    "ﬅ": "st", "ﬆ": "st"}
 
 
+# Latin-1 Supplement + Latin Extended-A letters / numbers that T1 + textcomp +
+# utf8 inputenc define (each verified to compile: tests/test_resume_render.py).
+# Not in it, on purpose: U+0126 U+0127 U+0138 U+013F U+0140 U+0149 U+0166 U+0167
+# U+017F, which have no T1 definition and would abort the compile.
+_NO_T1 = frozenset("\u0126\u0127\u0138\u013f\u0140\u0149\u0166\u0167\u017f")
+LATIN_PASSTHROUGH = frozenset(
+    chr(o) for o in range(0xA1, 0x180)
+    if unicodedata.category(chr(o)).startswith(("L", "N")) and chr(o) not in _NO_T1)
+
+
 def unsupported_chars(text: str) -> list[str]:
     """Characters `latex_escape` has to drop (no T1/TS1 glyph or mapping)."""
-    return sorted({c for c in text if _rendered(c) is None})
+    s = unicodedata.normalize("NFC", str(text or ""))
+    return sorted({c for c in s if _rendered(c) is None})
 
 
 def _rendered(c: str) -> str | None:
@@ -112,43 +123,76 @@ def _rendered(c: str) -> str | None:
     o = ord(c)
     if 0x20 <= o < 0x7F:
         return c
-    if 0xA0 < o <= 0x17F and unicodedata.category(c).startswith(("L", "N")):
-        return c        # Latin-1 / Latin Extended-A letters: T1 has them (utf8 inputenc)
+    if c in LATIN_PASSTHROUGH:
+        return c
     return None
+
+
+# TeX input ligatures (T1): pairs of emitted characters that would fuse into
+# another glyph: -- ---, `` '', ,, (low quote), << >>, !` (inverted !), ?` (inverted ?).
+_LIG_PAIRS = {("-", "-"), ("`", "`"), ("'", "'"), (",", ","), ("<", "<"), (">", ">"),
+              ("!", "`"), ("?", "`")}
 
 
 def latex_escape(value: Any) -> str:
     """Strict text escape. Every TeX special is neutralised, TeX ligature
-    sequences that would change the text (--, ``, '', <<, !`, ?`) are broken,
-    dashes / arrows / quotes become proper LaTeX, and characters with no
-    mapping are dropped (see `unsupported_chars`) instead of breaking the run."""
+    sequences that would change the text (--, ``, '', ,,, <<, !`, ?`) are broken
+    (judged on the characters actually emitted, so a dropped character in
+    between can't create one), dashes / arrows / quotes become proper LaTeX, and
+    characters with no mapping are dropped (see `unsupported_chars`) instead of
+    breaking the run."""
     if value is None:
         return ""
     s = unicodedata.normalize("NFC", str(value))
     out: list[str] = []
-    prev = ""
+    last = ""                           # last character emitted so far
     for c in s:
-        if c == "-" and prev == "-":
-            out.append("{}")            # "--" in the source must stay two hyphens
-        elif c in "'`" and prev == c:
-            out.append("{}")
         r = _rendered(c)
-        if r is None:
+        if not r:
             continue
+        if (last, r[0]) in _LIG_PAIRS:
+            out.append("{}")
         out.append(r)
-        prev = c
+        last = r[-1]
+    return "".join(out)
+
+
+# What an escaped value reads as in the PDF text layer (for the ATS check).
+_PLAIN = {"₹": "Rs.", "…": "...", "\u00a0": " ", "\u2009": " ", "\u202f": " ", "\u200b": "",
+          **_LIGATURE_FORMS}
+
+
+def plain_text(value: Any) -> str:
+    """`value` as the PDF text layer should show it: the escaper's own
+    substitutions (₹ -> Rs., … -> ..., ligature glyphs -> letters), dropped
+    characters removed. Quotes and dashes are left for the caller to fold."""
+    s = unicodedata.normalize("NFC", str(value or ""))
+    out = []
+    for c in s:
+        if c in _PLAIN:
+            out.append(_PLAIN[c])
+        elif c in "\n\t\r":
+            out.append(" ")
+        elif _rendered(c) is not None:
+            out.append(c)
     return "".join(out)
 
 
 _URL_OK = re.compile(r"^(https?://|mailto:|tel:)[^\s\\{}]+$", re.I)
+# Inside \href only % and # need a backslash; characters TeX could read as
+# something else (^ starts ^^xx char codes, ~ is active, plus the ones that are
+# never valid raw in a URL) are percent-encoded, which is the same URL.
+_URL_PCT = {"^": "%5E", "~": "%7E", '"': "%22", "<": "%3C", ">": "%3E", "|": "%7C", "`": "%60"}
 
 
 def latex_url(value: Any) -> str:
     """Escape a URL for \\href{...}. Only http(s), mailto and tel; anything else
-    (or a URL with spaces / braces / backslashes) yields "" so no link is made."""
+    (or a URL with spaces / braces / backslashes / control or non-ASCII
+    characters) yields "" so no link is made."""
     u = str(value or "").strip()
-    if not u or not _URL_OK.match(u) or any(ord(c) < 0x20 or ord(c) > 0x7E for c in u):
+    if not u or any(ord(c) < 0x20 or ord(c) > 0x7E for c in u) or not _URL_OK.match(u):
         return ""
+    u = "".join(_URL_PCT.get(c, c) for c in u)
     return u.replace("%", r"\%").replace("#", r"\#")
 
 

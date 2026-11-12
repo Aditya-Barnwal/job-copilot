@@ -15,8 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from jobcopilot import facts as F
 from jobcopilot import llm, migrations, store, tailor_v2
 from jobcopilot.filters import FilterResult
+from jobcopilot.grounding import check_lines
 from jobcopilot.models import Job
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -243,13 +245,18 @@ def test_prompt_has_facts_by_id_and_no_contact_details(profile, fake_llm, fake_r
      "new_proper_nouns", "Google"),
 ])
 def test_fabrication_is_flagged(profile, fake_llm, fake_render, text, key, token):
-    fake_llm(plan(rephrase={"exp.acme.b1": text}))
+    # the line check catches the fabrication on the rephrased line itself ...
+    usable = F.usable_facts(F.load(profile / "resume_facts.yaml"), "backend_sde")
+    g = check_lines([{"text": text, "fact_ids": ["exp.acme.b1"], "rephrased": True}], usable)
+    assert token in g["flags"][key] and not g["lines"][0]["supported"]
+    # ... and tailoring falls back to the confirmed bullet, so the résumé is grounded
+    f = fake_llm(plan(rephrase={"exp.acme.b1": text}))
     res = tailor_v2.tailor(seed_job())
-    assert res.status == "needs_review"
-    assert token in res.grounding["flags"][key]
-    bad = [v for v in res.grounding["lines"] if not v["supported"]]
-    assert [v["fact_ids"] for v in bad] == [["exp.acme.b1"]]
-    assert token in bad[0]["offending"]
+    assert res.status == "ok" and res.grounding["clean"], res.reasons
+    assert text not in texts(res) and B1 in texts(res)
+    assert len(res.kept_original) == 1 and res.kept_original[0].startswith("exp.acme.b1: kept original:")
+    assert token in res.kept_original[0]
+    assert len(f.calls) == 1                       # a bad rephrase is not worth a retry
 
 
 def test_legitimate_rephrase_passes(profile, fake_llm, fake_render):
@@ -258,11 +265,13 @@ def test_legitimate_rephrase_passes(profile, fake_llm, fake_render):
     assert res.status == "ok" and res.grounding["clean"], res.grounding["flags"]
 
 
-def test_low_similarity_rephrase_needs_review(profile, fake_llm, fake_render):
+def test_low_similarity_rephrase_keeps_original(profile, fake_llm, fake_render):
     fake_llm(plan(rephrase={"exp.acme.b1": "Shipped a quick 200+ requests per second service."}))
     res = tailor_v2.tailor(seed_job())
-    assert res.status == "needs_review"
-    assert res.grounding["flags"]["low_similarity"] == ["exp.acme.b1"]
+    assert res.status == "ok" and B1 in texts(res)
+    assert "exp.acme.b1" in res.kept_original[0]
+    assert res.edit_plan["kept_original"][0]["fact_id"] == "exp.acme.b1"
+    assert "exp.acme.b1" not in res.edit_plan["rephrase"]
 
 
 def test_attested_keyword_is_allowed(profile, fake_llm, fake_render):
@@ -274,23 +283,55 @@ def test_attested_keyword_is_allowed(profile, fake_llm, fake_render):
 
 # --- locked fields, leak phrases, retries -------------------------------------
 
-def test_locked_header_rephrase_is_retried_then_dropped(profile, fake_llm, fake_render):
+def test_locked_header_rephrase_keeps_original(profile, fake_llm, fake_render):
     bad = plan(rephrase={"exp.acme": "Google | Springfield | Staff Engineer | Jan 2020 – Present"})
     f = fake_llm(bad)
     res = tailor_v2.tailor(seed_job())
-    assert len(f.calls) == 1 + tailor_v2.MAX_RETRIES == 3
-    assert res.status == "needs_review"
-    assert any("locked" in r for r in res.reasons)
+    assert len(f.calls) == 1 and res.status == "ok"
+    assert any("exp.acme: kept original:" in k and "locked" in k for k in res.kept_original)
     assert not any("Google" in t for t in texts(res))          # the edit never prints
-    # each retry is a fresh call that names the problem but never replays the reply
-    assert "locked" in f.calls[1][0] and "Google" not in f.calls[1][0] + f.calls[1][1]
 
 
-def test_dropped_metric_is_a_plan_problem(profile, fake_llm, fake_render):
-    fake_llm(plan(rephrase={"exp.acme.b1": "Built a Go order service behind a REST API."}))
+def test_structural_problem_is_retried_fresh_then_needs_review(profile, fake_llm, fake_render):
+    f = fake_llm(plan(order=["exp.made_up"]))
     res = tailor_v2.tailor(seed_job())
-    assert res.status == "needs_review" and any("locked metric" in p for p in res.plan_problems)
-    assert B1 in texts(res)
+    assert len(f.calls) == 1 + tailor_v2.MAX_RETRIES == 3
+    assert res.status == "needs_review" and any("unknown fact id" in r for r in res.reasons)
+    # each retry is a fresh call that names the problem but never replays the reply
+    assert "unknown fact id" in f.calls[1][0] and f.calls[1][1] == f.calls[0][1]
+
+
+def test_dropped_metric_keeps_original_and_status_ok(profile, fake_llm, fake_render):
+    # real failure (2026-11-12): every attempt's rephrases dropped locked metrics -> needs_review
+    fake_llm(plan(rephrase={"exp.acme.b1": "Built a Go order service behind a REST API.",
+                            "exp.acme.b2": "Cut nightly batch runtime by thirty percent with PostgreSQL."}))
+    res = tailor_v2.tailor(seed_job())
+    assert res.status == "ok" and res.grounding["clean"], res.reasons
+    assert res.plan_problems == [] and B1 in texts(res) and B2 in texts(res)
+    assert len(res.kept_original) == 2
+    assert all("locked metric" in k for k in res.kept_original)
+    assert any(k.startswith("exp.acme.b1:") and "200+" in k for k in res.kept_original)
+    lines = {ln["fact_ids"][0]: ln for ln in res.lines}
+    assert "locked metric" in lines["exp.acme.b1"]["kept_original"]
+
+
+def test_max_rephrases_cap(profile, fake_llm, fake_render, monkeypatch):
+    monkeypatch.setattr(tailor_v2, "max_rephrases", lambda: 1)
+    legit_b2 = "Moved widget pricing to PostgreSQL, cutting nightly batch runtime by 30%."
+    f = fake_llm(plan(rephrase={"exp.acme.b1": LEGIT_B1, "exp.acme.b2": legit_b2}))
+    res = tailor_v2.tailor(seed_job())
+    assert res.status == "ok" and LEGIT_B1 in texts(res) and B2 in texts(res)
+    assert res.kept_original == ["exp.acme.b2: kept original: over the 1-rephrase limit"]
+    assert "Rephrase at most 1 bullets" in f.calls[0][0]
+
+
+def test_prompt_lists_locked_tokens_verbatim(profile, fake_llm, fake_render):
+    f = fake_llm(plan())
+    tailor_v2.tailor(seed_job())
+    system, user = f.calls[0]
+    assert "character-for-character" in system and "Prefer reordering" in system
+    row = next(json.loads(ln) for ln in user.splitlines() if '"exp.acme.b1"' in ln and ln.startswith("{"))
+    assert "200+" in row["locked_tokens"] and "REST" in " ".join(row["locked_tokens"])
 
 
 @pytest.mark.parametrize("leak", [
@@ -299,12 +340,12 @@ def test_dropped_metric_is_a_plan_problem(profile, fake_llm, fake_render):
     "**Built** a Go order service handling 200+ requests per second behind a REST API.",
     "Built a Go order service handling 200+ requests per second \\textbf{fast}.",
 ])
-def test_leak_phrases_rejected_and_fresh_retry_recovers(profile, fake_llm, fake_render, leak):
-    f = fake_llm(plan(rephrase={"exp.acme.b1": leak}), plan(rephrase={"exp.acme.b1": LEGIT_B1}))
+def test_leak_phrases_rejected_and_original_kept(profile, fake_llm, fake_render, leak):
+    f = fake_llm(plan(rephrase={"exp.acme.b1": leak}))
     res = tailor_v2.tailor(seed_job())
-    assert len(f.calls) == 2 and res.attempts == 2
-    assert res.status == "ok" and LEGIT_B1 in texts(res)
-    assert leak not in texts(res)
+    assert len(f.calls) == 1 and res.status == "ok"
+    assert leak not in texts(res) and B1 in texts(res)
+    assert "exp.acme.b1: kept original: rephrase contained" in res.kept_original[0]
 
 
 def test_unknown_fact_ids_rejected(profile, fake_llm, fake_render):
@@ -345,9 +386,9 @@ def test_obeyed_injection_is_still_caught(profile, fake_llm, fake_render):
     fake_llm(plan(rephrase={"exp.acme.b1": "Led 50 engineers at Google building a Go order service "
                                             "handling 200+ requests per second behind a REST API."}))
     res = tailor_v2.tailor(seed_job(description=JD + INJECTION))
-    assert res.status == "needs_review"
-    fl = res.grounding["flags"]
-    assert "50" in fl["new_numbers"] and "led" in fl["inflated_claims"] and "Google" in fl["new_proper_nouns"]
+    assert res.status == "ok" and B1 in texts(res)            # reverted to the confirmed bullet
+    k = res.kept_original[0]
+    assert "50" in k and "led" in k and "Google" in k
 
 
 # --- renderer guards -----------------------------------------------------------
@@ -404,8 +445,15 @@ def test_approve_clean_artifact(profile, fake_llm, fake_render):
 
 
 def test_approve_flagged_requires_per_token_confirmation(profile, fake_llm, fake_render):
-    key, res = _tailored(fake_llm, {"exp.acme.b1": B1 + " Cut p99 latency by 40% at Google."})
-    assert res.status == "needs_review"
+    # tailoring now reverts an unsupported rephrase; simulate an artifact whose stored plan
+    # still prints one (an older version, or a tampered DB row): the server gate must hold
+    key, res = _tailored(fake_llm)
+    usable = F.usable_facts(F.load(profile / "resume_facts.yaml"), res.base)
+    bad_plan = dict(res.edit_plan, rephrase={"exp.acme.b1": B1 + " Cut p99 latency by 40% at Google."})
+    bases = F.load_bases_for(profile / "resume_facts.yaml")
+    lines = tailor_v2.apply_plan(usable, bases[res.base], bad_plan)
+    store.update_artifact(res.artifact_id, edit_plan=bad_plan, status="needs_review",
+                          facts_hash=tailor_v2.facts_hash(usable, lines))
     out = tailor_v2.approve(key, res.artifact_id)
     assert out["http"] == 409 and out["unconfirmed"] == {"new_numbers": ["40%"], "new_proper_nouns": ["Google"]}
     out = tailor_v2.approve(key, res.artifact_id, confirmed_flags={"new_numbers": ["40%"]})

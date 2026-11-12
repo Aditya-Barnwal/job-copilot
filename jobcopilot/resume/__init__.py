@@ -17,7 +17,7 @@ from jobcopilot.resume.content import (  # noqa: F401
 )
 from jobcopilot.resume.latex import LatexError, LatexUnavailable, latex_escape, latex_url  # noqa: F401
 from jobcopilot.resume.render import (  # noqa: F401
-    RenderResult, available_bases, pick_base, render, template_meta,
+    RenderResult, UnsupportedCharacters, available_bases, pick_base, render, template_meta,
 )
 
 

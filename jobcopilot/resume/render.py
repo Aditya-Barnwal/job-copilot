@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,12 @@ from jobcopilot.resume.content import (  # noqa: F401  (contract: importable fro
 log = logging.getLogger("jobcopilot.resume")
 
 _HEADER_RE = re.compile(r"^%\s*([a-z_]+)\s*:\s*(.*?)\s*$")
+
+
+class UnsupportedCharacters(ContentError):
+    """A locked field (employer, title, dates, degree, grade, a number, the
+    header) has a character with no LaTeX glyph: printing it without the
+    character would misstate a fact, so render() refuses."""
 
 
 @dataclass
@@ -208,7 +215,8 @@ def _drop_candidates(content: ResumeContent) -> list[str]:
     return order
 
 
-_DASHES = str.maketrans({"—": "-", "–": "-", "‒": "-", "’": "'", "‘": "'", "“": '"', "”": '"'})
+_DASHES = str.maketrans({"—": "-", "–": "-", "‒": "-", "’": "'", "‘": "'", "“": '"', "”": '"',
+                         "…": "..."})
 LIGATURES = "ﬀﬁﬂﬃﬄﬅﬆ"
 
 
@@ -218,7 +226,9 @@ def _squash(s: str) -> str:
 
 def ats_check(content: ResumeContent, text: str) -> tuple[float, list[str]]:
     """Share of section headings + bullet / research openings (first 6 words)
-    found in the extracted PDF text, and the probes that were missing."""
+    found in the extracted PDF text, and the probes that were missing. Probes
+    are normalised with the escaper's own substitutions (₹ -> Rs., … -> ...,
+    curly quotes, dropped characters) so a correctly printed line still matches."""
     hay = _squash(text)
     probes: list[str] = []
     for s in content.sections:
@@ -228,8 +238,84 @@ def ats_check(content: ResumeContent, text: str) -> tuple[float, list[str]]:
                 probes.append(" ".join(it.text.split()[:6]))
             probes += [" ".join(b.text.split()[:6]) for b in it.bullets]
     probes = [p for p in probes if p]
-    missing = [p for p in probes if _squash(p) not in hay]
+    missing = [p for p in probes if _squash(L.plain_text(p)) and _squash(L.plain_text(p)) not in hay]
     return (1 - len(missing) / len(probes)) if probes else 1.0, missing
+
+
+# --------------------------------------------------------------------------- printed fields
+
+def printed_fields(content: ResumeContent) -> list[tuple[str, str, bool]]:
+    """(label, text, locked) for every value a template prints. Locked = a fact
+    the résumé must state exactly (header, employer / institution / project
+    name, job title, degree, dates, grade, location)."""
+    out: list[tuple[str, str, bool]] = []
+    h = content.header
+    out.append(("header.name", h.name, True))
+    for c in h.contact:
+        out.append((f"header.contact[{c.kind}]", c.text, True))
+    for c in h.links:
+        out.append((f"header.links[{c.kind}]", c.text, True))
+    for s in content.sections:
+        out.append((f"{s.key}.heading", s.heading, False))
+        for it in s.items:
+            at = f"{s.key}[{it.fact_id}]"
+            for name, locked in (("title", True), ("right", True), ("detail", True),
+                                 ("detail_right", True), ("subtitle", False), ("lead", False),
+                                 ("emph", False), ("rest", False)):
+                v = getattr(it, name)
+                if v:
+                    out.append((f"{at}.{name}", v, locked))
+            for t in it.tech:
+                out.append((f"{at}.tech", t, False))
+            for b in it.bullets:
+                out.append((f"{s.key}[{b.fact_id}]", b.text, False))
+        for g in s.groups:
+            out.append((f"{s.key}.group[{g.heading}].heading", g.heading, False))
+            for x in g.skills:
+                out.append((f"{s.key}[{x.fact_id}]", x.text, False))
+    return out
+
+
+def _touches_number(text: str, ch: str) -> bool:
+    """`ch` is a numeric character, or sits right next to a digit somewhere in `text`."""
+    if unicodedata.category(ch).startswith("N"):
+        return True
+    s = unicodedata.normalize("NFC", text)
+    for i, c in enumerate(s):
+        if c == ch and ((i > 0 and s[i - 1].isdigit()) or (i + 1 < len(s) and s[i + 1].isdigit())):
+            return True
+    return False
+
+
+def check_characters(content: ResumeContent) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for characters `latex_escape` would drop, over every
+    printed field. A drop in a locked field or inside a number is an error."""
+    errors: list[str] = []
+    warn_fields: dict[str, list[str]] = {}
+    for label, text, locked in printed_fields(content):
+        bad = L.unsupported_chars(text)
+        if not bad:
+            continue
+        cps = [f"U+{ord(c):04X}" for c in bad]
+        num = [c for c in bad if _touches_number(text, c)]
+        if locked or num:
+            why = "a locked field" if locked else "a number"
+            errors.append(f"{label}: {', '.join(cps)} has no LaTeX glyph and would be dropped from {why}")
+        else:
+            warn_fields.setdefault(", ".join(cps), []).append(label)
+    warnings = [f"characters with no LaTeX mapping were dropped ({cps}) in: {', '.join(labels)}"
+                for cps, labels in warn_fields.items()]
+    return errors, warnings
+
+
+def _url_warnings(content: ResumeContent) -> list[str]:
+    out = []
+    links = [(f"header.{c.kind}", c.url) for c in [*content.header.contact, *content.header.links]]
+    links += [(f"{s.key}[{it.fact_id}].link", it.link) for s in content.sections for it in s.items]
+    for label, url in links:
+        if url and not L.latex_url(url):
+            out.append(f"{label}: link not printed (not a safe http(s)/mailto/tel URL)")
+    return out
 
 
 def render(content: ResumeContent, base: str, out_dir: Path | str, *,
@@ -241,10 +327,11 @@ def render(content: ResumeContent, base: str, out_dir: Path | str, *,
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     warnings = list(content.warnings)
-    bad = sorted({c for ln in content.lines() for c in L.unsupported_chars(ln["text"])}
-                 | {c for c in L.unsupported_chars(content.header.name)})
-    if bad:
-        warnings.append(f"characters with no LaTeX mapping were dropped: {[hex(ord(c)) for c in bad]}")
+    errors, char_warnings = check_characters(content)
+    if errors:
+        raise UnsupportedCharacters("résumé not rendered: " + "; ".join(errors)
+                                    + " — fix the text in resume_facts.yaml / answers.yaml")
+    warnings += char_warnings + _url_warnings(content)
 
     tries = max(0, int(cfg.get("max_fit_tries", 6)))
     dropped: list[str] = []
@@ -281,5 +368,6 @@ def find_pdflatex() -> str | None:
     return L.find_pdflatex()
 
 
-__all__ = ["RenderResult", "ResumeContent", "build_content", "render", "render_tex", "pick_base",
+__all__ = ["RenderResult", "UnsupportedCharacters", "check_characters", "printed_fields",
+           "ResumeContent", "build_content", "render", "render_tex", "pick_base",
            "available_bases", "template_meta", "templates_dir", "ats_check", "find_pdflatex"]

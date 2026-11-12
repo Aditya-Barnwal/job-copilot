@@ -1,0 +1,20 @@
+# Writing limits (docs/WRITING_GUIDE.md). Optional: anything left out falls
+# back to jobcopilot/writing/style.py DEFAULTS.
+
+cover_letter:
+  max_words: 180          # hard limit for the body; over -> one retry, then whole-sentence trim
+  target_words: [130, 170]
+  salutation: "Dear Hiring Manager,"
+  min_facts_cited: 2
+
+email:
+  application: {max_words: 120}
+  follow_up: {max_words: 90, min_days_after_submit: 7}
+
+answers:
+  max_words: 150
+
+resume:
+  max_rephrases: 6        # tailoring applies at most this many bullet rephrases per résumé
+
+max_attempts: 2           # model calls per draft; each is a fresh conversation

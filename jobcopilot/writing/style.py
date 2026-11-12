@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
         "signature_fields": ["name", "phone", "links"],
     },
     "answers": {"max_words": 150},
+    "resume": {"max_rephrases": 6},  # tailor_v2: bullet rephrases applied per résumé
     "max_attempts": 2,             # each attempt is a fresh conversation (L#2)
     "signoff_default": "Best regards",
 }
@@ -83,6 +84,8 @@ LEAK_PHRASES: tuple[str, ...] = (
 _LEAK_RES = [re.compile(p, re.I) for p in LEAK_PHRASES]
 
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’.+#/-]*")
+_ABBREV_END_RE = re.compile(r"(?<![A-Za-z])(?:Inc|Ltd|Co|Corp|Pvt|LLC|LLP|PLC|GmbH|Bros|Dr|Mr|Mrs|Ms|"
+                            r"Prof|Sr|Jr|St|vs|etc|approx|Dept|No|e\.g|i\.e)\.$")
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[\"'(]?[A-Z0-9])")
 
 
@@ -95,7 +98,15 @@ def split_sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", (text or "").strip())
     if not text:
         return []
-    return [s.strip() for s in _SENT_SPLIT_RE.split(text) if s.strip()]
+    out: list[str] = []
+    for s in (x.strip() for x in _SENT_SPLIT_RE.split(text)):
+        if not s:
+            continue
+        if out and _ABBREV_END_RE.search(out[-1]):
+            out[-1] += " " + s                  # "Acme Widgets Inc. I built ..." is one sentence
+        else:
+            out.append(s)
+    return out
 
 
 def find_cliches(text: str) -> list[str]:

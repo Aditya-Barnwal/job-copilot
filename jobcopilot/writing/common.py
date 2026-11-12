@@ -6,8 +6,14 @@ sentence is checked with grounding v3 `check_lines` against
   * its paragraph's cited facts (a cited bullet brings its role/project header),
   * `_role`: the target company name, role title and a few function words,
   * `_jd`:   the job description + company record — ONLY for sentences that
-             aren't about the applicant (no I / my / me). A company claim may
-             come from the JD; a claim about the applicant may not.
+             aren't about the applicant (no I / my / me, and no name of one of
+             the applicant's employers / projects). A company claim may come
+             from the JD; a claim about the applicant may not.
+Applicant sentences also get the capability-claim check
+(`grounding.capability_claims`): "experience with X", "scaled … to
+production", "ownership", "showcasing Y", "this demonstrates …" need the
+claimed thing in the CITED facts (never the JD), and "At <project> … showcasing
+Y" needs Y in that project's own facts.
 A skill, number, ownership/title claim or proper noun that none of those
 supports flags the sentence; a cited id that isn't a usable (confirmed) fact
 flags it too. Any flag → status `needs_review`. Nothing is sent anywhere: the
@@ -217,6 +223,14 @@ def _fallback_check_lines(lines: list[dict], fmap: dict) -> dict:
     return {"clean": not bad, "lines": verdicts, "flags": flags, "unsupported_lines": bad}
 
 
+_HYPHENS_RE = re.compile(r"[\u2010-\u2015\u2212]")
+
+
+def ascii_hyphens(text: str) -> str:
+    """U+2010–2015 and U+2212 → '-' (an em-dash flourish becomes ' - ')."""
+    return _HYPHENS_RE.sub("-", text or "")
+
+
 def fold(text: str) -> str:
     """ASCII-fold for checking only ("résumé" → "resume"): the checker splits
     words on non-ASCII letters, so "résumé" would otherwise read as the skill R."""
@@ -237,9 +251,32 @@ def clean_ids(raw: Any) -> list[str]:
     return out
 
 
+def _applicant_names(usable: list) -> list[str]:
+    """Names of the applicant's employers / projects / hackathons (header facts)."""
+    out: list[str] = []
+    for f in usable:
+        if getattr(f, "kind", "") == "bullet":
+            continue
+        for a in ("name", "company"):
+            n = str(getattr(f, a, "") or "").strip()
+            if len(n) >= 3 and n not in out:
+                out.append(n)
+    return out
+
+
+def about_applicant(sentence: str, names: list[str]) -> bool:
+    """First person, or it names one of the applicant's employers / projects."""
+    if style.is_first_person(sentence):
+        return True
+    s = fold(sentence)
+    return any(re.search(r"(?<![A-Za-z0-9])" + re.escape(fold(n)) + r"(?![A-Za-z0-9])", s, re.I)
+               for n in names)
+
+
 def ground_paragraphs(paragraphs: list[dict], usable: list, *, job: dict, rec: dict,
                       extra_allowed: str = "") -> dict:
     by_id = {f.id: f for f in usable}
+    names = _applicant_names(usable)
     company = job.get("company") or rec.get("name") or ""
     role = " ".join([company, job.get("title") or "", _FUNCTION_WORDS, extra_allowed])
     fmap: dict[str, Any] = dict(by_id)
@@ -255,8 +292,10 @@ def ground_paragraphs(paragraphs: list[dict], usable: list, *, job: dict, rec: d
             if parent and parent in by_id and parent not in ids:
                 ids.append(parent)
         for s in style.split_sentences(p.get("text", "")):
-            ctx = ["_role"] if style.is_first_person(s) else ["_role", "_jd"]
-            lines.append({"text": fold(s), "fact_ids": ids + ctx, "paragraph": pi, "shown": s})
+            mine = about_applicant(s, names)
+            ctx = ["_role"] if mine else ["_role", "_jd"]
+            lines.append({"text": fold(s), "fact_ids": ids + ctx, "paragraph": pi, "shown": s,
+                          "check_claims": mine})
     check = getattr(grounding, "check_lines", None)
     result = check(lines, fmap) if check else _fallback_check_lines(lines, fmap)
     for v, ln in zip(result.get("lines", []), lines):
@@ -282,7 +321,7 @@ def parse_paragraphs(parsed: Any) -> tuple[list[dict], str, list[str]]:
             p = {"text": p, "fact_ids": []}
         if not isinstance(p, dict):
             continue
-        text = re.sub(r"\s+", " ", str(p.get("text") or "")).strip()
+        text = re.sub(r"\s+", " ", ascii_hyphens(str(p.get("text") or ""))).strip()
         if text:
             paras.append({"text": text, "fact_ids": clean_ids(p.get("fact_ids"))})
     subject = re.sub(r"\s+", " ", str(parsed.get("subject") or "")).strip()
@@ -291,22 +330,37 @@ def parse_paragraphs(parsed: Any) -> tuple[list[dict], str, list[str]]:
 
 # --------------------------------------------------------------------------- attempts
 
+def retry_note(issues: list[str]) -> str:
+    """What a retry is told about the previous draft: its problems only, never
+    its text (each attempt is still a fresh single-turn conversation)."""
+    if not issues:
+        return ""
+    return ("\n\nA previous draft was rejected for: " + "; ".join(i[:300] for i in issues[:6])
+            + ". Write a new draft that fixes every one of these and follows every rule.")
+
+
 def best_attempt(system: str, user: str, build: Callable[[Any], tuple[Any, list[str]]], *,
-                 attempts: int, max_tokens: int = 1200) -> tuple[Any, list[str], int]:
+                 attempts: int, max_tokens: int = 1200,
+                 feedback: bool = True) -> tuple[Any, list[str], int]:
     """Call the model up to `attempts` times, each a FRESH conversation (L#2).
     `build(parsed)` → (candidate, issues). The first candidate with no issues
-    wins; otherwise the one with the fewest. Raises WritingError if no attempt
-    produced a candidate at all."""
+    wins; otherwise the one with the fewest. With `feedback`, a retry's prompt
+    gets the previous attempt's issues appended (retry_note), never its reply.
+    Raises WritingError if no attempt produced a candidate at all."""
     best: tuple[Any, list[str]] | None = None
     errors: list[str] = []
+    last: list[str] = []
     n = 0
     for n in range(1, max(1, attempts) + 1):
+        prompt = user + (retry_note(last) if feedback else "")
         try:
-            parsed, _ = llm.complete_json(system, user, temperature=0.3, max_tokens=max_tokens)
+            parsed, _ = llm.complete_json(system, prompt, temperature=0.3, max_tokens=max_tokens)
         except Exception as exc:  # noqa: BLE001 — try again, then report
             errors.append(f"{type(exc).__name__}: {exc}")
+            last = []
             continue
         cand, issues = build(parsed)
+        last = list(issues)
         if cand is None:
             errors.append("; ".join(issues) or "unusable reply")
             continue
@@ -331,7 +385,8 @@ def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data
     body = "\n\n".join(p["text"] for p in paras)
     words = style.word_count(body)
     if words > max_words:
-        issues.append(f"{words} words, over the {max_words}-word limit")
+        issues.append(f"{words} words, {words - max_words} words over the {max_words}-word "
+                      f"limit: cut at least {words - max_words} words")
     leaks = style.find_leaks(body)
     if leaks:
         issues.append("leaked/template text: " + ", ".join(sorted(set(leaks))[:5]))
@@ -343,4 +398,59 @@ def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data
     if not g.get("clean"):
         bad = [t for v in g.get("lines", []) if not v.get("supported") for t in v.get("offending", [])]
         issues.append("ungrounded: " + ", ".join(dict.fromkeys(bad)))
+        for v in g.get("lines", []):
+            if not v.get("supported"):
+                issues.append(f'unsupported sentence: "{v.get("text")}" '
+                              f'({", ".join(dict.fromkeys(v.get("offending", [])))})')
     return {"paragraphs": paras, "grounding": g, "words": words, "removed": removed}, issues
+
+
+# --------------------------------------------------------------------------- length
+
+def trim_to_limit(paragraphs: list[dict], grounding_result: dict, usable: list,
+                  max_words: int) -> tuple[list[dict], list[str]]:
+    """Deterministic last resort for an over-long body: delete WHOLE sentences,
+    least-evidenced first, until the body fits. Order: sentences grounding
+    flagged; then extra (non-first) sentences of the opening / closing; then
+    evidence sentences with the lowest overlap with their cited facts. The
+    letter's first sentence and a paragraph's last remaining sentence are never
+    removed, and no sentence is ever cut mid-way. Returns (paragraphs, removed
+    sentences); the caller re-checks the result."""
+    by_id = {f.id: f for f in usable}
+    verdict = {(v.get("paragraph"), v.get("text")): v for v in grounding_result.get("lines", [])}
+    sents = [[s for s in style.split_sentences(p.get("text", ""))] for p in paragraphs]
+    n = len(paragraphs)
+    cands = []
+    for pi, ss in enumerate(sents):
+        ev = "\n".join(getattr(by_id.get(x), "text", "") for x in paragraphs[pi].get("fact_ids") or [])
+        edge = pi == 0 or (pi == n - 1 and n >= 3)
+        for si, s in enumerate(ss):
+            if pi == 0 and si == 0:
+                continue
+            v = verdict.get((pi, s)) or {}
+            flagged = v.get("supported") is False
+            tier = 0 if flagged else (1 if edge and si > 0 else (2 if not edge else 3))
+            overlap = grounding.token_overlap(s, ev) if ev else 0.0
+            cands.append((tier, overlap, -style.word_count(s), pi, si))
+    cands.sort()
+    removed: list[str] = []
+    gone: set[tuple[int, int]] = set()
+
+    def body_words() -> int:
+        return sum(style.word_count(s) for pi, ss in enumerate(sents)
+                   for si, s in enumerate(ss) if (pi, si) not in gone)
+
+    for tier, _ov, _w, pi, si in cands:
+        if body_words() <= max_words:
+            break
+        left = [j for j in range(len(sents[pi])) if (pi, j) not in gone]
+        if left == [si]:
+            continue                                   # keep every paragraph
+        gone.add((pi, si))
+        removed.append(sents[pi][si])
+    out = []
+    for pi, ss in enumerate(sents):
+        kept = [s for si, s in enumerate(ss) if (pi, si) not in gone]
+        if kept:
+            out.append({**paragraphs[pi], "text": " ".join(kept)})
+    return out, removed

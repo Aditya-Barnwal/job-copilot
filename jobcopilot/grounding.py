@@ -453,7 +453,7 @@ SIMILARITY_FLOOR = 0.45
 # confirmed token-by-token by the user at approval; a line citing a fact that
 # isn't usable can never be approved (tailoring refuses unconfirmed facts).
 LINE_FLAG_KEYS = ("unsupported_skills", "new_numbers", "inflated_claims",
-                  "new_proper_nouns", "low_similarity", "unknown_facts")
+                  "new_proper_nouns", "unsupported_claims", "low_similarity", "unknown_facts")
 UNCONFIRMABLE_FLAGS = frozenset({"unknown_facts"})
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[.'’+#-][A-Za-z0-9]+)*")
@@ -609,8 +609,185 @@ def _fold_for_tokens(text: str) -> str:
     return "".join(ch for ch in t if not unicodedata.combining(ch))
 
 
+# --------------------------------------------------------------------------- capability claims
+# A sentence about the applicant that uses a capability / experience cue
+# ("experience with …", "scaled … to production", "end-to-end", "showcasing …",
+# "expertise in …", "years of …", "track record …") must have the CLAIMED THING
+# — the words after the cue, or the few words before it when the cue ends the
+# clause ("my backend ownership") — supported by the text of the facts the line
+# cites: at least CLAIM_SUPPORT_FLOOR of its content words must appear there.
+# Some cues are claims in themselves (production, scaling, ownership, led,
+# architected, end-to-end, years of) and also need the cue in the cited facts.
+# When the sentence names one of the applicant's projects / employers before
+# the cue ("At Fitness Redefined I built X, showcasing Y"), Y must come from
+# THAT project's own facts (wrong-project attribution). Pseudo-facts whose id
+# starts with "_" (a letter's role / JD context) never count as evidence here.
+# Bridging generalisations ("This experience demonstrates …") are flagged
+# outright: by construction they restate nothing a fact says.
+
+CLAIM_SUPPORT_FLOOR = 0.6
+
+_CLAIM_CUES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    # (cue regex, family, regexes that must ALL match the evidence)
+    # "my / years of / strong experience …" or "experience in|with|… X" / "experience scaling X";
+    # not a forward-looking "applying these experiences to <the company>"
+    (r"\b(?:my|years of|extensive|strong|deep|solid|hands[- ]on|prior|proven|professional)\s+"
+     r"experiences?\b(?:\s+(?:in|with|of|on|at|across))?|"
+     r"\bexperienced?\s+(?:in|with|of|on|at|across)\b|\bexperiences?\s+(?=[a-z]+ing\b)",
+     "experience", ()),
+    (r"\bscal(?:e|es|ed|ing)\b(?=[^.;:!?]{0,80}?\b(?:to|in|into)\s+production\b)", "scaling",
+     (r"\bscal(?:e|es|ed|ing|able|ability)\b", r"\bproduction\b")),
+    (r"\bproduction(?:[- ](?:grade|ready|scale))?\b", "production", (r"\bproduction\b",)),
+    (r"\b(?:ownership|owned|owning)\b", "owned", (r"\bown(?:s|ed|ing|ership)?\b",)),
+    (r"\bend[- ]to[- ]end\b", "end-to-end", (r"\bend[- ]to[- ]end\b",)),
+    (r"\bled\b(?!\s+to\b)", "led", (r"\b(?:lead|leads|led|leading)\b",)),
+    (r"\barchitect(?:ed|ing)\b", "architected", (r"\barchitect",)),
+    (r"\b(?:experts?|expertise|proficien(?:t|cy)|extensive|in-depth|strong background|"
+     r"deep(?!\s+(?:learning|link|links|dive|dives|research)\b))\b", "expertise", ()),
+    (r"\b(?:showcas|demonstrat|highlight|reinforc|underscor|illustrat)\w*|\bprov(?:e|es|en|ing)\b",
+     "showcasing", ()),
+    (r"\byears? of\b", "years", (r"\byears?\b",)),
+    (r"\btrack record\b(?:\s+(?:of|in))?", "track record", ()),
+)
+_CLAIM_CUE_RES = [(re.compile(rx, re.I), fam, tuple(re.compile(r, re.I) for r in req))
+                  for rx, fam, req in _CLAIM_CUES]
+# "This (experience|work) demonstrates …" — a generalisation, never a fact.
+_BRIDGE_RE = re.compile(
+    r"(?:^|[,;]\s*(?:and\s+)?|\band\s+)(?:all\s+of\s+)?(?:this|that|these|those|it|which|such)\b"
+    r"(?:\s+[A-Za-z-]+){0,3}?\s+(?:demonstrat|showcas|shows?\b|prov|highlight|reflect|underscor|"
+    r"reinforc|illustrat|speaks?\b)\w*", re.I)
+_CLAIM_STOP_RE = re.compile(r"[.;:!?()]|,\s*(?:which|while|but|where|so|and\s+i)\b|\s[-–—]\s")
+_CLAIM_FILLER = frozenset("""
+skill skills ability abilities capability capabilities need needed needs require required
+requirement requirements role roles team teams work experience experiences background knowledge
+strong solid hands real world various multiple wide range kind type thing things area areas
+field fields set level levels i i'm my me mine your you we our us also both well like more most
+own applicant candidate job position company
+""".split())
+_CLAIM_BACK_STOP = _DET | _POSS | _STOPWORDS | {"i", "me", "and", "the"}
+
+
+def _claim_stem(w: str) -> str:
+    w = w.lower().replace("’", "'")
+    if w.endswith("'s"):
+        w = w[:-2]
+    if len(w) > 4 and w.endswith("ies"):
+        w = w[:-3] + "y"
+    elif len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+        w = w[:-1]
+    for suf in ("ing", "ed"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            w = w[: -len(suf)]
+            break
+    return w[:-1] if len(w) > 4 and w.endswith("e") else w
+
+
+def _claim_tokens(text: str) -> set[str]:
+    """Content stems for claim support: hyphens/slashes split, filler dropped."""
+    t = re.sub(r"[-/]", " ", text or "")
+    out = {_claim_stem(w) for w in _WORD_RE.findall(t)
+           if w.lower() not in _STOPWORDS and w.lower() not in _CLAIM_FILLER}
+    return {w for w in out if w} | set(_numbers(text))
+
+
+def _claim_object(text: str, start: int, end: int) -> tuple[str, str]:
+    """(claimed thing, phrase as written) for a cue at text[start:end]: what
+    follows it up to the clause end (<= 12 words), else up to 3 words before it
+    when the cue ends the clause ("my backend ownership")."""
+    rest = text[end:]
+    m = _CLAIM_STOP_RE.search(rest)
+    after = rest[: m.start()] if m else rest
+    words = _WORD_RE.findall(after)[:12]
+    if _claim_tokens(" ".join(words)):
+        last = list(_WORD_RE.finditer(after))[len(words) - 1]
+        return " ".join(words), text[start: end + last.end()].strip()
+    before = list(_WORD_RE.finditer(text[:start]))
+    back: list[re.Match] = []
+    for w in reversed(before[-3:]):
+        if w.group(0).lower() in _CLAIM_BACK_STOP:
+            break
+        back.insert(0, w)
+    if not back:
+        return "", text[start:end]
+    return " ".join(w.group(0) for w in back), text[back[0].start(): end]
+
+
+def _header_index(fmap: dict) -> tuple[dict[str, list[str]], dict[str, list]]:
+    """({header id: [names]}, {header id: [its bullet facts]}) for named
+    projects / employers / hackathons among the facts."""
+    names: dict[str, list[str]] = {}
+    kids: dict[str, list] = {}
+    for fid, f in fmap.items():
+        if isinstance(f, str) or str(fid).startswith("_"):
+            continue
+        parent = getattr(f, "parent", "")
+        if parent:
+            kids.setdefault(parent, []).append(f)
+            continue
+        ns = [str(getattr(f, a, "") or "").strip() for a in ("name", "company")]
+        ns = [n for n in ns if len(n) >= 3]
+        if ns:
+            names[fid] = ns
+    return names, kids
+
+
+def capability_claims(text: str, evidence: str, *, fmap: dict | None = None,
+                      header_index=None, floor: float = CLAIM_SUPPORT_FLOOR,
+                      skip_families: set[str] = frozenset()) -> list[str]:
+    """Unsupported capability / experience claims in `text` (an applicant
+    sentence or résumé line), judged against `evidence` (the cited facts' text).
+    Returns the offending claim phrases as written (see the block comment)."""
+    text = _fold_for_tokens(text)
+    evidence = _fold_for_tokens(evidence)
+    ev_tokens = _claim_tokens(evidence)
+    names, kids = header_index if header_index is not None else _header_index(fmap or {})
+    out: dict[str, None] = {}
+
+    for m in _BRIDGE_RE.finditer(text):
+        clause = text[m.start():]
+        stop = _CLAIM_STOP_RE.search(clause[len(m.group(0)):])
+        phrase = clause[: len(m.group(0)) + (stop.start() if stop else len(clause))]
+        out.setdefault(phrase.strip(" ,;").strip(), None)
+
+    named: list[tuple[int, str, str]] = []          # (position, header id, name)
+    for hid, ns in names.items():
+        for n in ns:
+            mm = re.search(r"(?<![A-Za-z0-9])" + re.escape(_fold_for_tokens(n)) + r"(?![A-Za-z0-9])",
+                           text, re.I)
+            if mm:
+                named.append((mm.start(), hid, n))
+                break
+    for rx, fam, required in _CLAIM_CUE_RES:
+        for m in rx.finditer(text):
+            obj, phrase = _claim_object(text, m.start(), m.end())
+            before = [x for x in named if x[0] < m.start()]
+            if before:                              # "At <project> …, showcasing Y"
+                _, hid, name = max(before)
+                own = [fmap[hid]] if fmap and hid in fmap else []
+                own += kids.get(hid, [])
+                ev = _fold_for_tokens("\n".join(_fact_evidence(f) for f in own))
+                where = f" (not in {name} facts)"
+            else:
+                ev, where = evidence, ""
+            ev_t = _claim_tokens(ev) if before else ev_tokens
+            if fam not in skip_families and not all(r.search(ev) for r in required):
+                out.setdefault(phrase + where, None)
+                continue
+            obj_t = _claim_tokens(obj) - _claim_tokens(m.group(0))
+            if obj_t and len(obj_t & ev_t) / len(obj_t) < floor:
+                out.setdefault(phrase + where, None)
+    # one report per claim: drop a phrase that is part of a longer flagged one
+    kept: list[str] = []
+    for ph in sorted(out, key=len, reverse=True):
+        core = ph.split(" (not in ")[0].lower()
+        if not any(core in k.lower() for k in kept):
+            kept.append(ph)
+    return [ph for ph in out if ph in kept]
+
+
 def check_lines(lines: list[dict], facts, *, attested=None,
-                similarity_floor: float = SIMILARITY_FLOOR) -> dict:
+                similarity_floor: float = SIMILARITY_FLOOR,
+                claim_floor: float = CLAIM_SUPPORT_FLOOR) -> dict:
     """Per-line grounding verdicts for a tailored résumé.
 
     `lines`: [{text, fact_ids, rephrased?: bool, source_text?: str}] in output
@@ -624,10 +801,14 @@ def check_lines(lines: list[dict], facts, *, attested=None,
     unsupported_skills, new_numbers, inflated_claims, new_proper_nouns,
     low_similarity, offending}. The similarity guard applies to lines marked
     `rephrased` (or carrying `source_text`) and reports the line's fact ids.
+    `unsupported_claims` (capability_claims) runs on every line unless it sets
+    `check_claims: False` (a letter sentence that isn't about the applicant);
+    its evidence is the cited facts whose id doesn't start with "_".
     """
     fmap = _fact_map(facts)
     att_terms = _attested_terms(attested)
     att_words = _attested_words(attested)
+    hidx = _header_index(fmap)
     verdicts: list[dict] = []
     agg: dict[str, dict[str, None]] = {k: {} for k in LINE_FLAG_KEYS}
     for i, line in enumerate(lines or []):
@@ -645,7 +826,13 @@ def check_lines(lines: list[dict], facts, *, attested=None,
              "new_numbers": _line_numbers(text, evidence),
              "inflated_claims": sorted(_ownership_families(text) - _ownership_families(evidence)),
              "new_proper_nouns": _line_proper_nouns(text, evidence, att_words),
-             "similarity": None, "low_similarity": []}
+             "unsupported_claims": [], "similarity": None, "low_similarity": []}
+        if line.get("check_claims", True):
+            real = "\n".join(_fact_evidence(fmap[x]) for x in ids
+                              if x in fmap and not x.startswith("_"))
+            v["unsupported_claims"] = capability_claims(
+                text, real, fmap=fmap, header_index=hidx, floor=claim_floor,
+                skip_families=set(v["inflated_claims"]))
         if line.get("rephrased") or line.get("source_text"):
             src = str(line.get("source_text") or "\n".join(getattr(f, "text", str(f)) for f in cited))
             v["similarity"] = round(token_overlap(text, src), 3)

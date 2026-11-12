@@ -414,3 +414,198 @@ def test_cli_review_and_ask(capsys):
                    "--path", path]) == 0
     assert "value: '1 month'" in capsys.readouterr().out
     assert A.main(["review", str(EXAMPLE / "missing.yaml")]) == 1
+
+
+# --------------------------------------------------------------------------- Phase 3 review fixes
+
+def with_data(bank, **blocks):
+    """A caller-vouched (approved) copy of the example with some blocks patched."""
+    data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in bank.data.items()}
+    for path, value in blocks.items():
+        cur = data
+        *parents, leaf = path.split("__")
+        for p in parents:
+            cur[p] = dict(cur.get(p) or {})
+            cur = cur[p]
+        cur[leaf] = value
+    return data
+
+
+def ask_d(data, q, ft="text", options=None, job=JOB_IN, **kw):
+    return A.answer_question(q, field_type=ft, options=options, job=job, answers=data, today=TODAY, **kw)
+
+
+def assert_asks_user(a):
+    assert a.value == "" and a.needs_user, (a.value, a.rule, a.note)
+
+
+@pytest.mark.parametrize("q, options", [
+    ("I authorize Acme to conduct a background check", None),
+    ("By checking this box, I authorize a background verification", None),
+    ("I hereby declare that I am legally authorized to work in India", None),
+    ("I hereby declare that I am legally authorized to work in India", ["Yes"]),
+    ("Background check", ["I authorize Acme to conduct a background check"]),
+    ("I am legally authorized to work in the United States", None),
+    ("I accept the terms and conditions", None),
+    ("I confirm that the information provided is accurate", None),
+    ("Data privacy notice", ["I have read the privacy policy"]),
+])
+def test_r3_1_attestation_checkbox_never_ticked(bank, q, options):
+    a = ask(bank, q, "checkbox", options)
+    assert_asks_user(a)
+    assert a.rule == "consent"
+
+
+@pytest.mark.parametrize("q", ["Signature", "Type your full name to sign", "Please sign below",
+                               "I authorize Acme to conduct a background check"])
+def test_r3_1_signature_free_text_never_answered(bank, q):
+    a = ask(bank, q, "text")
+    assert_asks_user(a)
+    assert a.rule == "consent"
+
+
+def test_r3_1_choice_checkboxes_still_answered(bank):
+    assert ask(bank, "Languages known", "checkbox", ["English", "Hindi", "Tamil"]).value == ["English", "Hindi"]
+    a = ask(bank, "Preferred work arrangement", "checkbox", ["Remote", "Hybrid", "On-site"])
+    assert set(a.value) == {"Remote", "Hybrid", "On-site"}
+
+
+WA_OPTS = ["I will require sponsorship to work in India",
+           "I am authorized to work in India without sponsorship"]
+
+
+def test_r3_2_work_auth_options_by_meaning(bank):
+    citizen = with_data(bank, work_authorization__india="Authorised (citizen)")
+    a = ask_d(citizen, "Are you authorized to work in India?", "radio", WA_OPTS)
+    assert a.value == "I am authorized to work in India without sponsorship" and not a.needs_user
+    a = ask(bank, "Are you authorized to work in India?", "radio", WA_OPTS)      # fake: not authorised
+    assert a.value == "I will require sponsorship to work in India"
+    assert A._polarity("I am authorized to work in India without sponsorship") == "yes"
+
+
+def test_r3_2_sponsorship_options_by_meaning(bank):
+    q = "Will you require visa sponsorship?"
+    opts = ["I do not require sponsorship", "I will require sponsorship"]
+    assert ask(bank, q, "radio", opts, job=JOB_US).value == "I will require sponsorship"
+    citizen = with_data(bank, work_authorization__india="Authorised (citizen)")
+    assert ask_d(citizen, q, "radio", list(reversed(opts))).value == "I do not require sponsorship"
+    assert ask_d(citizen, q, "radio", WA_OPTS).value == "I am authorized to work in India without sponsorship"
+
+
+def test_r3_2_two_affirmative_options_ask_the_user(bank):
+    citizen = with_data(bank, work_authorization__india="Authorised (citizen)")
+    a = ask_d(citizen, "Are you authorized to work in India?", "radio",
+              ["I am authorized to work in India", "I am eligible to work in India"])
+    assert a.needs_user
+    a = ask_d(citizen, "Are you authorized to work in India?", "radio",
+              ["I am authorized but will require sponsorship later", "Other"])
+    assert_asks_user(a)
+
+
+COUNTRIES = ["Bhutan", "British Indian Ocean Territory", "India", "Indonesia", "United Kingdom",
+             "United States", "United States Minor Outlying Islands"]
+
+
+def test_r3_3_nationality_demonym_maps_to_country(bank):
+    data = with_data(bank, personal__nationality="Indian", personal__citizenship="Indian")
+    a = ask_d(data, "Nationality", "select", COUNTRIES)
+    assert a.value == "India" and not a.needs_user
+    a = ask_d(data, "Nationality", "select", [c for c in COUNTRIES if c != "India"])
+    assert a.needs_user and a.value != "India"           # containment only: never autofilled
+    assert ask_d(data, "Nationality", "select", ["American", "British", "Indian"]).value == "Indian"
+    assert ask_d(data, "Nationality", "select", ["Asian Indian", "India"]).value == "India"
+    us = with_data(bank, personal__nationality="American")
+    assert ask_d(us, "Nationality", "select", COUNTRIES).value == "United States"
+    res = with_data(bank, current_address__country="India")
+    a = ask_d(res, "Country of residence", "select", COUNTRIES)
+    assert a.value == "India" and not a.needs_user
+    # race fallbacks still apply to race / ethnicity
+    assert ask(bank, "Ethnicity", "select", ["White", "Asian", "Black"]).value == "Asian"
+
+
+EXP_OPTS = ["0-6 months", "6 months - 1 year", "1-2 years", "2-5 years", "5+ years"]
+
+
+def test_r3_4_experience_ranges_in_years(bank):
+    data = with_data(bank, employment__current_start_date="2025-07-17")     # 15 months on TODAY
+    assert ask_d(data, "Years of experience", "select", EXP_OPTS).value == "1-2 years"
+    assert ask_d(data, "Total experience", "select",
+                 ["Less than 1 year", "1-3 years", "3+ years"]).value == "1-3 years"
+    assert ask_d(data, "Total experience", "select",
+                 ["0-12 months", "12-24 months", "24+ months"]).value == "12-24 months"
+    assert ask_d(data, "Years of experience", "number").value == 1
+    assert ask_d(data, "Total experience (in months)", "number").value == 15
+    a = ask_d(data, "Years of experience", "select", ["0-1 years", "2-3 years", "3+ years"])
+    assert_asks_user(a)                                      # 1.25 years: no range holds it
+    assert "no option covers" in a.note
+
+
+def test_r3_4_experience_shared_edges(bank):
+    data = with_data(bank, employment__current_start_date="2024-11-12")     # exactly 2 years
+    assert ask_d(data, "Years of experience", "select", ["0-2 years", "2-4 years", "4+ years"]).value == "2-4 years"
+    assert ask_d(data, "Years of experience", "select", ["Less than 2 years", "More than 2 years"]).value == ""
+
+
+def test_r3_5_currency_never_falls_back_to_usd_default(bank):
+    gbp_job = {**JOB_US, "comp_currency": "GBP", "comp_min": 50000, "comp_max": 70000}
+    assert_asks_user(ask(bank, "Expected salary", "number", job=gbp_job))
+    assert_asks_user(ask(bank, "Expected salary (£)", "number", job=JOB_US))
+    assert_asks_user(ask(bank, "Desired salary in CAD", "number", job=JOB_US))
+    assert_asks_user(ask(bank, "Expected salary", "number", job={**JOB_US, "country_bucket": "non-IN"}))
+
+
+def test_r3_5_ctc_word_follows_job_currency(bank):
+    usd = {**JOB_US, "comp_currency": "USD"}
+    a = ask(bank, "Expected CTC", "number", job=usd)
+    assert a.value == 50000 and "usd" in a.source
+    remote = {**JOB_IN, "country_bucket": "unknown", "workplace_type": "remote"}
+    assert_asks_user(ask(bank, "Expected CTC", "number", job=remote))
+    assert_asks_user(ask(bank, "Expected CTC", "number", job={**remote, "remote": True}))
+    a = ask(bank, "Expected CTC", "text", job={**remote, "comp_currency": "EUR"})
+    assert a.value == "EUR 45,000 per year"
+    assert ask(bank, "Expected CTC (in lakhs)", "number", job=usd).value == 18      # the question says LPA
+
+
+@pytest.mark.parametrize("q, cur", [("Expected salary (£)", "GBP"), ("Expected salary in GBP", "GBP"),
+                                    ("Desired salary (C$)", "CAD"), ("Desired salary (S$)", "SGD"),
+                                    ("Desired salary (A$)", "AUD"), ("Desired salary (€)", "EUR"),
+                                    ("Desired salary (US$)", "USD"), ("Desired salary ($)", "USD"),
+                                    ("Expected salary (₹ per annum)", "INR")])
+def test_r3_5_currency_detected_in_question(bank, q, cur):
+    ec = dict(bank.data["compensation"]["expected_ctc"])
+    for k, v in {"gbp": 41000, "cad": 72000, "sgd": 83000, "aud": 94000}.items():
+        ec[f"{k}_default"] = v
+    data = with_data(bank, compensation__expected_ctc=ec)
+    a = ask_d(data, q, "text", job=JOB_US)
+    if cur == "INR":
+        assert a.value.endswith("LPA")
+    else:
+        assert a.value.startswith(f"{cur} "), (a.value, a.note)
+
+
+VET_OPTS = ["Yes", "No, I am not a veteran", "Not applicable"]
+
+
+def test_r3_6_not_applicable_is_its_own_class(bank):
+    assert ask(bank, "Veteran status", "select", VET_OPTS).value == "No, I am not a veteran"
+    data = with_data(bank, voluntary_disclosures__veteran_status="No")
+    assert ask_d(data, "Veteran status", "select", list(reversed(VET_OPTS))).value == "No, I am not a veteran"
+    for na in ("Not applicable", "N/A", "None of the above"):
+        assert A._polarity(na) == "na"
+    assert A._polarity("Prefer not to say") == "decline"
+    assert A.match_option(False, ["Yes", "Not applicable", "No"])[0] == "No"
+    assert A.match_option(False, ["Not applicable", "Yes"]) == (None, 0.0)
+    o, score = A.match_option(False, ["No, never", "No, not currently", "Yes"])
+    assert score < 0.6                                       # two different "no"s: ask
+
+
+def test_r3_11_citizenship_checks_each_country_on_its_own_tokens(bank):
+    us = with_data(bank, personal__citizenship="United States")
+    assert ask_d(us, "Are you a UK citizen?", "radio", ["Yes", "No"], job=None).value == "No"
+    assert ask_d(us, "Are you a US citizen?", "radio", ["Yes", "No"], job=None).value == "Yes"
+    assert ask_d(us, "Are you a citizen of the United Kingdom?", "radio", ["Yes", "No"], job=None).value == "No"
+    uk = with_data(bank, personal__citizenship="British")
+    assert ask_d(uk, "Are you a UK citizen?", "radio", ["Yes", "No"], job=None).value == "Yes"
+    assert ask_d(uk, "Are you a U.S. citizen?", "radio", ["Yes", "No"], job=None).value == "No"
+    ind = with_data(bank, personal__citizenship="Indian")
+    assert ask_d(ind, "Are you an Indian citizen?", "radio", ["Yes", "No"]).value == "Yes"

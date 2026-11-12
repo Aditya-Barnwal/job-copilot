@@ -4,7 +4,7 @@ PORT    ?= 8000
 TORCH_CPU = --extra-index-url https://download.pytorch.org/whl/cpu
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status
+.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review answers-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status
 
 help:  ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
@@ -45,6 +45,9 @@ facts-check:  ## validate profile/resume_facts.yaml
 
 facts-review:  ## list every résumé fact you still need to confirm
 	$(PY) -m jobcopilot.facts review
+
+answers-review:  ## list every value autofill could use + its status (approved/proposed)
+	$(PY) -m jobcopilot.answers review
 
 llm-check:  ## show which LLM provider/model is live
 	$(PY) -c "from dotenv import load_dotenv; load_dotenv('.env'); from jobcopilot import llm; print(llm.health())"

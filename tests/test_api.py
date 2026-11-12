@@ -654,3 +654,145 @@ def test_ingest_endpoint_starts_from_filters_yaml(client, monkeypatch, tmp_path)
     fc = seen[-1]
     assert (fc.min_lpa, fc.usd_to_inr, fc.target_roles) == (10.0, 90.0, ["data engineer"])
     assert client.post("/api/ingest", json={"min_lpa": "lots"}).status_code == 400
+
+
+# --- Phase 3: tailoring v2 routes (server/routers/tailor.py) --------------------
+
+import importlib.util  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from jobcopilot import tailor_v2  # noqa: E402
+
+EXPECTED_ROUTES.update({
+    ("POST", "/api/jobs/{key}/tailor/v2"), ("GET", "/api/jobs/{key}/tailor/v2/keywords"),
+    ("POST", "/api/jobs/{key}/artifacts/{artifact_id}/approve"),
+    ("GET", "/api/jobs/{key}/artifacts"), ("GET", "/api/artifacts/{artifact_id}/pdf"),
+})
+if importlib.util.find_spec("server.routers.writing") is not None:   # workstream C's router
+    from server.routers import writing as _writing  # noqa: E402
+    EXPECTED_ROUTES.update({(m, r.path) for r in _flatten(_writing.router.routes)
+                            for m in (getattr(r, "methods", None) or ()) if m != "HEAD"})
+
+EXAMPLE_PROFILE = Path(__file__).resolve().parent.parent / "profile.example"
+B1 = "Built a Go order service handling 200+ requests per second behind a REST API."
+
+
+@pytest.fixture(autouse=True)
+def _no_real_profile(tmp_path, monkeypatch):
+    """Every test in this module sees NO confirmed facts unless it asks for the
+    example profile, so the v1 /tailor tests stay on v1 whatever the user's
+    real profile/ holds (auto engine = v2 once facts are confirmed)."""
+    monkeypatch.setenv("JOBCOPILOT_PROFILE_DIR", str(tmp_path / "no-profile"))
+    monkeypatch.delenv(tailor_v2.ENGINE_ENV, raising=False)
+
+
+@pytest.fixture
+def example_profile(tmp_path, monkeypatch):
+    d = tmp_path / "profile"
+    shutil.copytree(EXAMPLE_PROFILE, d)
+    monkeypatch.setenv("JOBCOPILOT_PROFILE_DIR", str(d))
+
+    def build_content(base, facts, *, edit_plan=None):
+        return {"base": base}
+
+    def render(content, base, out_dir):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "resume.tex").write_text("% fake\n", encoding="utf-8")
+        (out_dir / "resume.pdf").write_bytes(b"%PDF-1.4 fake\n")
+        return SimpleNamespace(tex_path=out_dir / "resume.tex", pdf_path=out_dir / "resume.pdf",
+                               pages=1, text="", warnings=[])
+    mod = SimpleNamespace(build_content=build_content, render=render, pick_base=lambda j: "backend_sde")
+    monkeypatch.setattr(tailor_v2, "_render_mod", lambda: mod)
+    return d
+
+
+def _fake_plan(monkeypatch, rephrase=None):
+    calls = []
+
+    def fake(system, user, **_kw):
+        calls.append(user)
+        return {"order": [], "exclude": [], "rephrase": rephrase or {}, "gaps": []}, {"retries": 0}
+    monkeypatch.setattr(llm, "complete_json", fake)
+    return calls
+
+
+def test_tailor_v2_refused_without_facts_is_409(client):
+    key = seed_job()
+    r = client.post(f"/api/jobs/{key}/tailor/v2", json={})
+    assert r.status_code == 409
+    assert r.json()["code"] == "no_confirmed_facts" and "Confirm" in r.json()["reasons"][0]
+    assert client.post("/api/jobs/nope/tailor/v2", json={}).status_code == 404
+    assert client.get(f"/api/jobs/{key}/tailor/v2/keywords").status_code == 409
+
+
+def test_v1_tailor_routes_to_v2_on_request(client, example_profile, monkeypatch):
+    key = seed_job()
+    _fake_plan(monkeypatch)
+    r = client.post(f"/api/jobs/{key}/tailor?v=2", json={})
+    assert r.status_code == 200 and r.json()["engine"] == "v2"
+    # auto: confirmed example facts -> v2 by default
+    r = client.post(f"/api/jobs/{key}/tailor", json={})
+    assert r.json()["engine"] == "v2"
+    monkeypatch.setenv(tailor_v2.ENGINE_ENV, "v1")
+    r = client.post(f"/api/jobs/{key}/tailor", json={})
+    assert r.status_code == 400 and r.json()["detail"] == "no resume uploaded"   # v1 path
+
+
+def test_tailor_v2_flow_keywords_tailor_approve_pdf(client, example_profile, monkeypatch):
+    key = seed_job()
+    kw = client.get(f"/api/jobs/{key}/tailor/v2/keywords").json()
+    assert "Kubernetes" in kw["keywords"]["missing"]
+    _fake_plan(monkeypatch, {"exp.acme.b1": B1 + " Cut costs by 40%."})
+    r = client.post(f"/api/jobs/{key}/tailor/v2", json={"struck_keywords": ["Django"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "needs_review" and "40%" in body["grounding"]["flags"]["new_numbers"]
+    assert "Kubernetes" in body["missing_keywords"] and body["diff"]
+    aid = body["artifact_id"]
+    assert body["pdf_url"] == f"/api/artifacts/{aid}/pdf"
+    pdf = client.get(body["pdf_url"])
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+
+    arts = client.get(f"/api/jobs/{key}/artifacts").json()["artifacts"]
+    assert [a["id"] for a in arts] == [aid] and arts[0]["status"] == "needs_review"
+
+    r = client.post(f"/api/jobs/{key}/artifacts/{aid}/approve", json={})
+    assert r.status_code == 409 and r.json()["unconfirmed"] == {"new_numbers": ["40%"]}
+    r = client.post(f"/api/jobs/{key}/artifacts/{aid}/approve",
+                    json={"confirmed_flags": {"new_numbers": ["40%"]}})
+    assert r.status_code == 200, r.text
+    assert store.get_job(key)["status"] == "ready_to_submit"
+    assert store.get_job(key)["artifact_id"] == aid
+    assert client.post(f"/api/jobs/{key}/artifacts/999/approve", json={}).status_code == 404
+
+
+def test_v1_approve_routes_artifact_id_to_v2(client, example_profile, monkeypatch):
+    key = seed_job()
+    _fake_plan(monkeypatch)
+    aid = client.post(f"/api/jobs/{key}/tailor/v2", json={}).json()["artifact_id"]
+    r = approve(client, key, artifact_id=aid)
+    assert r.status_code == 200 and r.json()["artifact_id"] == aid
+    assert approve(client, key, artifact_id="x").status_code == 400
+
+
+def test_tailor_v2_bad_body_is_400(client, example_profile, monkeypatch):
+    key = seed_job()
+    _fake_plan(monkeypatch)
+    assert client.post(f"/api/jobs/{key}/tailor/v2", json={"approved_keywords": "go"}).status_code == 400
+    assert client.post(f"/api/jobs/{key}/tailor/v2", json={"base": 3}).status_code == 400
+    assert client.post(f"/api/jobs/{key}/tailor/v2", json={"base": "nope"}).status_code == 400
+
+
+def test_artifact_pdf_is_confined_to_applications_dir(client, tmp_path):
+    key = seed_job()
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4 secret\n")
+    aid, _ = store.create_artifact(key, "backend_sde")
+    store.update_artifact(aid, pdf_path=str(outside), status="ok")
+    assert client.get(f"/api/artifacts/{aid}/pdf").status_code == 404
+    sneaky = store.applications_dir() / ".." / "secret.pdf"
+    store.update_artifact(aid, pdf_path=str(sneaky))
+    assert client.get(f"/api/artifacts/{aid}/pdf").status_code == 404
+    assert client.get("/api/artifacts/12345/pdf").status_code == 404
+    assert client.get("/api/jobs/nope/artifacts").status_code == 404

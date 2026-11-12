@@ -190,7 +190,25 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
         store.update_run(run_id, summary=summary, db_path=db_path)
 
     # 6-7. Phase 3 / 4 hooks
-    step("tailor", None, noop="Phase 3: tailoring not built yet")
+    def _tailor_today() -> dict:
+        # Draft a tailored résumé for today's main-queue jobs (nothing is ever sent or
+        # submitted; every draft waits for your approval). No LLM call happens when no
+        # facts are confirmed. Limit: config/schedule.yaml tailor_limit (default 25).
+        from . import tailor_v2
+        limit = int((_config.schedule() or {}).get("tailor_limit", 25))
+        out = tailor_v2.tailor_queue(day=day, limit=limit, db_path=db_path)
+        res = out.get("results") or []
+        by: dict[str, int] = {}
+        for r in res:
+            st = (r.get("status") if isinstance(r, dict) else getattr(r, "status", None)) or "unknown"
+            by[st] = by.get(st, 0) + 1
+        return {"tailored": out.get("tailored", len(res)), "by_status": by,
+                "skipped": out.get("skipped"), "reason": out.get("reason")}
+
+    if no_network:
+        step("tailor", None, noop="fixture mode: no LLM calls")
+    else:
+        step("tailor", _tailor_today)
     step("fill_plan", None, noop="Phase 4: fill planning not built yet")
 
     failed_all = results["ingest"]["status"] != "ok" or _all_sources_failed(ingest_summary)

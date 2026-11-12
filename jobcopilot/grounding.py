@@ -42,6 +42,7 @@ coverage — a check the user learns to ignore is worse than no check.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Ownership / seniority verb families → the surface forms we match. A family is
 # "introduced" if any of its forms is used as a claim in the tailored text but
@@ -430,3 +431,248 @@ def check_grounding(original_resume: str,
         "clean": not (inserted_unsupported or unsupported_skills
                       or new_numbers or inflated_claims),
     }
+
+
+# =========================================================================== v3
+# Grounding v3 (Phase 3, PLAN D4): structural, per line. Every output line of a
+# tailored résumé cites the fact ids it came from, and each line is checked
+# against the text of THOSE facts only (plus keywords the user attested), not
+# against the whole résumé. A line is supported only when every tech term,
+# number, ownership/title claim and proper noun in it appears in its cited
+# facts. A line citing no fact, or a fact that isn't confirmed/usable, is
+# unsupported. Any unsupported line makes the result unclean: fail closed.
+#
+# Similarity guard (Resume-Matcher idea): a rephrased line whose token overlap
+# (Jaccard over stemmed content words) with its source facts is below
+# SIMILARITY_FLOOR is flagged even if no single token is new — a rewrite that
+# far from the source needs a human look.
+
+SIMILARITY_FLOOR = 0.45
+
+# Flag lists in a check_lines() result. Every one except `unknown_facts` can be
+# confirmed token-by-token by the user at approval; a line citing a fact that
+# isn't usable can never be approved (tailoring refuses unconfirmed facts).
+LINE_FLAG_KEYS = ("unsupported_skills", "new_numbers", "inflated_claims",
+                  "new_proper_nouns", "low_similarity", "unknown_facts")
+UNCONFIRMABLE_FLAGS = frozenset({"unknown_facts"})
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[.'’+#-][A-Za-z0-9]+)*")
+_SENTENCE_START_RE = re.compile(r"(?:^|[.!?:;•|(\"]\s*|\s[-–—]\s+)$")
+_STOPWORDS = frozenset("""
+a an the and or of to in on for with by at from as into via over under across
+per is are was were be been being this that these those it its their our my
+using used use than then so such which who whom while within without
+""".split())
+# Capitalised words that are not names. Kept small on purpose: a word outside
+# the cited facts is flagged unless it is listed here or the user attests it.
+_COMMON_CAPS = frozenset({"i", "a", "an", "the", "and", "or", "of", "in", "on",
+                          "to", "for", "with", "by", "at", "as", "via"})
+
+
+def _fact_evidence(f) -> str:
+    """Everything a line citing `f` may draw on: its text, its tech line and
+    its skill tags (each tag must already appear in the text — facts.py)."""
+    if isinstance(f, str):
+        return f
+    parts = [getattr(f, "text", "") or ""]
+    parts += list(getattr(f, "tech", []) or [])
+    parts += list(getattr(f, "skills", []) or [])
+    return " | ".join(p for p in parts if p)
+
+
+def _fact_map(facts) -> dict:
+    """{id: Fact | str} from a mapping, an iterable of Facts, or a ResumeFacts."""
+    if facts is None:
+        return {}
+    if hasattr(facts, "by_id") and callable(facts.by_id):
+        return dict(facts.by_id())
+    if isinstance(facts, dict):
+        return dict(facts)
+    return {f.id: f for f in facts if getattr(f, "id", None)}
+
+
+def _stem(w: str) -> str:
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 2 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {_stem(w.lower()) for w in _WORD_RE.findall(text or "")
+            if w.lower() not in _STOPWORDS} | set(_numbers(text))
+
+
+def token_overlap(a: str, b: str) -> float:
+    """Jaccard overlap of stemmed content words (+ numbers); 1.0 for two empties."""
+    ta, tb = _content_tokens(a), _content_tokens(b)
+    if not ta and not tb:
+        return 1.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _skill_spans(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, canonical) for every known skill / tech term in `text`."""
+    spans: list[tuple[int, int, str]] = []
+    try:
+        from .skills import _matches
+        spans += list(_matches(text))
+    except Exception:
+        pass
+    low = (text or "").lower()
+    for term in _tech_vocab():
+        for m in re.finditer(r"(?<![A-Za-z0-9])" + re.escape(term.lower()) + r"(?![A-Za-z0-9])", low):
+            spans.append((m.start(), m.end(), term))
+    return spans
+
+
+def _attested_terms(attested) -> set[str]:
+    out: set[str] = set()
+    for k in attested or ():
+        k = str(k).strip()
+        if not k:
+            continue
+        out.add(k.lower())
+        try:
+            from .skills import canonical
+            c = canonical(k)
+            if c:
+                out.add(c.lower())
+        except Exception:
+            pass
+    return out
+
+
+def _attested_words(attested) -> set[str]:
+    return {w.lower() for k in attested or () for w in _WORD_RE.findall(str(k))}
+
+
+def _plain(word: str) -> str:
+    w = word.lower().replace("’", "'")
+    if w.endswith("'s"):
+        w = w[:-2]
+    return w[:-1] if len(w) > 3 and w.endswith("s") else w
+
+
+def _line_skills(text: str, evidence: str, attested: set[str]) -> list[str]:
+    ev = {c.lower() for _, _, c in _skill_spans(evidence)}
+    out: dict[str, str] = {}
+    for _, _, canon in _skill_spans(text):
+        c = canon.lower()
+        if c in ev or c in attested or _has_term(evidence, canon):
+            continue
+        out.setdefault(c, canon)
+    return list(out.values())
+
+
+def _line_numbers(text: str, evidence: str) -> list[str]:
+    ev_spelled = _spelled_numbers(evidence)
+    ev_nums = _numbers(evidence).union(*ev_spelled.values())
+    return sorted((_numbers(text) - ev_nums)
+                  | {w for w, canon in _spelled_numbers(text).items()
+                     if w not in ev_spelled and not (canon & ev_nums)})
+
+
+def _line_proper_nouns(text: str, evidence: str, attested_words: set[str]) -> list[str]:
+    """Capitalised / mixed-case words not in the cited facts. Sentence-initial
+    words are skipped unless mixed-case ("OpenAI", "AWS"), since a rephrase
+    normally opens with a capitalised verb; tech terms are left to the skill
+    check so one token is never reported twice."""
+    ev_words = {_plain(w) for w in _WORD_RE.findall(evidence or "")}
+    covered = [(s, e) for s, e, _ in _skill_spans(text)]
+    out: dict[str, None] = {}
+    for m in _WORD_RE.finditer(text or ""):
+        w = m.group(0)
+        if not w[0].isupper() and not any(c.isupper() for c in w[1:]):
+            continue
+        if any(s <= m.start() < e for s, e in covered):
+            continue
+        mixed = any(c.isupper() for c in w[1:])
+        if not mixed and _SENTENCE_START_RE.search(text[:m.start()]):
+            continue
+        p = _plain(w)
+        if w.lower() in _TITLE_WORDS or w.lower() in _ROLE_NOUNS or p in _ROLE_NOUNS:
+            continue    # titles are the claim check's job ("Senior Engineer")
+        if p in ev_words or w.lower() in _COMMON_CAPS or w.lower() in attested_words \
+                or p in attested_words:
+            continue
+        out.setdefault(w, None)
+    return list(out)
+
+
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2212"), "-")
+
+
+def _fold_for_tokens(text: str) -> str:
+    """Accent-fold (é -> e) and normalise Unicode hyphens/dashes for tokenising only."""
+    t = unicodedata.normalize("NFKD", text or "").translate(_DASHES)
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def check_lines(lines: list[dict], facts, *, attested=None,
+                similarity_floor: float = SIMILARITY_FLOOR) -> dict:
+    """Per-line grounding verdicts for a tailored résumé.
+
+    `lines`: [{text, fact_ids, rephrased?: bool, source_text?: str}] in output
+    order. `facts`: the USABLE facts (a list of Facts, a ResumeFacts, or a
+    mapping id -> Fact | text); a cited id missing from it counts as an
+    unconfirmed fact. `attested`: keywords the user says are true of them —
+    allowed in any line as skills and proper nouns (never as numbers).
+
+    Returns {clean, lines: [verdict], flags: {key: [tokens]}, unsupported_lines}.
+    Each verdict: {index, text, fact_ids, supported, similarity, unknown_facts,
+    unsupported_skills, new_numbers, inflated_claims, new_proper_nouns,
+    low_similarity, offending}. The similarity guard applies to lines marked
+    `rephrased` (or carrying `source_text`) and reports the line's fact ids.
+    """
+    fmap = _fact_map(facts)
+    att_terms = _attested_terms(attested)
+    att_words = _attested_words(attested)
+    verdicts: list[dict] = []
+    agg: dict[str, dict[str, None]] = {k: {} for k in LINE_FLAG_KEYS}
+    for i, line in enumerate(lines or []):
+        raw_text = str((line or {}).get("text") or "")
+        # Fold accents + Unicode dashes BEFORE tokenising: the word patterns are ASCII,
+        # so "résumé" would otherwise split into "r", "sum" and false-flag the skill R.
+        text = _fold_for_tokens(raw_text)
+        ids = [str(x) for x in ((line or {}).get("fact_ids") or []) if x]
+        unknown = [x for x in ids if x not in fmap]
+        cited = [fmap[x] for x in ids if x in fmap]
+        evidence = _fold_for_tokens("\n".join(_fact_evidence(f) for f in cited))
+        v = {"index": i, "text": raw_text, "fact_ids": ids,
+             "unknown_facts": unknown if ids else ["(no fact cited)"],
+             "unsupported_skills": _line_skills(text, evidence, att_terms),
+             "new_numbers": _line_numbers(text, evidence),
+             "inflated_claims": sorted(_ownership_families(text) - _ownership_families(evidence)),
+             "new_proper_nouns": _line_proper_nouns(text, evidence, att_words),
+             "similarity": None, "low_similarity": []}
+        if line.get("rephrased") or line.get("source_text"):
+            src = str(line.get("source_text") or "\n".join(getattr(f, "text", str(f)) for f in cited))
+            v["similarity"] = round(token_overlap(text, src), 3)
+            if v["similarity"] < similarity_floor:
+                v["low_similarity"] = list(ids) or ["(no fact cited)"]
+        v["offending"] = [t for k in LINE_FLAG_KEYS for t in v[k]]
+        v["supported"] = not v["offending"]
+        for k in LINE_FLAG_KEYS:
+            for t in v[k]:
+                agg[k].setdefault(t, None)
+        verdicts.append(v)
+    flags = {k: list(d) for k, d in agg.items()}
+    bad = [v["index"] for v in verdicts if not v["supported"]]
+    return {"clean": not bad, "lines": verdicts, "flags": flags, "unsupported_lines": bad}
+
+
+def unconfirmed_line_flags(grounding: dict, confirmed) -> dict[str, list[str]]:
+    """Flags in a check_lines() result (plus any extra flag lists in it) that
+    `confirmed` ({key: [tokens]}, case-insensitive) doesn't cover. Flags in
+    UNCONFIRMABLE_FLAGS are always returned. Malformed input = nothing confirmed."""
+    given = confirmed if isinstance(confirmed, dict) else {}
+    out: dict[str, list[str]] = {}
+    for key, items in (grounding.get("flags") or {}).items():
+        raw = given.get(key)
+        ok = ({str(x).strip().lower() for x in raw}
+              if isinstance(raw, list) and key not in UNCONFIRMABLE_FLAGS else set())
+        missing = [x for x in items or [] if str(x).strip().lower() not in ok]
+        if missing:
+            out[key] = missing
+    return out

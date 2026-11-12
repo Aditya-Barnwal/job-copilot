@@ -6,11 +6,12 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 
 from jobcopilot import email_draft, scoring, store
 from jobcopilot import tailor as tailor_mod
+from jobcopilot import tailor_v2
 from jobcopilot import versions as versions_mod
 from jobcopilot.grounding import check_grounding
 
@@ -39,8 +40,11 @@ def tailor_suggestion(key: str):
 
 
 @router.post("/api/jobs/{key}/tailor")
-def tailor_job(key: str, body: Optional[dict] = Body(default=None)):
+def tailor_job(key: str, body: Optional[dict] = Body(default=None),
+               v: Optional[int] = Query(default=None)):
     body = body or {}
+    if v == 2 or (v is None and tailor_v2.engine() == "v2"):
+        return tailor_v2_endpoint(key, body)
     approved = body.get("approved_keywords") or []
     try:
         result = tailor_mod.tailor(key, approved_keywords=approved)
@@ -114,7 +118,12 @@ def _advance_to_ready(key: str, job: dict) -> None:
 
 
 @router.post("/api/jobs/{key}/approve")
-def approve_job(key: str, body: dict = Body(...)):
+def approve_job(key: str, body: dict = Body(...), v: Optional[int] = Query(default=None)):
+    if v == 2 or body.get("artifact_id") is not None:
+        aid = body.get("artifact_id")
+        if aid is None:
+            raise HTTPException(status_code=400, detail="artifact_id is required with v=2")
+        return approve_artifact(key, _parse_int(aid, "artifact_id"), body)
     job = store.get_job(key)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -203,3 +212,103 @@ def download_version(vid: int):
     if not p.exists():
         raise HTTPException(status_code=404, detail="pdf missing on disk")
     return FileResponse(str(p), media_type="application/pdf", filename=p.name)
+
+
+# --- tailoring v2 (Phase 3): edit plans over confirmed facts -----------------
+
+def _parse_int(raw, name: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer")
+    try:
+        return int(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer")
+
+
+def _str_list(body: dict, name: str) -> list[str]:
+    raw = body.get(name)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail=f"{name} must be a list")
+    return [str(x) for x in raw]
+
+
+_REFUSAL_HTTP = {"job_not_found": 404, "no_confirmed_facts": 409, "no_base": 400}
+
+
+@router.get("/api/jobs/{key}/tailor/v2/keywords")
+def tailor_v2_keywords(key: str, base: Optional[str] = None):
+    """Missing keywords BEFORE tailoring, so the UI can strike or attest them."""
+    out = tailor_v2.preview(key, base=base)
+    if out["status"] == "refused":
+        return JSONResponse(status_code=_REFUSAL_HTTP.get(out["code"], 400), content=out)
+    return out
+
+
+@router.post("/api/jobs/{key}/tailor/v2")
+def tailor_v2_endpoint(key: str, body: Optional[dict] = Body(default=None)):
+    body = body or {}
+    base = body.get("base")
+    if base is not None and not isinstance(base, str):
+        raise HTTPException(status_code=400, detail="base must be a string")
+    approved = _str_list(body, "approved_keywords")
+    struck = _str_list(body, "struck_keywords")
+    try:
+        res = tailor_v2.tailor(key, base=base, approved_keywords=approved, struck_keywords=struck)
+    except Exception as exc:
+        log.error("tailor v2 failed key=%s: %s", key, exc)
+        raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}")
+    out = res.to_dict()
+    out["engine"] = "v2"
+    if res.status == "refused":
+        return JSONResponse(status_code=_REFUSAL_HTTP.get(res.code or "", 400), content=out)
+    return out
+
+
+@router.post("/api/jobs/{key}/artifacts/{artifact_id}/approve")
+def approve_artifact(key: str, artifact_id: int, body: Optional[dict] = Body(default=None)):
+    body = body or {}
+    approved = body.get("approved_keywords")
+    if approved is not None and not isinstance(approved, list):
+        raise HTTPException(status_code=400, detail="approved_keywords must be a list")
+    out = tailor_v2.approve(key, artifact_id, confirmed_flags=body.get("confirmed_flags"),
+                            approved_keywords=approved)
+    code = out.pop("http", 200)
+    if code == 404:
+        raise HTTPException(status_code=404, detail=out.get("detail"))
+    if code != 200:
+        return JSONResponse(status_code=code, content=out)
+    return out
+
+
+def _artifact_summary(a: dict) -> dict:
+    g = a.get("grounding") or {}
+    return {"id": a["id"], "job_key": a["job_key"], "version": a["version"], "base": a.get("base"),
+            "status": a.get("status"), "pages": a.get("pages"), "created_at": a.get("created_at"),
+            "approved_at": a.get("approved_at"), "grounding_clean": g.get("clean"),
+            "flags": g.get("flags"), "edit_plan": a.get("edit_plan"),
+            "pdf_url": f"/api/artifacts/{a['id']}/pdf" if a.get("pdf_path") else None}
+
+
+@router.get("/api/jobs/{key}/artifacts")
+def list_artifacts_endpoint(key: str):
+    if not store.get_job(key):
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"artifacts": [_artifact_summary(a) for a in store.list_artifacts(key)]}
+
+
+@router.get("/api/artifacts/{artifact_id}/pdf")
+def artifact_pdf(artifact_id: int):
+    a = store.get_artifact(artifact_id)
+    if not a or not a.get("pdf_path"):
+        raise HTTPException(status_code=404, detail="not found")
+    root = store.applications_dir().resolve()
+    p = Path(a["pdf_path"]).resolve()
+    # Only files under data/applications are ever served (no traversal via a stored path).
+    if not p.is_relative_to(root) or p.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="not found")
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="pdf missing on disk")
+    return FileResponse(str(p), media_type="application/pdf",
+                        filename=f"resume_v{a['version']}.pdf")

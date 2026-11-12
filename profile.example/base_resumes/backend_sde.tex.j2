@@ -1,0 +1,101 @@
+% roles: backend, sde, full-stack
+% Base résumé "backend_sde" (pdfLaTeX, Times / NimbusRomNo9L, letter, 1 page).
+% Jinja2 with LaTeX-safe delimiters (see jobcopilot/resume/render.py): blocks in
+% double-paren-star, values in triple parens, comments in double-paren-equals. Every
+% value is LaTeX-escaped by the renderer; URLs use |url; |raw only wraps this file's macros.
+% Content and order come from resume_facts.yaml + bases.yaml (jobcopilot/resume).
+\documentclass[letterpaper,10pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{times}
+\usepackage{textcomp}
+\usepackage{microtype}  % font expansion, as in the original PDF
+\usepackage[letterpaper,left=0.5in,right=0.5in,top=28.9pt,bottom=0.3in]{geometry}
+\usepackage{enumitem}
+\usepackage[pdfborder={0 0 0},colorlinks=false]{hyperref}
+\pdfgentounicode=1
+\input{glyphtounicode}
+\pdfinterwordspaceon  % real space glyphs between words: ATS parsers keep word breaks
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+\emergencystretch=2em
+\raggedbottom
+
+% Section heading: \large bold, full-width 0.4pt rule.
+\newcommand{\rsection}[1]{\par\vspace{\rsecbefore}{\large\bfseries #1\strut\par}%
+  \vspace{\rsecrule}\hrule height 0.4pt\prevdepth=0pt\vspace{\rsecafter}}
+\newlength{\rsecbefore}\setlength{\rsecbefore}{2.55pt}
+\newlength{\rsecrule}\setlength{\rsecrule}{-1.05pt}
+\newlength{\rsecafter}\setlength{\rsecafter}{-1.65pt}
+% Text is ragged-right like the originals; \rfill (filll) still right-aligns cells.
+\newcommand{\rfill}{\hskip 0pt plus 1filll\relax}
+% Two-row entry: bold left / plain right, italic left / italic right.
+\newcommand{\rentry}[4]{\textbf{#1}\rfill #2\par\textit{#3}\rfill\textit{#4}\par}
+% One-row entry: bold title, plain subtitle / italic right (projects, hackathons).
+\newcommand{\rhead}[3]{\textbf{#1}#2\rfill\textit{#3}\par}
+% Bullet list; #1 = space before the list, #2 = space after it.
+\newenvironment{rbullets}[2]{\vspace{#1}\def\rbafter{#2}\begin{itemize}[label=\textbullet,
+  leftmargin=13pt,labelsep=5pt,itemsep=0pt,topsep=0pt,parsep=0pt,partopsep=0pt]}%
+  {\end{itemize}\vspace{\rbafter}}
+\newcommand{\rsep}{\hspace{1.6pt}\textbar\hspace{1.6pt}}
+
+\begin{document}
+\raggedright\frenchspacing
+
+((* macro bullets(lines, before="-2.1pt", after="-2pt") *))
+((* if lines *))
+\begin{rbullets}{((( before )))}{((( after )))}
+((* for b in lines *))
+  \item ((( b.text )))
+((* endfor *))
+\end{rbullets}
+((* endif *))
+((* endmacro *))
+((* macro linked(text, url) *))((* if url|url *))\href{((( url|url )))}{((( text )))}((* else *))((( text )))((* endif *))((* endmacro *))
+
+{\centering
+{\LARGE\bfseries ((( header.name )))\par}
+\vspace{2.9pt}
+{\small
+((* for c in header.contact *))((* if not loop.first *)) \rsep{} ((* endif *))((( linked(c.text, c.url)|raw )))((* endfor *))((* for l in header.links *))((* if header.contact or not loop.first *)) \rsep{} ((* endif *))((( linked(l.text, l.url)|raw )))((* endfor *))\par}
+}
+\vspace{1.3pt}
+
+((* for s in sections *))
+\rsection{((( s.heading )))}
+((* if s.key == "skills" *))
+\vspace{-1.6pt}
+((* for g in s.groups *))
+\textbf{((( g.heading ))):} ((* for x in g.skills *))((( x.text )))((* if not loop.last *)), ((* endif *))((* endfor *))\par
+((* endfor *))
+\vspace{1.6pt}
+((* elif s.key == "education" *))
+((* for it in s.items *))
+\rentry{((( it.title )))}{((( it.right )))}{((( it.detail )))}{((( it.detail_right )))}
+((* endfor *))
+((* elif s.key == "experience" *))
+((* for it in s.items *))
+\rentry{((( linked(it.title, it.link)|raw )))}{((( it.right )))}{((( it.detail )))}{((( it.detail_right )))}
+((( bullets(it.bullets)|raw )))
+((* endfor *))
+\vspace{3.7pt}
+((* elif s.key == "research" *))
+\begin{rbullets}{-1.6pt}{-2pt}
+((* for it in s.items *))
+  \item ((* if it.lead *))\textbf{((( it.lead )))} --- ((* if it.emph *))\textit{((( it.emph )))}((* endif *))((* endif *))((( it.rest )))
+((* endfor *))
+\end{rbullets}
+\vspace{3.7pt}
+((* else *))
+((* for it in s.items *))
+\rhead{((( linked(it.title, it.link)|raw )))}{((* if it.subtitle *)) ((( it.subtitle )))((* endif *))}{((( it.tech|join(", ") )))}
+((( bullets(it.bullets, "-1.5pt", "0.4pt")|raw )))
+((* endfor *))
+\vspace{1.3pt}
+((* endif *))
+((* endfor *))
+
+\end{document}

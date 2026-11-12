@@ -317,11 +317,44 @@ def _v4_gone_runs_backfill(conn: sqlite3.Connection) -> None:
             (time.time(), k))
 
 
+def _v5_application_artifacts(conn: sqlite3.Connection) -> None:
+    """Phase 3: versioned application artifacts (tailoring v2).
+
+    One row per tailored version of a job's application: the base résumé, the
+    LLM's edit plan, the rendered files under data/applications/<slug>/v<N>/,
+    the grounding verdicts and the review status (pending -> ok | needs_review
+    -> approved, or failed). `facts_hash` fingerprints the cited facts so an
+    approval after the facts changed is refused. jobs.artifact_id links the
+    approved version to its job.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS application_artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_key TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        base TEXT,
+        edit_plan TEXT,
+        tex_path TEXT,
+        pdf_path TEXT,
+        cover_letter_path TEXT,
+        answers_json TEXT,
+        grounding TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        facts_hash TEXT,
+        pages INTEGER,
+        created_at REAL NOT NULL,
+        approved_at REAL,
+        UNIQUE(job_key, version)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_job ON application_artifacts(job_key)")
+    add_column_if_missing(conn, "jobs", "artifact_id", "INTEGER")
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
     (3, "eligibility_queue_tracker", _v3_eligibility_queue),
     (4, "gone_runs_tracker_backfill", _v4_gone_runs_backfill),
+    (5, "application_artifacts", _v5_application_artifacts),
 ]
 
 

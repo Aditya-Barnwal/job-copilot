@@ -6,6 +6,7 @@ assembles them, so new phases add a router instead of growing one module.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -77,7 +78,13 @@ async def security_headers(request: Request, call_next):
 
 # queue.router goes before jobs.router: its POST /api/jobs/{key}/status (tracker
 # statuses + history, v1-compatible) must win over the older handler.
-for _router in (meta.router, ingest.router, queue.router, jobs.router, profile.router, tailor.router):
+_ROUTERS = [meta.router, ingest.router, queue.router, jobs.router, profile.router, tailor.router]
+# Phase 3 writing routes (cover letters, emails, answers) when that module exists.
+# Only a MISSING module is skipped; an error inside it still fails loudly.
+if importlib.util.find_spec("server.routers.writing") is not None:
+    from .routers import writing  # noqa: E402
+    _ROUTERS.append(writing.router)
+for _router in _ROUTERS:
     app.include_router(_router)
 
 

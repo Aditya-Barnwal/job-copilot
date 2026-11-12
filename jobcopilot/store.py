@@ -893,6 +893,89 @@ def link_job_version(key: str, version_id: int,
                      (version_id, key))
 
 
+
+# --- application artifacts (Phase 3, tailoring v2) ------------------------
+
+ARTIFACT_JSON_FIELDS = ("edit_plan", "grounding", "answers_json")
+ARTIFACT_FIELDS = ("base", "edit_plan", "tex_path", "pdf_path", "cover_letter_path",
+                   "answers_json", "grounding", "status", "facts_hash", "pages", "approved_at")
+
+
+def applications_dir(db_path: Path | str | None = None) -> Path:
+    """<data dir>/applications: the only place artifact files are written or served from."""
+    return resolve_db_path(db_path).parent / "applications"
+
+
+def _decode_artifact(row: dict) -> dict:
+    for f in ARTIFACT_JSON_FIELDS:
+        v = row.get(f)
+        if isinstance(v, str) and v:
+            try:
+                row[f] = json.loads(v)
+            except ValueError:
+                row[f] = None
+    return row
+
+
+def _artifact_value(field_name: str, v: Any) -> Any:
+    if field_name in ARTIFACT_JSON_FIELDS and v is not None and not isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False, sort_keys=True)
+    return v
+
+
+def create_artifact(job_key: str, base: Optional[str] = None,
+                    db_path: Path | str | None = None) -> tuple[int, int]:
+    """Reserve the next version for a job (status 'pending'); returns (id, version).
+    The version is chosen and inserted in one write transaction, so two tailoring
+    runs for one job can't get the same number."""
+    with connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM application_artifacts "
+                           "WHERE job_key = ?", (job_key,)).fetchone()
+        version = int(row[0]) + 1
+        cur = conn.execute(
+            "INSERT INTO application_artifacts(job_key, version, base, status, created_at) "
+            "VALUES (?, ?, ?, 'pending', ?)", (job_key, version, base, time.time()))
+        return int(cur.lastrowid), version
+
+
+def update_artifact(artifact_id: int, db_path: Path | str | None = None, **fields: Any) -> None:
+    bad = set(fields) - set(ARTIFACT_FIELDS)
+    if bad:
+        raise ValueError(f"unknown artifact fields: {sorted(bad)}")
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connect(db_path) as conn:
+        conn.execute(f"UPDATE application_artifacts SET {cols} WHERE id = ?",
+                     (*(_artifact_value(k, v) for k, v in fields.items()), artifact_id))
+
+
+def get_artifact(artifact_id: int, db_path: Path | str | None = None) -> Optional[dict]:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM application_artifacts WHERE id = ?",
+                           (artifact_id,)).fetchone()
+    return _decode_artifact(dict(row)) if row else None
+
+
+def list_artifacts(job_key: Optional[str] = None,
+                   db_path: Path | str | None = None) -> list[dict]:
+    """A job's artifacts, newest version first (every job's when job_key is None)."""
+    sql = "SELECT * FROM application_artifacts"
+    args: list[Any] = []
+    if job_key is not None:
+        sql += " WHERE job_key = ?"
+        args.append(job_key)
+    sql += " ORDER BY job_key, version DESC"
+    with connect(db_path) as conn:
+        return [_decode_artifact(dict(r)) for r in conn.execute(sql, args).fetchall()]
+
+
+def link_job_artifact(key: str, artifact_id: int,
+                      db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute("UPDATE jobs SET artifact_id = ? WHERE key = ?", (artifact_id, key))
+
 # --- runs (nightly / manual pipeline runs) --------------------------------
 
 def _decode_run(row: dict) -> dict:

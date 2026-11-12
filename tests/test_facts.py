@@ -311,21 +311,30 @@ def test_real_profile_validates():
 
 # --------------------------------------------------------------------------- answers template
 
-ANSWER_KEYS = {"notice_period", "current_location", "willing_to_relocate", "work_authorization",
-               "expected_ctc", "current_ctc", "earliest_start", "remote_preference",
-               "why_company_template"}
+ANSWER_SECTIONS = {"personal", "current_address", "permanent_address", "education", "employment",
+                   "compensation", "availability", "location_preferences", "work_authorization",
+                   "screening_defaults", "voluntary_disclosures", "writing"}
 
 
 @pytest.mark.parametrize("path", [EXAMPLE_DIR / "answers.yaml", ROOT / "profile" / "answers.yaml"],
                          ids=["example", "real"])
 def test_answers_template_shape(path):
+    """answers.yaml schema v2 (jobcopilot/answers.py): sections + required keys.
+    Keys only — values are never asserted or printed."""
     if not path.exists():
         pytest.skip("profile/ is personal and git-ignored (absent in CI)")
     d = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert d["schema_version"] == 1
-    assert ANSWER_KEYS <= set(d)
-    assert {"india", "other_countries"} <= set(d["work_authorization"])
-    assert {"inr_lpa", "usd"} <= set(d["expected_ctc"])
+    assert d["schema_version"] == 2
+    assert ANSWER_SECTIONS <= set(d)
+    assert {"full_name", "first_name", "last_name", "email", "phone", "links"} <= set(d["personal"])
+    assert {"india", "other_countries", "requires_sponsorship_outside_india"} <= set(d["work_authorization"])
+    ec = d["compensation"]["expected_ctc"]
+    assert {"inr_floor_lpa", "inr_default_lpa_by_tier", "inr_free_text", "rule_when_range_posted"} <= set(ec)
+    assert set(ec["inr_default_lpa_by_tier"]) == {"brand", "funded", "watchlist", "default"}
+    assert {"notice_period", "notice_period_days", "earliest_start"} <= set(d["availability"])
+    assert {"how_did_you_hear", "previously_worked_at", "previously_interviewed_with"} <= set(d["screening_defaults"])
+    assert "signoff" in d["writing"]
+    assert isinstance(d["education"], list) and d["education"]
 
 
 def test_example_profile_holds_no_real_contact_data():

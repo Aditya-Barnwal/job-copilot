@@ -1,44 +1,123 @@
-# FAKE example of profile/answers.yaml, filled in for "Alex Example" to show the
-# expected value types. The real template in profile/ starts with every value empty.
-schema_version: 1
+# FAKE example of profile/answers.yaml (schema v2), filled in for "Alex Example"
+# to show the expected keys and value types. Not a real person.
+# Status per block (a key inherits the nearest status above it):
+#   approved = you gave it explicitly; autofill may use it
+#   proposed = a proposal you still approve or edit; autofill asks you first
+# Review:  python -m jobcopilot.answers review profile.example/answers.yaml
+schema_version: 2
 
-notice_period: "30 days"
-earliest_start: ""
-current_location: "Springfield, Exampleland"
-willing_to_relocate: true
-relocation_cities: [Example City]
-remote_preference: "hybrid"
+personal:                       # approved
+  full_name: "Alex Example"
+  first_name: "Alex"
+  last_name: "Example"
+  middle_name: ""               # explicitly none
+  date_of_birth: "2001-04-15"
+  gender: "Male"
+  email: "alex@example.com"
+  phone: "+1 555 0100"
+  phone_country_code: "+1"
+  phone_national: "555 0100"
+  nationality: "Examplish"
+  marital_status: "Single"      # only filled when a form requires it
+  citizenship: "Exampleland"
+  languages_spoken: [English, Hindi]
+  links:
+    linkedin: "https://example.com/linkedin/alex-example"
+    github: "https://example.com/github/alex-example"
+    portfolio: "https://alex.example.com/"
 
-work_authorization:
-  india: "Not authorised"
-  other_countries: "Authorised to work in Exampleland"
-requires_sponsorship: true
+current_address:                # approved
+  line1: "12 Example Street"
+  locality: "Old Town"
+  city: "Springfield"
+  state: "Example State"
+  postcode: "00000"
+  country: "Exampleland"
 
-expected_ctc:
-  inr_lpa: 20
-  usd: 40000
-  eur: null
-  negotiable: true
-current_ctc:
-  inr_lpa: null
+permanent_address:              # approved
+  line1: "7 Sample Road"
+  city: "Shelbyville"
+  district: "Sample District"
+  state: "Sample State"
+  postcode: "00001"
+  country: "Exampleland"
 
-total_experience_years: 1
-languages_spoken: [English]
+education:                      # approved
+  - institution: "Example State University"
+    degree: "B.Sc. in Computer Science"
+    field: "Computer Science"
+    start_date: "2019-08"
+    end_date: "2023-05"
+    cgpa: 8.4
+    cgpa_scale: 10
 
-why_company_template: "I'd like to build {role} work at {company} because ..."
-why_role_template: ""
-cover_letter_signoff: "Best regards, Alex Example"
+school_marks: ""                # 10th/12th: left empty for you to fill by hand
 
-how_did_you_hear: "Company careers page"
-referral_name: ""
+employment:                     # approved
+  current_employer: "Acme Widgets Inc."
+  current_title: "Software Engineer"
+  current_start_date: "2024-01-15"
+  currently_employed: true
+  previous_employers: ["Globex Example Labs"]
+  total_experience: "1 year 9 months"   # fallback; computed from current_start_date when set
 
-voluntary_disclosures:
-  gender: ""
-  pronouns: ""
-  disability: ""
-  veteran_status: ""
+compensation:
+  current_ctc:                  # approved
+    total_lpa: 12.5
+    fixed_lpa: 11.0
+    variable_lpa: 1.5
+    benefits: "Health insurance"
+  expected_ctc:                 # approved
+    inr_floor_lpa: 15           # never answer below this
+    inr_default_lpa_by_tier:    # numeric field, no posted range
+      brand: 25
+      funded: 18
+      watchlist: 18
+      default: 18
+    inr_free_text: "18-25 LPA depending on the role and the overall package; open to discussion."
+    rule_when_range_posted: "quote the upper-middle of the employer's posted range, never below the floor"
+    usd_floor: 40000            # remote roles abroad (annual)
+    usd_default: 50000
+    eur_floor: 36000
+    eur_default: 45000
+    negotiable: true
 
-custom:
-  - question: "Do you have experience with widgets?"
-    answer: "Yes — see the Acme Widgets role."
-    added: 2026-01-01
+availability:                   # approved
+  notice_period: "30 days"
+  notice_period_days: 30
+  earliest_start: "2027-01-04"
+  currently_serving_notice: false
+
+location_preferences:           # proposed
+  current_location: "Springfield, Exampleland"
+  willing_to_relocate: true
+  relocation_cities: "Springfield, Example City"
+  work_modes: [hybrid, remote, onsite]
+
+work_authorization:             # approved
+  india: "Not authorised; would need a work visa"
+  other_countries: "Authorised to work in Exampleland (citizen); needs sponsorship elsewhere"
+  requires_sponsorship_outside_india: true
+
+screening_defaults:             # approved
+  over_18: true
+  background_check_ok: true
+  how_did_you_hear: "use_actual_source"   # the board/careers page it was found on (truthful)
+  previously_interviewed_with: ["Initech Example"]
+  previously_worked_at: ["Acme Widgets Inc.", "Globex Example Labs"]
+  relatives_at_company: false
+  referral_name: ""
+
+voluntary_disclosures:          # approved — you chose to self-identify
+  gender: "Male"
+  sexual_orientation: "Heterosexual"
+  race_ethnicity: "South Asian"   # fallback when not offered: "Asian"
+  hispanic_latino: "No"
+  veteran_status: "I am not a protected veteran"
+  disability: "No, I do not have a disability"
+
+writing:                        # cover letters + emails are generated per job by the app
+  cover_letter_style_source: "best-practice public samples"
+  always_mention: []
+  never_mention: []
+  signoff: "Best regards,\nAlex Example\n{phone} | {linkedin}"   # approved

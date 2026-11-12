@@ -67,8 +67,8 @@ def test_v3_upgrades_a_legacy_v2_db_and_keeps_rows(tmp_path):
     con.execute("INSERT INTO companies(name, normalized_name, ats_evidence) VALUES ('Acme', 'acme', 'probe')")
     con.commit(); con.close()
 
-    assert store.init_db(db) == 4 == migrations.latest_version()
-    assert store.init_db(db) == 4            # idempotent
+    assert store.init_db(db) == migrations.latest_version()
+    assert store.init_db(db) == migrations.latest_version()   # idempotent
     con = sqlite3.connect(db)
     cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
     assert {"lane", "excluded", "exclusion_reasons", "flags", "yoe_max", "yoe_evidence",
@@ -366,7 +366,7 @@ def test_v4_backfills_tracker_dates(tmp_path):
                     "VALUES (?, 'greenhouse', 'Acme', 'SWE', ?, 1000.0, 9000.0)", (k, st))
     con.execute("INSERT INTO status_history(job_key, status, at, source) VALUES ('r', 'ready', 5000.0, 'user')")
     con.commit(); con.close()
-    assert store.init_db(db) == 4
+    assert store.init_db(db) == migrations.latest_version()
     rows = {r["key"]: r for r in (store.get_job(k, db_path=db) for k in "asirn")}
     assert rows["n"]["status_changed_at"] is None
     assert rows["i"]["status_changed_at"] == rows["a"]["status_changed_at"] == 1000.0

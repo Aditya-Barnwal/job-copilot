@@ -17,6 +17,15 @@ import jobcopilot
 from jobcopilot import daily, store
 from jobcopilot import ingest as ingest_mod
 
+
+@pytest.fixture(autouse=True)
+def _no_real_profile(tmp_path, monkeypatch):
+    """The nightly run tailors with the REAL confirmed facts + a real LLM. Tests must
+    never do that: point the profile at an empty dir, so tailoring is skipped (no facts)."""
+    empty = tmp_path / "empty-profile"
+    empty.mkdir()
+    monkeypatch.setenv("JOBCOPILOT_PROFILE_DIR", str(empty))
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -41,7 +50,10 @@ def test_steps_are_isolated_and_recorded(monkeypatch):
     assert by["discovery.yc"]["status"] == "error" and "yc down" in by["discovery.yc"]["error"]
     assert by["discovery.tiers"]["status"] == "ok"
     assert by["ingest"]["result"]["sources_by_status"] == {"ok": 1, "error": 1}
-    assert by["tailor"]["status"] == by["fill_plan"]["status"] == "skipped"
+    # tailoring runs as a real step; with no confirmed facts it tailors nothing (no LLM call)
+    assert by["tailor"]["status"] == "ok" and by["tailor"]["result"]["tailored"] == 0
+    assert by["tailor"]["result"]["skipped"]
+    assert by["fill_plan"]["status"] == "skipped"
     assert res["status"] == "partial" and res["all_sources_failed"] is False
     row = store.get_run(res["run_id"])
     assert row["status"] == "partial" and row["finished_at"] and "yc down" in row["error"]

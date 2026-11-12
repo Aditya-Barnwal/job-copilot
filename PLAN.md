@@ -434,3 +434,16 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
   - **Live run #2** (corrected rules): 232 sources ok, 23,348 raw → 440 eligible / 7,885 excluded with reasons; queue 25 main / 15 extended / 10 near-miss. Top: Prodigal FDE, Hevo SDE II, Skylark AI Eng, HackerRank FDE, Netomi Agentic Eng, Bureau Assoc. DS.
   - **19:00 LaunchAgent** fired, saw the manual run and stepped aside (run lock works). Re-enabled for nightly runs.
   - **Next:** your Phase 3/3b/4 input checklist, then Phase 3.
+- 2026-11-12: **Your inputs received** (stored privately in `profile/answers.yaml`).
+  - **Phase 3b:** host is **Google Cloud Run (always-free tier)** instead of AWS ECS. The résumé line becomes "containerised with Docker and deployed on Google Cloud Run" once it's live.
+  - **Expected CTC (tier-aware):** floor 15 LPA; defaults brand 25 / startup 18; upper-middle of a posted range.
+  - **TinyTeX:** install approved.
+- 2026-11-12: **Résumé facts confirmed by you:** 61 confirmed; 3 claims pending.
+  - **Changes:**
+    - AWS skill → "AWS (Lambda)" (EC2/ECS removed)
+    - Job-Copilot deploy → Google Cloud Run (pending until live)
+    - Job-Copilot bullet 1 → real numbers (14 ATS, 16 boards, 20,000+ roles/day)
+    - Docker confirmed (skills only)
+    - SecretPixel = published research project
+    - DUM-E kept exactly as in your résumés
+  - **Next task after this phase (yours): DUM-E/Jarvis facts.** Verify/add Amazon Bedrock and validate the 29% routing figure, then update the DUM-E facts.

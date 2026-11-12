@@ -1,0 +1,54 @@
+# LaTeX résumé rendering (jobcopilot/resume/). PLAN D5: pdfLaTeX via TinyTeX.
+#
+# pdflatex is resolved in this order: $JOBCOPILOT_PDFLATEX, `pdflatex` below,
+# the TinyTeX default (~/Library/TinyTeX/bin/universal-darwin/pdflatex), PATH.
+# When none exists, rendering raises LatexUnavailable (compile tests skip).
+pdflatex: ""
+timeout_s: 60            # per pdflatex run
+runs: 2                  # pdflatex passes (hyperref needs two)
+max_fit_tries: 6         # one-page guard: drop + re-render at most this often
+ats_min_ratio: 0.9       # share of headings + bullet openings found in the PDF text
+default_base: backend_sde
+
+# Role family (filters.py names, or the job's own role_family) -> a base role
+# token from a template's "% roles:" header / bases.yaml `roles`.
+family_aliases:
+  fullstack: full-stack
+  java: backend
+  python: backend
+  rules_engine: backend
+  platform: backend
+  integration: backend
+  founding: sde
+  fde: sde
+  mts: sde
+  amts: sde
+  nlp: ml
+  cv: ml
+  mlops: ml
+  research_science: ml
+  research_engineering: ml
+  data_science: data
+  data_engineering: data
+  data_analyst: data
+  analytics_engineering: data
+  etl: data
+
+# Title words used when a job has no role family.
+title_keywords:
+  machine learning: ml
+  deep learning: ml
+  computer vision: ml
+  llm: genai
+  genai: genai
+  generative ai: genai
+  ai: ai
+  ml: ml
+  data: data
+  backend: backend
+  back-end: backend
+  full stack: full-stack
+  full-stack: full-stack
+  fullstack: full-stack
+  software engineer: sde
+  sde: sde

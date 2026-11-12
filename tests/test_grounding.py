@@ -230,3 +230,91 @@ def test_plain_number_words_are_not_flagged():
     tailored = BASE + " One of two engineers on three services."
     g = check_grounding(BASE, tailored, job_missing_keywords=[])
     assert g["new_numbers"] == [], g["new_numbers"]
+
+
+# --- grounding v3: per-line checks against cited facts ------------------------
+
+from jobcopilot.grounding import check_lines, token_overlap, unconfirmed_line_flags  # noqa: E402
+
+FACTS = {
+    "b1": "Built a Go order service handling 200+ requests per second behind a REST API.",
+    "b2": "Cut nightly batch runtime by 30% by moving widget pricing to PostgreSQL.",
+    "h1": "Acme Widgets Inc. | Springfield | Software Engineer | Jan 2024 – Present",
+}
+
+
+def _one(text, ids=("b1",), **kw):
+    return check_lines([{"text": text, "fact_ids": list(ids), **kw}], FACTS)
+
+
+def test_v3_verbatim_lines_are_supported():
+    g = check_lines([{"text": t, "fact_ids": [k]} for k, t in FACTS.items()], FACTS)
+    assert g["clean"] and g["unsupported_lines"] == [], g["flags"]
+
+
+def test_v3_line_is_checked_only_against_its_cited_facts():
+    # "PostgreSQL" and "30%" are true of b2, but this line cites b1.
+    g = _one("Built a Go order service on PostgreSQL handling 200+ requests per second; 30% faster.")
+    assert "PostgreSQL" in g["flags"]["unsupported_skills"] and "30%" in g["flags"]["new_numbers"]
+    g = _one("Built a Go order service on PostgreSQL handling 200+ requests per second; 30% faster.",
+             ids=("b1", "b2"))
+    assert not g["flags"]["unsupported_skills"] and not g["flags"]["new_numbers"]
+
+
+def test_v3_flags_numbers_including_spelled_out():
+    g = _one("Built a Go order service handling 200+ requests per second, doubling throughput.")
+    assert "doubling" in g["flags"]["new_numbers"] and not g["clean"]
+    assert "500" in _one("Built a Go order service handling 500+ requests per second.")["flags"]["new_numbers"]
+
+
+def test_v3_flags_claims_titles_and_proper_nouns():
+    g = _one("Led a Go order service at Stripe as Senior Engineer handling 200+ requests per second.")
+    f = g["flags"]
+    assert "led" in f["inflated_claims"] and "senior (title)" in f["inflated_claims"]
+    assert f["new_proper_nouns"] == ["Stripe"]
+    assert g["lines"][0]["offending"] and not g["lines"][0]["supported"]
+
+
+def test_v3_sentence_initial_verb_is_not_a_proper_noun():
+    g = _one("Engineered a Go order service handling 200+ requests per second behind a REST API.",
+             rephrased=True)
+    assert g["flags"]["new_proper_nouns"] == [] and g["clean"], g["flags"]
+
+
+def test_v3_unknown_or_missing_fact_fails_closed():
+    g = check_lines([{"text": "Anything.", "fact_ids": ["nope"]},
+                     {"text": "Anything.", "fact_ids": []}], FACTS)
+    assert g["flags"]["unknown_facts"] == ["nope", "(no fact cited)"] and g["unsupported_lines"] == [0, 1]
+
+
+def test_v3_attested_keywords_allowed_but_never_numbers():
+    line = [{"text": "Built a Go order service on Kubernetes at 900 rps.", "fact_ids": ["b1"]}]
+    g = check_lines(line, FACTS, attested=["kubernetes", "900"])
+    assert g["flags"]["unsupported_skills"] == [] and g["flags"]["new_numbers"] == ["900"]
+
+
+def test_v3_similarity_guard():
+    assert token_overlap(FACTS["b1"], FACTS["b1"]) == 1.0
+    g = _one("Shipped a fast 200+ requests per second service.", rephrased=True)
+    assert g["flags"]["low_similarity"] == ["b1"] and g["lines"][0]["similarity"] < 0.45
+    g = _one("Built a REST API order service in Go handling 200+ requests per second.", rephrased=True)
+    assert g["clean"] and g["lines"][0]["similarity"] >= 0.45
+
+
+def test_v3_unconfirmed_flags_per_token():
+    g = _one("Built a Go order service at Stripe handling 900 requests per second.")
+    assert unconfirmed_line_flags(g, {"new_numbers": ["900"]}) == {"new_proper_nouns": ["Stripe"]}
+    full = {k: list(v) for k, v in g["flags"].items()}
+    assert unconfirmed_line_flags(g, full) == {}
+    assert unconfirmed_line_flags(g, "yes") == {k: v for k, v in g["flags"].items() if v}
+    bad = check_lines([{"text": "x", "fact_ids": ["nope"]}], FACTS)
+    assert "unknown_facts" in unconfirmed_line_flags(bad, {"unknown_facts": ["nope"]})   # never confirmable
+
+
+def test_check_lines_folds_accents_and_unicode_dashes():
+    """'résumé' must not tokenise into the skill 'R'; 'LLM‑powered' (U+2011) is not a new proper noun."""
+    from jobcopilot.grounding import check_lines
+    facts = {"f1": "Engineered an LLM-powered resume-tailoring stage with versioned PDF storage."}
+    out = check_lines([{"text": "Engineered an LLM‑powered résumé-tailoring stage with versioned PDF storage.",
+                        "fact_ids": ["f1"]}], facts)
+    assert out["clean"], out["lines"][0]

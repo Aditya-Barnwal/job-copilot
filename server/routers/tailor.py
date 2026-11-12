@@ -126,7 +126,7 @@ def approve_job(key: str, body: dict = Body(...)):
         if blocked is not None:
             return blocked
         store.link_job_version(key, vid)
-        store.set_status(key, "ready")
+        store.set_status(key, "ready", source="system")
         return {"ok": True, "mode": "reuse", "version_id": version["id"],
                 "pdf_path": version["pdf_path"]}
 
@@ -153,7 +153,7 @@ def approve_job(key: str, body: dict = Body(...)):
         base_ats_coverage=new_coverage,
     )
     store.link_job_version(key, int(version["id"]))
-    store.set_status(key, "ready")
+    store.set_status(key, "ready", source="system")
     return {"ok": True, "mode": "fresh", "version_id": version["id"],
             "pdf_path": version["pdf_path"], "new_ats_coverage": new_coverage}
 

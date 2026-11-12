@@ -12,15 +12,22 @@ These encode the scope you defined:
     phrases match as substrings; short tokens (sde/swe/ml/ai) match on word
     boundaries.
   * Age: never drops on age. `--max-age-days` is opt-in.
+
+Phase 2: the per-job rules live in `eligibility.evaluate()` (lanes + D8 reasons).
+`apply_filters` attaches that Decision to every FilterResult; FilterConfig.mode
+"eligibility" makes it keep/drop by the Decision, "legacy" (default) keeps v1 rules.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 from .models import Job, IN, NON_IN, REMOTE
-from .yoe import extract_min_yoe
+from .yoe import extract_min_yoe  # noqa: F401  (re-exported for v1 callers)
+
+if TYPE_CHECKING:
+    from .eligibility import Decision
 
 
 DEFAULT_TARGET_ROLES: list[str] = [
@@ -38,6 +45,30 @@ DEFAULT_TARGET_ROLES: list[str] = [
     "applied scientist",
     "data scientist",
     "data engineer",
+    # v2 additions (full-stack / GenAI / developer titles); generic words last so the
+    # specific families above win the returned name.
+    "software developer",
+    "full stack",
+    "full-stack",
+    "fullstack",
+    "backend",
+    "back-end",
+    "genai",
+    "gen ai",
+    "generative ai",
+    "llm engineer",
+    "applied ai",
+    "ai developer",
+    "ai/ml",
+    "machine learning",
+    "deep learning",
+    "nlp engineer",
+    "research engineer",
+    "member of technical staff",
+    "python developer",
+    "java developer",
+    "golang developer",
+    "node.js developer",
 ]
 
 # Tokens that must match on word boundaries to avoid false positives.
@@ -83,8 +114,10 @@ def passes_role(title: str, target_roles: Iterable[str]) -> Optional[str]:
 def is_seniority_high(title: str) -> bool:
     if not title:
         return False
-    # Reject 4-digit-year false positives by masking them out first.
+    # Reject 4-digit-year false positives by masking them out first; "Member of
+    # Technical Staff" is an IC title at AI labs, not a Staff-level one.
     raw = _YEAR_LIKE.sub("", title)
+    raw = re.sub(r"member\s+of\s+(?:the\s+)?technical\s+staff", "MTS", raw, flags=re.I)
     t = " " + raw.lower() + " "
     if any(s in t for s in _SENIORITY_HIGH):
         return True
@@ -99,6 +132,13 @@ class FilterConfig:
     keep_unknown_country: bool = True
     target_roles: list[str] = field(default_factory=lambda: list(DEFAULT_TARGET_ROLES))
     max_age_days: Optional[int] = None  # opt-in; None = never drop on age
+    # Phase 2: "legacy" keeps the v1 keep/drop rules above (each result still gets a
+    # .decision); "eligibility" keeps exactly the jobs eligibility.evaluate() does not
+    # exclude, using config/filters.yaml (overridden by min_lpa/usd_to_inr/target_roles/
+    # keep_unknown_country set here).
+    mode: str = "legacy"
+    cfg: Optional[dict] = None          # filters config; None = config.filters()
+    companies: Optional[dict] = None    # {company_id or company name: company row} for tiers
 
 
 @dataclass
@@ -106,6 +146,7 @@ class FilterResult:
     job: Job
     package_estimated: bool
     country_uncertain: bool
+    decision: Optional["Decision"] = None   # eligibility.Decision (lane + reasons)
 
 
 def passes_geo(job: Job, keep_unknown: bool = True) -> bool:
@@ -132,18 +173,53 @@ def passes_sector(job: Job, sectors: Optional[set[str]]) -> bool:
     return job.company_sector in sectors
 
 
+def eligibility_cfg(config: FilterConfig) -> dict:
+    """config/filters.yaml merged with the explicit FilterConfig knobs."""
+    import copy
+    from . import config as _config
+    cfg = copy.deepcopy(config.cfg) if config.cfg is not None else _config.filters()
+    cfg.setdefault("roles", {})["families"] = list(config.target_roles)
+    cfg.setdefault("salary_floors", {})["INR"] = float(config.min_lpa) * 100_000
+    cfg.setdefault("fx_to_inr", {})["USD"] = float(config.usd_to_inr)
+    cfg.setdefault("geo", {})["keep_unknown_country"] = bool(config.keep_unknown_country)
+    return cfg
+
+
+def _company_for(job: Job, companies: Optional[dict]) -> Optional[dict]:
+    if not companies:
+        return None
+    return companies.get(job.company_id) or companies.get(job.company)
+
+
 def apply_filters(jobs: Iterable[Job], config: FilterConfig | None = None) -> list[FilterResult]:
+    """Keep the jobs that pass; each FilterResult carries its eligibility Decision.
+
+    Use eligibility.evaluate() directly when the excluded jobs (with reasons) are needed.
+    """
+    from .eligibility import evaluate
+
     config = config or FilterConfig()
+    cfg = eligibility_cfg(config)
     results: list[FilterResult] = []
     for job in jobs:
+        decision = evaluate(job, company=_company_for(job, config.companies), cfg=cfg)
+        if config.mode == "eligibility":
+            if decision.excluded:
+                continue
+            if config.max_age_days is not None and job.posted_age_days is not None \
+                    and job.posted_age_days > config.max_age_days:
+                continue
+            _stamp(job, decision)
+            results.append(FilterResult(
+                job=job, package_estimated=decision.salary_ok is None,
+                country_uncertain=(job.country_bucket not in (IN, NON_IN)), decision=decision))
+            continue
+
         family = passes_role(job.title, config.target_roles)
         if family is None:
             continue
+        _stamp(job, decision)
         job.role_family = family
-        job.seniority_high = is_seniority_high(job.title)
-        yoe, is_pref = extract_min_yoe(job.description_text)
-        job.min_yoe_required = yoe
-        job.yoe_is_preferred = is_pref
 
         if not passes_sector(job, config.sectors):
             continue
@@ -160,6 +236,15 @@ def apply_filters(jobs: Iterable[Job], config: FilterConfig | None = None) -> li
                 job=job,
                 package_estimated=estimated,
                 country_uncertain=(job.country_bucket not in (IN, NON_IN)),
+                decision=decision,
             )
         )
     return results
+
+
+def _stamp(job: Job, decision: "Decision") -> None:
+    """Copy the YOE v2 / seniority reading onto the Job (stored by store.upsert_jobs)."""
+    job.role_family = decision.role_family or job.role_family
+    job.seniority_high = decision.seniority_high
+    job.min_yoe_required = decision.yoe_min
+    job.yoe_is_preferred = decision.yoe_is_preferred

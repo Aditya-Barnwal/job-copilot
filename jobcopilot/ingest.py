@@ -400,9 +400,14 @@ class IngestRun:
     roster: list[dict[str, Any]]
     raw_count: int
     merged: list[Job]
-    results: list[FilterResult]
+    results: list[FilterResult]          # passed the v1 filters (jobs.jsonl / CLI table)
     outcomes: list[SourceOutcome] = field(default_factory=list)
     expired_dropped: int = 0
+    # Phase 2: every target-role job with its eligibility decision attached as
+    # `.evaluation` (excluded ones included, D8). None = evaluation not run.
+    evaluated: Optional[list[FilterResult]] = None
+    evaluation: dict[str, Any] = field(default_factory=dict)   # counts, mode
+    filter_cfg: Optional[FilterConfig] = None
 
 
 def _today() -> str:
@@ -452,6 +457,158 @@ def _record_health(outcomes: list[SourceOutcome], db_path: Any = None) -> None:
             log.warning("source_state write failed source=%s exc=%s", o.source, exc)
 
 
+# --- eligibility (Phase 2) ------------------------------------------------------
+
+def _decision_row(d: Any) -> dict[str, Any]:
+    """An eligibility Decision -> the jobs columns it fills (store.EVALUATION_FIELDS)."""
+    reasons = [dict(r) for r in (getattr(d, "reasons", None) or []) if isinstance(r, dict)]
+    flags = [r for r in reasons if str(r.get("rule", "")).startswith("flag:")]
+    hard = [r for r in reasons if not str(r.get("rule", "")).startswith("flag:")]
+    lane = getattr(d, "lane", None) or "excluded"
+
+    def opt_int(v: Any) -> Optional[int]:
+        return None if v is None else int(v)
+
+    return {
+        "lane": lane, "excluded": int(lane == "excluded"),
+        "exclusion_reasons": hard, "flags": flags,
+        "min_yoe_required": opt_int(getattr(d, "yoe_min", None)),
+        "yoe_max": opt_int(getattr(d, "yoe_max", None)),
+        "yoe_is_preferred": int(bool(getattr(d, "yoe_is_preferred", False))),
+        "yoe_evidence": getattr(d, "yoe_evidence", None),
+        "fresher_friendly": int(bool(getattr(d, "fresher_friendly", False))),
+        "india_eligible": opt_int(getattr(d, "india_eligible", None)),
+        "salary_annual_inr": getattr(d, "salary_annual_inr", None),
+    }
+
+
+def _fallback_decision(job: Job, company: Optional[dict], filter_cfg: FilterConfig) -> Any:
+    """v1 filters + company tier, used only while jobcopilot.eligibility is missing
+    or raised on a job — so a bug there degrades the run instead of failing it."""
+    from types import SimpleNamespace
+    from .filters import passes_geo, passes_salary, passes_sector
+
+    reasons: list[dict] = []
+    if not passes_sector(job, filter_cfg.sectors):
+        reasons.append({"rule": "sector", "detail": f"sector {job.company_sector!r} not targeted",
+                        "excerpt": None})
+    if not passes_geo(job, filter_cfg.keep_unknown_country):
+        reasons.append({"rule": "geo", "detail": "outside India and not remote",
+                        "excerpt": (job.location_text or "")[:200] or None})
+    ok, _est = passes_salary(job, filter_cfg.min_lpa, filter_cfg.usd_to_inr)
+    if not ok:
+        reasons.append({"rule": "salary", "detail": f"below {filter_cfg.min_lpa:g} LPA",
+                        "excerpt": (job.compensation.summary if job.compensation else None)})
+    tier = (company or {}).get("tier") or "unknown"
+    lane = "main"
+    if tier == "watchlist":
+        lane = "extended"
+    elif tier not in ("brand", "funded"):
+        reasons.append({"rule": "tier", "detail": f"company tier is {tier}", "excerpt": None})
+    if reasons:
+        lane = "excluded"
+    inr = job.compensation.annual_inr(filter_cfg.usd_to_inr) if job.compensation else None
+    return SimpleNamespace(lane=lane, reasons=reasons, yoe_min=job.min_yoe_required, yoe_max=None,
+                           yoe_is_preferred=job.yoe_is_preferred, yoe_evidence=None,
+                           fresher_friendly=False, india_eligible=None, salary_ok=None if inr is None else ok,
+                           salary_annual_inr=inr)
+
+
+def _eligibility_evaluate() -> Optional[Callable[..., Any]]:
+    try:
+        from . import eligibility
+        return eligibility.evaluate
+    except Exception as exc:  # noqa: BLE001 — workstream may not be installed yet
+        log.warning("eligibility unavailable, using v1 filters + tier (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
+def _company_lookup(db_path: Any) -> Callable[[Job], Optional[dict]]:
+    try:
+        from . import companies as _companies
+        get = _companies.get_company
+    except Exception:  # noqa: BLE001
+        return lambda _job: None
+    cache: dict[str, Optional[dict]] = {}
+
+    def lookup(job: Job) -> Optional[dict]:
+        if job.company not in cache:
+            try:
+                cache[job.company] = get(job.company, db_path=db_path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("company lookup failed company=%s exc=%s", job.company, exc)
+                cache[job.company] = None
+        return cache[job.company]
+    return lookup
+
+
+def evaluate_jobs(jobs: list[Job], filter_cfg: FilterConfig, *, db_path: Any = None,
+                  cfg: Optional[dict] = None,
+                  passed: Optional[list[FilterResult]] = None) -> tuple[list[FilterResult], dict[str, Any]]:
+    """Run eligibility on every target-role job; return (results, stats).
+
+    Each result carries `.evaluation` (the jobs columns) and `.decision`.
+    Titles outside the target roles are counted (`off_target`), not stored —
+    they are not roles you could apply to. A per-job evaluation error falls
+    back to the v1 filters for that job and is counted.
+    """
+    evaluate = _eligibility_evaluate()
+    lookup = _company_lookup(db_path)
+    if cfg is None:
+        try:   # filters.yaml merged with the explicit FilterConfig knobs (roles, floors)
+            from .filters import eligibility_cfg
+            cfg = eligibility_cfg(filter_cfg)
+        except Exception:  # noqa: BLE001 — older filters.py
+            cfg = _config.filters()
+    by_id = {id(r.job): r for r in (passed or [])}
+    out: list[FilterResult] = []
+    stats: dict[str, Any] = {"mode": "eligibility" if evaluate else "fallback", "off_target": 0,
+                             "main": 0, "extended": 0, "excluded": 0, "errors": 0, "by_rule": {}}
+    from .filters import is_seniority_high, passes_salary
+    from .yoe import extract_min_yoe
+    for job in jobs:
+        family = passes_role(job.title, filter_cfg.target_roles)
+        if family is None:
+            stats["off_target"] += 1
+            continue
+        if id(job) not in by_id:      # apply_filters() annotated passing jobs already
+            job.role_family = family
+            job.seniority_high = is_seniority_high(job.title)
+            job.min_yoe_required, job.yoe_is_preferred = extract_min_yoe(job.description_text)
+        company = lookup(job)
+        decision = None
+        if evaluate is not None:
+            try:
+                decision = evaluate(job, company=company, cfg=cfg)
+            except Exception as exc:  # noqa: BLE001 — one bad job never aborts the run
+                stats["errors"] += 1
+                log.warning("eligibility failed key=%s exc=%s", job.key, exc)
+        if decision is None:
+            decision = _fallback_decision(job, company, filter_cfg)
+        row = _decision_row(decision)
+        job.min_yoe_required = row["min_yoe_required"]
+        job.yoe_is_preferred = bool(row["yoe_is_preferred"])
+        r = by_id.get(id(job))
+        if r is None:
+            _ok, estimated = passes_salary(job, filter_cfg.min_lpa, filter_cfg.usd_to_inr)
+            r = FilterResult(job=job, package_estimated=estimated,
+                             country_uncertain=job.country_bucket not in ("IN", "non-IN"))
+        r.evaluation = row   # type: ignore[attr-defined]
+        r.decision = decision   # type: ignore[attr-defined]
+        stats[row["lane"]] = stats.get(row["lane"], 0) + 1
+        if row["excluded"]:
+            for reason in row["exclusion_reasons"]:
+                rule = str(reason.get("rule") or "?")
+                stats["by_rule"][rule] = stats["by_rule"].get(rule, 0) + 1
+        out.append(r)
+    return out, stats
+
+
+def _is_excluded(r: FilterResult) -> bool:
+    ev = getattr(r, "evaluation", None)
+    return bool(ev and ev.get("excluded"))
+
+
 def collect_and_filter(
     *,
     companies: Optional[list[dict[str, Any]]] = None,
@@ -463,6 +620,7 @@ def collect_and_filter(
     filter_cfg: Optional[FilterConfig] = None,
     fixtures_dir: Path | None = None,
     record_health: Optional[bool] = None,
+    evaluate: bool = True,
     db_path: Any = None,
 ) -> IngestRun:
     """Fetch every source, drop expired listings, merge duplicates, filter.
@@ -491,20 +649,40 @@ def collect_and_filter(
     from .dedupe import merge
     merged = merge(jobs)
     _annotate_age(merged)
-    results = apply_filters(merged, filter_cfg or FilterConfig())
-    log.info("pipeline raw=%d expired=%d merged=%d passed=%d",
-             raw_count, expired, len(merged), len(results))
-    return IngestRun(roster, raw_count, merged, results, outcomes, expired)
+    filter_cfg = filter_cfg or FilterConfig()
+    results = apply_filters(merged, filter_cfg)
+    evaluated, stats = (evaluate_jobs(merged, filter_cfg, db_path=db_path, passed=results)
+                        if evaluate else (None, {}))
+    log.info("pipeline raw=%d expired=%d merged=%d passed=%d eligible=%s excluded=%s",
+             raw_count, expired, len(merged), len(results),
+             (stats.get("main", 0) + stats.get("extended", 0)) if evaluate else "-",
+             stats.get("excluded", "-"))
+    run = IngestRun(roster, raw_count, merged, results, outcomes, expired)
+    run.evaluated, run.evaluation, run.filter_cfg = evaluated, stats, filter_cfg
+    return run
 
 
 def persist(run: IngestRun, *, enrich_workday: bool = True, rescore: bool = True,
-            db_path: Any = None) -> dict[str, Any]:
-    """Workday detail fill, upsert, expired purge, rescoring of filled jobs."""
+            score: bool = True, db_path: Any = None) -> dict[str, Any]:
+    """Workday detail fill, upsert, expired purge, rescoring, v2 fit scoring.
+
+    With an evaluated run, EVERY target-role job is stored — excluded ones with
+    excluded=1 and their reasons (D8) — and the non-excluded ones are scored.
+    User state (status, notes, applied version) is never touched.
+    """
     from . import store as _store
 
-    filled = (enrich_workday_descriptions(run.results, run.roster, db_path=db_path)
+    rows = run.evaluated if run.evaluated is not None else run.results
+    live = [r for r in rows if not _is_excluded(r)]
+    filled = (enrich_workday_descriptions(live, run.roster, db_path=db_path)
               if enrich_workday else [])
-    inserted, updated = _store.upsert_jobs(run.results, db_path=db_path)
+    if filled and run.evaluated is not None:
+        # A filled description can change the YOE verdict: decide those again.
+        again = set(filled)
+        redo = [r for r in run.evaluated if r.job.key in again]
+        evaluate_jobs([r.job for r in redo], run.filter_cfg or FilterConfig(),
+                      db_path=db_path, passed=redo)   # re-attaches .evaluation in place
+    inserted, updated = _store.upsert_jobs(rows, db_path=db_path)
     purged = _store.purge_expired(_today(), db_path=db_path)
     _store.set_meta("last_ingest", str(time.time()), db_path)
 
@@ -515,8 +693,18 @@ def persist(run: IngestRun, *, enrich_workday: bool = True, rescore: bool = True
             rescored = scoring.score_keys(filled).get("scored", 0)
         except Exception as exc:  # noqa: BLE001
             log.warning("rescore after workday fill failed: %s", exc)
+
+    fit: dict[str, Any] = {}
+    if score and run.evaluated is not None:
+        keys = [getattr(r, "stored_key", r.job.key) for r in run.evaluated if not _is_excluded(r)]
+        try:
+            from . import queue as _queue
+            fit = _queue.score_pending(keys=keys, db_path=db_path)
+        except Exception as exc:  # noqa: BLE001 — scoring never fails the ingest
+            log.warning("fit scoring failed: %s: %s", type(exc).__name__, exc)
+            fit = {"error": f"{type(exc).__name__}: {exc}"}
     return {"inserted": inserted, "updated": updated, "workday_details_filled": len(filled),
-            "rescored": rescored, "purged_expired": purged}
+            "rescored": rescored, "purged_expired": purged, "fit": fit}
 
 
 _PROBLEM_STATUSES = {"robots_disallowed", "robots_unavailable", "denied_host", "unavailable", "error"}
@@ -546,6 +734,11 @@ def summarize(run: IngestRun, persisted: Optional[dict[str, Any]] = None) -> dic
         "skipped": [{"source": o.source, "name": o.name, "kind": o.kind, "status": o.status,
                      "reason": o.reason} for o in run.outcomes if o.status in _PROBLEM_STATUSES],
         "manual": [o.name for o in run.outcomes if o.status == "manual"],
+        # Phase 2: eligibility over every target-role job (excluded ones are stored too)
+        "evaluation": dict(run.evaluation or {}),
+        "eligible": (run.evaluation or {}).get("main", 0) + (run.evaluation or {}).get("extended", 0),
+        "excluded": (run.evaluation or {}).get("excluded", 0),
+        "fit": persisted.get("fit", {}),
     }
 
 

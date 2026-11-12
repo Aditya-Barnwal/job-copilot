@@ -96,6 +96,83 @@ _POSTING_FIELDS = (
 )
 _JSON_LIST_FIELDS = ("region_restrictions", "timezone_restrictions")
 
+# v3 (Phase 2): the eligibility decision + fit score, written beside the posting.
+EVALUATION_FIELDS = (
+    "lane", "excluded", "exclusion_reasons", "flags", "min_yoe_required", "yoe_max",
+    "yoe_is_preferred", "yoe_evidence", "fresher_friendly", "india_eligible",
+    "salary_annual_inr",
+)
+FIT_FIELDS = ("fit_score_v2", "fit_components", "matched_skills", "missing_skills", "fit_why")
+_V3_JSON_FIELDS = ("exclusion_reasons", "flags", "fit_components", "matched_skills", "missing_skills")
+
+# Tracker statuses (Phase 2). The v1 values stay valid and map onto these.
+TRACKER_STATUSES = ("found", "tailored", "ready_to_submit", "submitted", "oa", "interview",
+                    "offer", "rejected", "not_interested")
+LEGACY_STATUS_MAP = {"new": "found", "interested": "found", "ready": "ready_to_submit",
+                     "applied": "submitted"}
+ALL_STATUSES = TRACKER_STATUSES + tuple(LEGACY_STATUS_MAP)
+SUBMITTED_OR_LATER = frozenset({"submitted", "oa", "interview", "offer", "rejected"})
+STATUS_SOURCES = ("user", "detected", "system")
+
+
+def statuses_with_canonical(canon: Iterable[str]) -> list[str]:
+    """Every stored value (new + legacy) whose tracker column is in `canon`."""
+    want = set(canon)
+    return [s for s in ALL_STATUSES if LEGACY_STATUS_MAP.get(s, s) in want]
+
+
+def _json_or_none(v: Any) -> Optional[str]:
+    if v is None or isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False, default=str)
+
+
+def _write_evaluation(conn: sqlite3.Connection, key: str, evaluation: dict, now: float) -> None:
+    bad = set(evaluation) - set(EVALUATION_FIELDS)
+    if bad:
+        raise ValueError(f"unknown evaluation fields: {sorted(bad)}")
+    vals = {k: (_json_or_none(v) if k in _V3_JSON_FIELDS else
+                (int(v) if isinstance(v, bool) else v)) for k, v in evaluation.items()}
+    vals["evaluated_at"] = now
+    cols = ", ".join(f"{k} = ?" for k in vals)
+    conn.execute(f"UPDATE jobs SET {cols} WHERE key = ?", (*vals.values(), key))
+
+
+def set_evaluation(key: str, evaluation: dict, db_path: Path | str | None = None) -> None:
+    """Store an eligibility decision (see EVALUATION_FIELDS) on an existing row."""
+    with connect(db_path) as conn:
+        _write_evaluation(conn, key, evaluation, time.time())
+
+
+def set_fit(key: str, fit: dict, db_path: Path | str | None = None,
+            scored_at: Optional[float] = None) -> None:
+    """Store a v2 fit result (see FIT_FIELDS); lists/dicts are JSON-encoded."""
+    bad = set(fit) - set(FIT_FIELDS)
+    if bad:
+        raise ValueError(f"unknown fit fields: {sorted(bad)}")
+    vals = {k: (_json_or_none(v) if k in _V3_JSON_FIELDS else v) for k, v in fit.items()}
+    vals["scored_at"] = time.time() if scored_at is None else scored_at
+    cols = ", ".join(f"{k} = ?" for k in vals)
+    with connect(db_path) as conn:
+        conn.execute(f"UPDATE jobs SET {cols} WHERE key = ?", (*vals.values(), key))
+
+
+def decode_v3(row: dict) -> dict:
+    """JSON-decode the v3 columns in place (bad JSON -> empty value)."""
+    for f in _V3_JSON_FIELDS:
+        if f not in row:
+            continue
+        v = row[f]
+        empty: Any = {} if f == "fit_components" else []
+        if isinstance(v, str) and v:
+            try:
+                row[f] = json.loads(v)
+            except ValueError:
+                row[f] = empty
+        elif v is None:
+            row[f] = empty
+    return row
+
 
 def _row_from_filter_result(r: FilterResult) -> dict[str, Any]:
     from .dedupe import canonical_key  # local: dedupe imports models only, but keep store light
@@ -148,13 +225,17 @@ def _find_existing(conn: sqlite3.Connection, row: dict, occurrences: list[dict])
     found = conn.execute("SELECT key, source FROM jobs WHERE key = ?", (row["key"],)).fetchone()
     if found:
         return found
+    mine_co = _norm_company(row.get("company"))
     for o in occurrences:
-        hit = conn.execute(
-            "SELECT j.key, j.source FROM job_sources s JOIN jobs j ON j.key = s.job_key "
-            "WHERE s.source = ? AND s.external_id = ?", (o["source"], o["external_id"]),
-        ).fetchone()
-        if hit:
-            return hit
+        # A listing id belongs to ONE employer: a hit on another company's row is
+        # an id collision (per-tenant ids, shared fixtures), never the same job.
+        for eid in (str(o["external_id"]), _qualified_id(mine_co, o["external_id"])):
+            hit = conn.execute(
+                "SELECT j.key, j.source, j.company FROM job_sources s JOIN jobs j ON j.key = s.job_key "
+                "WHERE s.source = ? AND s.external_id = ?", (o["source"], eid),
+            ).fetchone()
+            if hit and _norm_company(hit["company"]) == mine_co:
+                return hit
     mine = {o["source"] for o in occurrences}
     my_regions = _regions_of(row["region_restrictions"])
     for cand in conn.execute("SELECT key, source, region_restrictions FROM jobs WHERE canonical_key = ?",
@@ -183,8 +264,34 @@ def _regions_of(value: Any) -> frozenset[str]:
     return frozenset(t for t in (_region_token(str(v)) for v in value or []) if t)
 
 
+def _norm_company(name: Any) -> str:
+    from .normalize import normalize_company_name
+    return normalize_company_name(name or "")
+
+
+def _qualified_id(norm_company: str, external_id: Any) -> str:
+    return f"{norm_company}/{external_id}"
+
+
+def _listing_id(conn: sqlite3.Connection, job_key: str, source: str, external_id: Any) -> str:
+    """external_id as stored in job_sources for this job. job_sources is
+    UNIQUE(source, external_id); when another employer's job already holds the
+    bare id, this one is stored company-qualified instead of stealing it."""
+    eid = str(external_id)
+    held = conn.execute("SELECT s.job_key, j.company FROM job_sources s LEFT JOIN jobs j ON j.key = s.job_key "
+                        "WHERE s.source = ? AND s.external_id = ?", (source, eid)).fetchone()
+    if not held or held["job_key"] == job_key:
+        return eid
+    mine = conn.execute("SELECT company FROM jobs WHERE key = ?", (job_key,)).fetchone()
+    mine_co = _norm_company(mine["company"] if mine else "")
+    if held["company"] is None or _norm_company(held["company"]) == mine_co:
+        return eid
+    return _qualified_id(mine_co, eid)
+
+
 def _write_sources(conn: sqlite3.Connection, job_key: str, occurrences: list[dict], now: float) -> None:
     for o in occurrences:
+        o = {**o, "external_id": _listing_id(conn, job_key, o["source"], o["external_id"])}
         conn.execute(
             "INSERT INTO job_sources(job_key, source, external_id, url, apply_url, "
             "attribution_name, attribution_url, first_seen, last_seen) "
@@ -249,6 +356,13 @@ def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = No
                 )
                 inserted += 1
             _write_sources(conn, target, occurrences, now)
+            evaluation = getattr(r, "evaluation", None)
+            if evaluation:
+                _write_evaluation(conn, target, evaluation, now)
+            try:
+                r.stored_key = target   # type: ignore[attr-defined]  # where this result lives now
+            except AttributeError:      # a slotted / frozen result type
+                pass
     return inserted, updated
 
 
@@ -409,7 +523,7 @@ def list_jobs(
     with connect(db_path) as conn:
         rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
         user_yoe = _user_yoe(conn)
-    return [_derive(_decode_json_lists(_decode_keywords(r)), user_yoe) for r in rows]
+    return [_derive(decode_v3(_decode_json_lists(_decode_keywords(r))), user_yoe) for r in rows]
 
 
 def get_job(key: str, db_path: Path | str | None = None) -> Optional[dict]:
@@ -419,7 +533,7 @@ def get_job(key: str, db_path: Path | str | None = None) -> Optional[dict]:
         sources = _sources_for(conn, key) if row else []
     if not row:
         return None
-    job = _derive(_decode_json_lists(_decode_keywords(dict(row))), user_yoe)
+    job = _derive(decode_v3(_decode_json_lists(_decode_keywords(dict(row)))), user_yoe)
     if not sources:  # rows stored before v2 have no job_sources yet
         sources = [{k: job.get(k) for k in ("source", "external_id", "url", "apply_url",
                                              "attribution_name", "attribution_url",
@@ -428,15 +542,65 @@ def get_job(key: str, db_path: Path | str | None = None) -> Optional[dict]:
     return job
 
 
+def canonical_status(status: Optional[str]) -> str:
+    """Tracker column for a stored status (legacy values map onto the new ones)."""
+    s = (status or "new").strip().lower()
+    return LEGACY_STATUS_MAP.get(s, s)
+
+
+def is_submitted_or_later(status: Optional[str]) -> bool:
+    return canonical_status(status) in SUBMITTED_OR_LATER
+
+
 def set_status(key: str, status: str, notes: Optional[str] = None,
-               db_path: Path | str | None = None) -> bool:
+               db_path: Path | str | None = None, *, source: str = "user",
+               note: Optional[str] = None, proof_path: Optional[str] = None,
+               at: Optional[float] = None) -> bool:
+    """Set a job's tracker status; every change is appended to status_history.
+
+    Legacy statuses (new/interested/ready/applied) are still accepted and
+    stored as given. Reaching `submitted` (or later) stamps submitted_at and
+    submit_source ('user' | 'detected') unless already set; going back to a
+    pre-submit status (undo) clears them, and history keeps both rows.
+    Returns False when the job does not exist.
+    """
+    if source not in STATUS_SOURCES:
+        raise ValueError(f"unknown status source: {source!r}")
+    now = time.time() if at is None else float(at)
+    canon = canonical_status(status)
     with connect(db_path) as conn:
+        row = conn.execute("SELECT status, submitted_at FROM jobs WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return False
+        sets: dict[str, Any] = {"status": status}
+        changed = (row["status"] or "new") != status
+        if changed:
+            sets["status_changed_at"] = now
         if notes is not None:
-            cur = conn.execute("UPDATE jobs SET status = ?, notes = ? WHERE key = ?",
-                               (status, notes, key))
-        else:
-            cur = conn.execute("UPDATE jobs SET status = ? WHERE key = ?", (status, key))
-        return cur.rowcount > 0
+            sets["notes"] = notes
+        if canon in SUBMITTED_OR_LATER:
+            if row["submitted_at"] is None and canon != "rejected":
+                sets["submitted_at"] = now
+                sets["submit_source"] = "detected" if source == "detected" else "user"
+            if proof_path:
+                sets["submit_proof_path"] = proof_path
+        elif canon in TRACKER_STATUSES:
+            sets["submitted_at"] = None
+            sets["submit_source"] = None
+        cols = ", ".join(f"{k} = ?" for k in sets)
+        conn.execute(f"UPDATE jobs SET {cols} WHERE key = ?", (*sets.values(), key))
+        if changed or note or notes:
+            conn.execute("INSERT INTO status_history(job_key, status, at, source, note) "
+                         "VALUES (?, ?, ?, ?, ?)", (key, status, now, source, note or notes))
+        return True
+
+
+def status_history(key: str, db_path: Path | str | None = None) -> list[dict]:
+    """Every recorded status change for a job, oldest first."""
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT status, at, source, note FROM status_history "
+                            "WHERE job_key = ? ORDER BY at, id", (key,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def set_scores(key: str, match_score: float, ats_coverage: float,
@@ -638,3 +802,109 @@ def link_job_version(key: str, version_id: int,
     with connect(db_path) as conn:
         conn.execute("UPDATE jobs SET applied_version_id = ? WHERE key = ?",
                      (version_id, key))
+
+
+# --- runs (nightly / manual pipeline runs) --------------------------------
+
+def _decode_run(row: dict) -> dict:
+    v = row.get("summary")
+    if isinstance(v, str) and v:
+        try:
+            row["summary"] = json.loads(v)
+        except ValueError:
+            row["summary"] = None
+    return row
+
+
+def start_run(kind: str, db_path: Path | str | None = None, summary: Any = None) -> int:
+    with connect(db_path) as conn:
+        cur = conn.execute("INSERT INTO runs(kind, started_at, status, summary) VALUES (?, ?, 'running', ?)",
+                           (kind, time.time(), _json_or_none(summary)))
+        return int(cur.lastrowid)
+
+
+def update_run(run_id: int, *, status: Optional[str] = None, summary: Any = None,
+               error: Optional[str] = None, finished: bool = False,
+               db_path: Path | str | None = None) -> None:
+    sets: dict[str, Any] = {}
+    if status is not None:
+        sets["status"] = status
+    if summary is not None:
+        sets["summary"] = _json_or_none(summary)
+    if error is not None:
+        sets["error"] = error[:2000]
+    if finished:
+        sets["finished_at"] = time.time()
+    if not sets:
+        return
+    with connect(db_path) as conn:
+        conn.execute(f"UPDATE runs SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
+                     (*sets.values(), run_id))
+
+
+def get_run(run_id: int, db_path: Path | str | None = None) -> Optional[dict]:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    return _decode_run(dict(row)) if row else None
+
+
+def list_runs(kind: Optional[str] = None, limit: int = 50,
+              db_path: Path | str | None = None) -> list[dict]:
+    sql, args = "SELECT * FROM runs", []
+    if kind:
+        sql += " WHERE kind = ?"; args.append(kind)
+    sql += " ORDER BY started_at DESC, id DESC LIMIT ?"; args.append(int(limit))
+    with connect(db_path) as conn:
+        return [_decode_run(dict(r)) for r in conn.execute(sql, args).fetchall()]
+
+
+def running_run(kind: str, stale_after_sec: float = 6 * 3600,
+                db_path: Path | str | None = None) -> Optional[dict]:
+    """The newest still-'running' run of `kind` started within stale_after_sec
+    (an older one is a crashed process, not a live run)."""
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE kind = ? AND status = 'running' AND started_at > ? "
+                           "ORDER BY started_at DESC LIMIT 1",
+                           (kind, time.time() - stale_after_sec)).fetchone()
+    return _decode_run(dict(row)) if row else None
+
+
+# --- daily queue ----------------------------------------------------------
+
+def replace_queue(day: str, items: Iterable[tuple[str, str, int, Optional[float]]],
+                  db_path: Path | str | None = None) -> dict[str, int]:
+    """Make `items` [(job_key, lane, rank, fit_score)] the queue for `day`.
+
+    Idempotent: existing rows keep their status (only lane/rank/score change);
+    rows no longer selected are deleted if untouched ('queued'), otherwise kept
+    with rank NULL so a user's action on them is never lost.
+    """
+    now = time.time()
+    items = list(items)
+    keep = {k for k, _, _, _ in items}
+    with connect(db_path) as conn:
+        for job_key, lane, rank, fit in items:
+            conn.execute(
+                "INSERT INTO queue_items(day, job_key, lane, rank, fit_score, added_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'queued') ON CONFLICT(day, job_key) DO UPDATE SET "
+                "lane = excluded.lane, rank = excluded.rank, fit_score = excluded.fit_score",
+                (day, job_key, lane, rank, fit, now))
+        old = conn.execute("SELECT job_key, status FROM queue_items WHERE day = ?", (day,)).fetchall()
+        removed = kept = 0
+        for r in old:
+            if r["job_key"] in keep:
+                continue
+            if (r["status"] or "queued") == "queued":
+                conn.execute("DELETE FROM queue_items WHERE day = ? AND job_key = ?", (day, r["job_key"]))
+                removed += 1
+            else:
+                conn.execute("UPDATE queue_items SET rank = NULL WHERE day = ? AND job_key = ?",
+                             (day, r["job_key"]))
+                kept += 1
+    return {"written": len(items), "removed": removed, "kept_with_status": kept}
+
+
+def queue_days(db_path: Path | str | None = None) -> list[str]:
+    with connect(db_path) as conn:
+        return [r["day"] for r in conn.execute(
+            "SELECT DISTINCT day FROM queue_items ORDER BY day DESC").fetchall()]

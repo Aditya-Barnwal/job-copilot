@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+job-copilot nightly run (D2). Rendered by `scripts/schedule.py install`
+(`make schedule-install`), which fills the {{...}} placeholders with absolute
+paths and the time from config/schedule.yaml (daily_run), writes
+~/Library/LaunchAgents/com.jobcopilot.daily.plist and bootstraps it.
+If the Mac is asleep at the slot, launchd runs the job on wake.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PYTHON}}</string>
+    <string>-m</string>
+    <string>jobcopilot.daily</string>
+  </array>
+  <key>WorkingDirectory</key><string>{{REPO}}</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>{{HOUR}}</integer>
+    <key>Minute</key><integer>{{MINUTE}}</integer>
+  </dict>
+  <key>StandardOutPath</key><string>{{LOG_DIR}}/daily.out.log</string>
+  <key>StandardErrorPath</key><string>{{LOG_DIR}}/daily.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

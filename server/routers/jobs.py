@@ -11,7 +11,7 @@ from fastapi.responses import Response
 
 from jobcopilot import store
 
-from ..deps import JOB_STATUSES, enrich, filter_max_yoe
+from ..deps import enrich, filter_max_yoe
 
 router = APIRouter()
 
@@ -57,15 +57,8 @@ def get_job_endpoint(key: str):
     return enrich([job])[0]
 
 
-@router.post("/api/jobs/{key}/status")
-def set_status_endpoint(key: str, body: dict = Body(...)):
-    status = body.get("status")
-    if status not in JOB_STATUSES:
-        raise HTTPException(status_code=400, detail="invalid status")
-    ok = store.set_status(key, status, notes=body.get("notes"))
-    if not ok:
-        raise HTTPException(status_code=404, detail="not found")
-    return {"ok": True, "status": status}
+# POST /api/jobs/{key}/status lives in routers/queue.py (tracker statuses + history);
+# it accepts the old request body unchanged.
 
 
 @router.get("/api/export.csv")

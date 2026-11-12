@@ -5,6 +5,11 @@
 yoe:
   user_yoe: 1          # your years of experience (whole years)
   max_required: 2      # drop roles whose HARD minimum is above this (i.e. 3+ years)
+                       # ("preferred"/"nice to have" bars never drop a role; they are flagged)
+
+seniority:
+  exclude_senior_titles: true        # senior / staff / principal / lead / manager / L4+ / SDE3 ...
+  allow_if_jd_yoe_within_max: true   # ...unless the JD's hard YOE is <= max_required (then a flag)
 
 # Annual floors per currency. Roles with no disclosed pay are kept, flagged, ranked lower.
 salary_floors:
@@ -22,10 +27,13 @@ geo:
   outside_india_allow: [remote]                 # outside India: fully remote only
   outside_india_require_india_eligible: true    # "Remote – US only" is excluded
   min_ist_overlap_hours: 3                      # time-zone overlap with IST for remote-abroad
-  keep_unknown_country: true
+  workday_hours: 8                              # overlap = workday_hours - |their UTC offset - 5.5|
+  scan_description: true                        # also honour "US only" / "must be based in the EU" in the JD
+  keep_unknown_country: true                    # unknown country: kept, flagged
 
 roles:
   families: []         # empty = built-in list (SDE / backend / full-stack / ML / AI / GenAI / data)
+  exclude_internships: true   # intern / co-op / apprentice titles are excluded (reason "role")
 
 companies:
   require_tier: [brand, funded]   # recognised brand OR seriously funded startup
@@ -40,6 +48,13 @@ companies:
     signals: [simplify-newgrad, speedyapply, zshah]
     min_signals: 2        # named by at least this many curated lists (1 = ~4,400 companies, 2 = ~2,500)
   include_extended: true
+  # Employers with tier 'unknown' or not in the companies table at all (common for job-board
+  # postings). extended = keep them in the extended lane with flag "company:unverified" so
+  # nothing good is lost; excluded = drop them with reason "company".
+  unknown_tier_lane: extended
+
+freshness:
+  stale_flag_days: 60   # older postings are flagged "stale"; age never excludes a job
 
 queue:
   daily_target_min: 15

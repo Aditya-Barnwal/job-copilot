@@ -19,7 +19,7 @@ log = logging.getLogger("jobcopilot.server")
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-JOB_STATUSES = ("new", "interested", "ready", "applied", "rejected", "not_interested")
+from jobcopilot.store import ALL_STATUSES as JOB_STATUSES  # tracker + legacy statuses (one list)
 
 _company_meta: Optional[dict[str, dict[str, Any]]] = None
 

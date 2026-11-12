@@ -207,7 +207,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - every approved source has a passing offline test
   - a live ingest shows per-source counts
 
-### Phase 2: Filtering, scoring, queue, nightly run ☐
+### Phase 2: Filtering, scoring, queue, nightly run ◐
 - ☐ YOE v2:
   - anchor to the requirements section; handle `1.5+`, `0–2`, fresher / new grad / entry level
   - prefer the lowest hard floor on junior titles (F10)
@@ -393,3 +393,14 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
     - the job-description text fed to the tailoring prompt must be marked untrusted (P3)
     - add `probed_at` / `probe_job_count` / `probe_india_count` columns (P2)
     - config files are the source of truth for `include_extended`; the Phase 5 UI needs a watchlist tab
+- 2026-11-12: **Deferred by you, for later:** free API keys (Findwork, Web3.career, Jooble, Careerjet); robots exemptions for Darwinbox and remotefirstjobs. Phase 2 started.
+- 2026-11-12: **Your UX decisions** (apply in Phases 2, 4 and 5):
+  - **Views:** "Today's best" (15–25) is only the top of the list. **All matches** shows every eligible job, sorted by fit and filterable. Plus an **Extended** (watchlist) tab and an **Excluded** tab with reasons.
+  - **Tracker:** Found → Tailored → **Ready to submit** → **Submitted** → OA → Interview → Offer / Rejected, with dates. Submitted jobs leave Today's best and All matches.
+  - **Submit detection:**
+    - your **✓ Submitted** button is the source of truth (undoable)
+    - the autofill browser *watches* for the ATS confirmation page and marks "Submitted (detected)" with a screenshot (never clicks)
+    - unsubmitted jobs stay in Ready to submit with an age counter, a reminder after 2 days, and a warning when the posting expires
+    - **Gmail confirmation detection: approved by you for later** (after Phase 5).
+      - Read-only: only the subject and sender of "we received your application" mail, matched to Ready-to-submit jobs → "Submitted (email)".
+      - No message bodies stored; can be switched off in config.

@@ -1,0 +1,88 @@
+# Fit score (0-100) knobs — read by jobcopilot/fit.py. Every value has a default in
+# fit.DEFAULTS; delete a line to fall back to it. Scoring is deterministic and LLM-free.
+# Hard exclusions (YOE, geo, salary floor, tier) live in filters.yaml / eligibility.py;
+# this file only RANKS what is left.
+
+# Component weights. They need not sum to 1: the components actually computed are
+# renormalised (e.g. semantic is dropped when disabled or the model can't load).
+weights:
+  skills: 0.30      # JD must-have / nice-to-have coverage by your résumé skills
+  role: 0.15        # title family vs your target families
+  seniority: 0.15   # fresher / new grad / YOE floor vs your YOE (filters.yaml yoe.user_yoe)
+  location: 0.10    # Bengaluru > other metro > remote India-eligible > India > unknown
+  company: 0.10     # tier: brand > funded (YC / Series B+ higher) > watchlist
+  salary: 0.05      # disclosed pay vs the floor in filters.yaml; none = neutral
+  freshness: 0.05   # posting age
+  semantic: 0.10    # MiniLM cosine résumé vs JD
+
+semantic: true                    # false = never load the embedding model
+semantic_cosine_range: [0.15, 0.65]  # cosine at/below the first -> 0, at/above the second -> 100
+
+skills:
+  must_weight: 0.7      # share of the skills score from must-haves
+  nice_weight: 0.3      # ... and from nice-to-haves (renormalised if a JD has only one kind)
+  no_skills_score: 50   # JD names no known skill: neutral, flagged low_confidence_skills
+  top_n: 8              # matched / missing lists shown on the card (must-haves first)
+
+role:
+  target_families: []   # empty -> derived from filters.yaml roles.families, else
+                        # [backend, fullstack, ml, ai, sde]
+  target_score: 100     # title in one of your target families
+  generic_sde: 85       # "Software Engineer" with no specialisation
+  scores:               # everything else (adjacent families)
+    data_engineering: 70
+    data_science: 75
+    frontend: 55
+    devops: 55
+    mobile: 45
+    qa: 35
+    other_engineering: 40
+    other: 20
+
+seniority:
+  fresher: 100            # fresher / new grad / entry level / 0-x years
+  at_or_below_user: 100   # YOE floor <= your YOE
+  one_above_user: 85      # floor = your YOE + 1 (e.g. "2+ years" at 1 YOE)
+  preferred_stretch: 60   # soft "3 years preferred" (your YOE + 2)
+  preferred_far: 40       # soft and further above
+  hard_above: 20          # hard floor 2+ above you (eligibility normally excludes these)
+  unknown: 70             # no YOE stated
+  junior_title: 95        # "Junior" / "Associate" / "SDE I" with no YOE stated
+  senior_title: 15        # Senior / Staff / Lead / ...
+  intern: 50              # internships: you already work full time
+
+location:
+  preferred_city: 100     # filters.yaml geo.india_preferred_cities (Bengaluru)
+  remote_india_eligible: 90
+  india_metro: 85
+  india_other: 75
+  unknown: 60
+  remote_abroad_unclear: 55   # remote abroad, India eligibility not stated
+  not_eligible: 10
+  india_metros: [hyderabad, pune, chennai, mumbai, delhi, new delhi, gurgaon, gurugram,
+                 noida, ncr, kolkata, ahmedabad, navi mumbai, thane, kochi, coimbatore,
+                 jaipur, indore]
+
+company:
+  brand: 100
+  funded: 90
+  funded_strong: 95   # YC batch, or Series B and later
+  yc_top: 98          # YC top company
+  watchlist: 60       # extended lane
+  unknown: 40
+  excluded: 0
+  missing: 50         # no company record linked
+
+salary:
+  missing: 50             # no pay disclosed: kept, ranked lower
+  below_floor: 20
+  at_floor: 75            # exactly at the floor; rises linearly ...
+  full_marks_ratio: 2.0   # ... to 100 at 2x the floor
+  unknown_currency: 50
+
+freshness:
+  steps: [[7, 100], [14, 90], [30, 75], [60, 50]]   # [max age in days, points]
+  older: 30
+  unknown: 60
+
+why_bands: [[75, "Strong match"], [55, "Good match"], [40, "Partial match"], [0, "Weak match"]]

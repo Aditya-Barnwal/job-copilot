@@ -100,6 +100,24 @@ TECH_VOCAB: list[str] = [
     # data science
     "pandas", "numpy", "jupyter", "tableau", "power bi", "looker", "matplotlib",
     "seaborn", "plotly", "statistics", "experimentation", "a/b testing",
+    # --- Phase 2 additions (curated; ambiguous words like "spring"/"swift"/"express"
+    # are handled case-sensitively by jobcopilot/skills.py instead) ---
+    "golang", "springboot", "spring mvc", "hibernate", "jpa", "j2ee", "jvm", "drools",
+    "rule engine", "nestjs", "express.js", "nodejs", "reactjs", "react native", "nextjs",
+    "vuejs", "angularjs", "flutter", "dart", "android", "solidity", "elixir", "haskell",
+    "asp.net", "protobuf", "restful", "rest apis", "microservice", "websockets",
+    "google cloud platform", "cloud run", "gke", "eks", "ecs", "fargate", "aws lambda",
+    "lambda functions", "serverless", "cloudformation", "infrastructure as code",
+    "opentelemetry", "observability", "nginx", "opensearch", "nosql", "pgvector", "pinecone",
+    "weaviate", "milvus", "qdrant", "faiss", "chromadb", "pyspark", "apache spark",
+    "large language models", "large language model", "llms", "genai", "generative ai",
+    "retrieval augmented generation", "retrieval-augmented generation", "langchain",
+    "langgraph", "llamaindex", "prompt engineering", "agentic", "ai agents", "lora", "peft",
+    "mlflow", "kubeflow", "model deployment", "opencv", "image processing", "neural networks",
+    "catboost", "sentence-transformers", "junit", "pytest", "jest", "selenium", "cypress",
+    "unit testing", "integration testing", "multithreading", "concurrency", "asyncio",
+    "memcached", "oauth2", "data structures", "algorithms", "object-oriented", "oop",
+    "continuous integration", "continuous delivery", "bitbucket", "kanban",
 ]
 
 
@@ -107,7 +125,7 @@ TECH_VOCAB: list[str] = [
 # inside other words). All entries lowercased.
 _SHORT_TOKENS = {
     "r", "go", "k8s", "sql", "aws", "gcp", "llm", "rag", "nlp", "tdd",
-    "ci/cd", "rest", "git", "node", "c#", "c++",
+    "ci/cd", "rest", "git", "node", "c#", "c++", "ecs", "eks", "gke", "oop", "jpa", "jvm",
 }
 
 

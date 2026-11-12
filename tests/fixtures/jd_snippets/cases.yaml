@@ -1,0 +1,275 @@
+# YOE v2 cases. Each case: title, text, and the expected reading.
+#   min / max: years (null = none found); preferred: soft bar only; fresher: fresher_friendly.
+# source: db-copy = trimmed from a temp copy of the local jobs DB (company JD text only);
+#         written  = hand-written to cover a format or guard.
+cases:
+  - id: affirm_swe2_1_5
+    source: db-copy
+    title: "Software Engineer II, Backend (AI Agents)"
+    text: |
+      Affirm is reinventing credit to make it more honest and friendly. Over the last 10 years
+      our engineering team has grown across 5 countries.
+      What you'll do
+      · Own services end to end and participate in the interview process.
+      What We Look For
+      · You have a total of 1.5+ years of experience as a software engineer.
+      · You have experience shipping web apps using Python or Kotlin.
+      Pay Grade - L
+      Equity Grade - 5
+    expect: {min: 1.5, max: null, preferred: false, fresher: false}
+
+  - id: affirm_swe2_bare_bullet
+    source: db-copy
+    title: "Software Engineer II, Backend (Infrastructure Platform)"
+    text: |
+      This position requires either equivalent practical experience or a Bachelor's degree in a related field
+      1.5+ years of experience as a software engineer
+      Strong proficiency in Python, with experience in distributed systems
+    expect: {min: 1.5, max: null, preferred: false, fresher: false}
+
+  - id: affirm_mle2_2plus
+    source: db-copy
+    title: "Machine Learning Engineer II (Fraud)"
+    text: |
+      What we look for
+      - You have a total of 2+ years of experience as a machine learning engineer or a PhD in a relevant field.
+      - Experience with a deep learning framework (PyTorch preferred).
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: stripe_en_dash_range
+    source: db-copy
+    title: "Backend Engineer, Payments and Risk"
+    text: |
+      Minimum requirements
+      2–12+ years of industry software engineering experience (does not include internships)
+      Note: if you are an intern, new grad, staff, frontend or fullstack applicant, please do not apply using this link.
+    expect: {min: 2, max: 12, preferred: false, fresher: false}
+
+  - id: stripe_new_grad_cap
+    source: db-copy
+    title: "Software Engineer, New Grad"
+    text: |
+      Minimum requirements
+      A degree in computer science or a directly related field, obtained by summer 2027, or equivalent work
+      experience; New grad candidates should have no more than 18 months of professional experience.
+    expect: {min: 0, max: 1.5, preferred: false, fresher: true}
+
+  - id: aiprise_must_have_0_2
+    source: db-copy
+    title: "Software Engineer I (Bangalore, India)"
+    text: |
+      WHAT WE'RE LOOKING FOR
+      MUST-HAVE:
+       - 0-2 years of professional software engineering experience building and shipping production software
+      NICE-TO-HAVE:
+       - 2+ years of experience with React
+    expect: {min: 0, max: 2, preferred: false, fresher: true}
+
+  - id: robinhood_number_word_echo
+    source: db-copy
+    title: "Software Engineer"
+    text: |
+      What you bring
+      Bachelor's degree (or foreign equivalent) in Computer Science or a related field and three years (3) of
+      experience in the job offered or related occupation.
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: paypal_staff_preferred_section
+    source: db-copy
+    title: "Staff Software Engineer IOS"
+    text: |
+      Minimum Qualifications:
+      Bachelor's degree OR Any equivalent combination of education and experience.
+      Additional Responsibilities & Preferred Qualifications:
+      5+ years' experience in Mobile Development.
+    expect: {min: 5, max: null, preferred: true, fresher: false}
+
+  - id: plain_plus
+    source: written
+    title: "Backend Engineer"
+    text: "Requirements:\n- 2+ years of experience building REST APIs in Java or Go."
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: one_to_two_words
+    source: written
+    title: "Software Developer"
+    text: "Qualifications\nOne to two years of experience developing web applications with Django."
+    expect: {min: 1, max: 2, preferred: false, fresher: false}
+
+  - id: at_least_one_year
+    source: written
+    title: "Full Stack Engineer"
+    text: "What you'll need\nAt least one year of professional experience with TypeScript and Node.js."
+    expect: {min: 1, max: null, preferred: false, fresher: false}
+
+  - id: a_year
+    source: written
+    title: "Backend Developer"
+    text: "You have a year of hands-on experience with Python and PostgreSQL."
+    expect: {min: 1, max: null, preferred: false, fresher: false}
+
+  - id: range_to
+    source: written
+    title: "ML Engineer"
+    text: "Requirements\n• 1 to 3 years of experience training and deploying ML models."
+    expect: {min: 1, max: 3, preferred: false, fresher: false}
+
+  - id: between_and
+    source: written
+    title: "Data Engineer"
+    text: "We want someone with between 1 and 3 years of experience in data pipelines (Spark, Airflow)."
+    expect: {min: 1, max: 3, preferred: false, fresher: false}
+
+  - id: yrs_exp_shorthand
+    source: written
+    title: "SDE"
+    text: "Experience: 1-3 yrs exp in Java / Spring Boot. Location: Bengaluru."
+    expect: {min: 1, max: 3, preferred: false, fresher: false}
+
+  - id: months
+    source: written
+    title: "Associate Software Engineer"
+    text: "Must have\n- 6+ months of experience (internships count) writing production code."
+    expect: {min: 0.5, max: null, preferred: false, fresher: true}   # floor < 1 year reads as fresher-friendly
+
+  - id: fresher_india
+    source: written
+    title: "Software Engineer - Freshers"
+    text: "Freshers and candidates with up to 1 year of experience are welcome to apply. B.Tech CSE 2024/2025 pass-outs."
+    expect: {min: 0, max: 1, preferred: false, fresher: true}
+
+  - id: new_grad_text_only
+    source: written
+    title: "Software Engineer"
+    text: "This role is open to new grads and recent graduates. Strong CS fundamentals required."
+    expect: {min: 0, max: null, preferred: false, fresher: true}
+
+  - id: entry_level
+    source: written
+    title: "Backend Engineer"
+    text: "This is an entry-level position. No prior experience required - we will train you."
+    expect: {min: 0, max: null, preferred: false, fresher: true}
+
+  - id: early_career_program
+    source: written
+    title: "Graduate Software Engineer"
+    text: "Join our early career program for the class of 2026. You will rotate across three teams."
+    expect: {min: 0, max: null, preferred: false, fresher: true}
+
+  - id: intern_title
+    source: written
+    title: "Software Engineering Intern"
+    text: "Work on real projects with mentorship from senior engineers."
+    expect: {min: 0, max: null, preferred: false, fresher: true}
+
+  - id: negated_fresher
+    source: written
+    title: "Backend Engineer"
+    text: "This role is not suitable for freshers. You have 3+ years of experience with Kafka."
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: preferred_only
+    source: written
+    title: "Software Engineer"
+    text: "Nice to have\n- 3+ years of experience with Kubernetes in production."
+    expect: {min: 3, max: null, preferred: true, fresher: false}
+
+  - id: inline_preferred_clause
+    source: written
+    title: "Software Engineer"
+    text: "Requirements:\n- Strong Python skills.\n- 4+ years of backend experience preferred."
+    expect: {min: 4, max: null, preferred: true, fresher: false}
+
+  - id: hard_and_soft_paren
+    source: written
+    title: "Backend Engineer"
+    text: "- 2+ years of professional experience (5+ preferred) with distributed systems."
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: senior_title_strictest
+    source: written
+    title: "Senior Software Engineer"
+    text: |
+      Requirements
+      - 3+ years of experience with Python
+      - 6+ years of experience building distributed systems
+    expect: {min: 6, max: null, preferred: false, fresher: false}
+
+  - id: junior_title_lowest_floor
+    source: written
+    title: "Software Engineer II"
+    text: |
+      Requirements
+      - 1+ years of experience with Go or Java
+      - 3+ years of experience with cloud infrastructure
+    expect: {min: 1, max: null, preferred: false, fresher: false}
+
+  - id: other_level_bar_ignored
+    source: written
+    title: "Software Engineer"
+    text: "We hire at all levels: 0-2 years of experience for SDE I, and 5+ years of experience for senior roles."
+    expect: {min: 0, max: 2, preferred: false, fresher: true}
+
+  - id: company_blurb_vs_requirements
+    source: written
+    title: "Backend Engineer"
+    text: |
+      About us
+      With 20+ years of industry experience, Acme is a leader in payments.
+      Requirements
+      - 1+ years of experience in backend development
+    expect: {min: 1, max: null, preferred: false, fresher: false}
+
+  - id: guard_founded_since
+    source: written
+    title: "Software Engineer"
+    text: "Founded in 2010, we have been profitable since 2015 and growing for 12 years. Experience with Rust is a plus."
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: guard_degree_length
+    source: written
+    title: "Software Engineer"
+    text: "A 4 year degree in computer science or 4-year college experience in engineering is required."
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: guard_bond
+    source: written
+    title: "Software Engineer Trainee"
+    text: "Selected candidates sign a service agreement with a bond of 2 years. Freshers welcome."
+    expect: {min: 0, max: null, preferred: false, fresher: true}
+
+  - id: guard_within_graduation
+    source: written
+    title: "Software Engineer"
+    text: "Candidates who graduated within the last 2 years of graduation with relevant experience are encouraged to apply."
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: guard_team_combined
+    source: written
+    title: "ML Engineer"
+    text: "Our founders bring 30 years of combined experience. You will work with a team of 8."
+    expect: {min: null, max: null, preferred: false, fresher: false}
+
+  - id: one_line_inline_headings
+    source: written
+    title: "Backend Engineer"
+    text: "Responsibilities: build APIs. Requirements: 2+ years of experience with Node.js. Nice to have: 5+ years of experience with AWS."
+    expect: {min: 2, max: null, preferred: false, fresher: false}
+
+  - id: or_more
+    source: written
+    title: "Software Engineer"
+    text: "Minimum qualifications\n3 or more years of experience in software development."
+    expect: {min: 3, max: null, preferred: false, fresher: false}
+
+  - id: lead_title_large_bar
+    source: written
+    title: "Lead Backend Engineer"
+    text: "Must have: 8+ years of experience; 2+ years leading teams."
+    expect: {min: 8, max: null, preferred: false, fresher: false}
+
+  - id: no_yoe_mentioned
+    source: written
+    title: "Software Engineer"
+    text: "You love building products and have shipped something you are proud of."
+    expect: {min: null, max: null, preferred: false, fresher: false}

@@ -206,9 +206,84 @@ def _v2_sources_companies(conn: sqlite3.Connection) -> None:
     )""")
 
 
+def _v3_eligibility_queue(conn: sqlite3.Connection) -> None:
+    """Phase 2: eligibility decisions, fit scores, the daily queue, runs, tracker.
+
+    - jobs gains the eligibility Decision (lane, excluded + reasons, soft flags,
+      YOE range/evidence, India eligibility, annual INR pay) so every exclusion
+      is stored and explainable (D8), and the v2 fit score with its components.
+    - jobs gains tracker fields: when the status last changed and, for a
+      submission, when / how it was detected and where the proof lives (P4).
+    - companies gains the probe's columns (probe currently writes ats_evidence).
+    - runs records each nightly/manual run with per-step results; queue_items
+      holds "today's best" per day; status_history keeps every status change
+      (undo = set an earlier status; both rows stay).
+    """
+    for col, decl in (
+        ("lane", "TEXT"),                     # main | extended | excluded
+        ("excluded", "INTEGER DEFAULT 0"),
+        ("exclusion_reasons", "TEXT"),        # JSON [{rule, detail, excerpt}]
+        ("flags", "TEXT"),                    # JSON [{rule: "flag:...", detail, excerpt}]
+        ("yoe_max", "INTEGER"),
+        ("yoe_evidence", "TEXT"),
+        ("fresher_friendly", "INTEGER"),
+        ("india_eligible", "INTEGER"),
+        ("salary_annual_inr", "REAL"),
+        ("fit_score_v2", "REAL"),
+        ("fit_components", "TEXT"),           # JSON {components: {...}, weights: {...}}
+        ("matched_skills", "TEXT"),           # JSON list
+        ("missing_skills", "TEXT"),           # JSON list
+        ("fit_why", "TEXT"),
+        ("scored_at", "REAL"),
+        ("evaluated_at", "REAL"),
+        ("status_changed_at", "REAL"),
+        ("submitted_at", "REAL"),
+        ("submit_source", "TEXT"),            # user | detected
+        ("submit_proof_path", "TEXT"),
+    ):
+        add_column_if_missing(conn, "jobs", col, decl)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_lane ON jobs(lane, excluded)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_fit_v2 ON jobs(fit_score_v2)")
+
+    for col, decl in (("probed_at", "REAL"), ("probe_job_count", "INTEGER"),
+                      ("probe_india_count", "INTEGER")):
+        add_column_if_missing(conn, "companies", col, decl)
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,           -- daily | ...
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        status TEXT NOT NULL,         -- running | ok | partial | failed
+        summary TEXT,                 -- JSON: per-step results + per-source health
+        error TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS queue_items (
+        day TEXT NOT NULL,            -- YYYY-MM-DD in the schedule's time zone
+        job_key TEXT NOT NULL,
+        lane TEXT NOT NULL,           -- main | extended | near_miss
+        rank INTEGER,
+        fit_score REAL,
+        added_at REAL,
+        status TEXT DEFAULT 'queued',
+        PRIMARY KEY (day, job_key)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS status_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        at REAL NOT NULL,
+        source TEXT NOT NULL,         -- user | detected | system
+        note TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_status_history_job ON status_history(job_key, at)")
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
+    (3, "eligibility_queue_tracker", _v3_eligibility_queue),
 ]
 
 

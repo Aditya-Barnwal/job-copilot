@@ -31,7 +31,7 @@ from jobcopilot import config, store  # noqa: E402
 from jobcopilot.ingest import setup_logging  # noqa: E402
 
 from . import deps  # noqa: E402
-from .routers import ingest, jobs, meta, profile, tailor  # noqa: E402
+from .routers import ingest, jobs, meta, profile, queue, tailor  # noqa: E402
 
 STATIC_DIR = deps.STATIC_DIR
 
@@ -75,7 +75,9 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-for _router in (meta.router, ingest.router, jobs.router, profile.router, tailor.router):
+# queue.router goes before jobs.router: its POST /api/jobs/{key}/status (tracker
+# statuses + history, v1-compatible) must win over the older handler.
+for _router in (meta.router, ingest.router, queue.router, jobs.router, profile.router, tailor.router):
     app.include_router(_router)
 
 

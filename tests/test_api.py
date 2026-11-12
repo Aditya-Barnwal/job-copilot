@@ -60,6 +60,10 @@ EXPECTED_ROUTES = {
     ("POST", "/api/jobs/{key}/tailor"), ("POST", "/api/jobs/{key}/approve"),
     ("POST", "/api/jobs/{key}/draft-email"),
     ("GET", "/api/resume-versions"), ("GET", "/api/resume-versions/{vid}/download"),
+    # Phase 2 (server/routers/queue.py)
+    ("GET", "/api/queue"), ("GET", "/api/matches"), ("GET", "/api/excluded"),
+    ("GET", "/api/runs"), ("GET", "/api/runs/{run_id}"), ("POST", "/api/runs/daily"),
+    ("GET", "/api/jobs/{key}/fit"), ("GET", "/api/jobs/{key}/history"), ("GET", "/api/tracker"),
 }
 
 
@@ -481,3 +485,112 @@ def test_tailor_non_object_reply_is_clean_error(client, monkeypatch):
     r = client.post(f"/api/jobs/{key}/tailor", json={})
     assert r.status_code == 400
     assert "not an object" in r.json()["detail"]
+
+
+# --- Phase 2: queue / matches / excluded / runs / fit / tracker ----------------
+
+def seed_v2(ext: str, *, company: str = "Foo", lane: str = "main", fit: float | None = 50.0,
+            reasons: list | None = None) -> str:
+    job = Job(source="greenhouse", company=company, company_sector="tech", external_id=ext,
+              title="Backend Engineer", location_text="Bengaluru", workplace_type="onsite",
+              country_bucket="IN", url=f"https://example.test/jobs/{ext}", description_text="Python")
+    r = FilterResult(job=job, package_estimated=True, country_uncertain=False)
+    r.evaluation = {"lane": lane, "excluded": int(lane == "excluded"),
+                    "exclusion_reasons": reasons or [], "flags": []}
+    store.upsert_jobs([r])
+    if fit is not None:
+        store.set_fit(job.key, {"fit_score_v2": fit, "fit_why": "good fit",
+                                "fit_components": {"components": {"skills": fit}, "weights": {"skills": 1}},
+                                "matched_skills": ["python"], "missing_skills": ["go"]})
+    return job.key
+
+
+def test_status_endpoint_tracker_statuses_history_and_undo(client):
+    key = seed_job()
+    r = client.post(f"/api/jobs/{key}/status", json={"status": "ready_to_submit"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "status": "ready_to_submit"}
+    r = client.post(f"/api/jobs/{key}/status",
+                    json={"status": "submitted", "source": "detected", "note": "thank-you page"})
+    assert r.status_code == 200
+    job = store.get_job(key)
+    assert job["submit_source"] == "detected" and job["submitted_at"]
+    assert client.post(f"/api/jobs/{key}/status", json={"status": "ready_to_submit"}).status_code == 200
+    assert store.get_job(key)["submitted_at"] is None                      # undo
+    hist = client.get(f"/api/jobs/{key}/history").json()["history"]
+    assert [h["status"] for h in hist] == ["ready_to_submit", "submitted", "ready_to_submit"]
+    assert hist[1]["note"] == "thank-you page"
+    assert client.post(f"/api/jobs/{key}/status", json={"status": "applied", "notes": "v1"}).status_code == 200
+    assert store.get_job(key)["notes"] == "v1"                              # v1 body still works
+    assert client.post(f"/api/jobs/{key}/status",
+                       json={"status": "found", "source": "robot"}).status_code == 400
+    assert client.get("/api/jobs/nope/history").status_code == 404
+
+
+def test_queue_and_matches_endpoints(client):
+    from jobcopilot import queue as jq
+    a = seed_v2("a", fit=80); b = seed_v2("b", company="Bar", fit=60)
+    seed_v2("w", company="Wat", lane="extended", fit=70)
+    jq.build_daily_queue(day="2026-11-12")
+    r = client.get("/api/queue")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["day"] == "2026-11-12" and [i["key"] for i in body["items"]] == [a, b]
+    item = body["items"][0]
+    for k in ("fit_score", "why", "matched_skills", "missing_skills", "yoe", "location",
+              "source", "attribution_name", "age_days", "rank"):
+        assert k in item
+    assert [i["company"] for i in client.get("/api/queue", params={"lane": "extended"}).json()["items"]] == ["Wat"]
+    assert client.get("/api/queue", params={"lane": "bogus"}).status_code == 400
+
+    m = client.get("/api/matches", params={"limit": 1}).json()
+    assert m["total"] == 2 and [i["key"] for i in m["items"]] == [a]
+    client.post(f"/api/jobs/{a}/status", json={"status": "submitted"})
+    assert client.get("/api/matches").json()["total"] == 1                 # submitted: gone
+    assert [i["key"] for i in client.get("/api/queue").json()["items"]] == [b]
+    assert client.get("/api/matches", params={"sort": "nope"}).status_code == 400
+
+
+def test_excluded_fit_and_tracker_endpoints(client):
+    x = seed_v2("x", lane="excluded", fit=None,
+                reasons=[{"rule": "geo", "detail": "US only", "excerpt": "Remote - US only"}])
+    k = seed_v2("k", fit=66)
+    ex = client.get("/api/excluded", params={"rule": "geo"}).json()
+    assert ex["total"] == 1 and ex["items"][0]["key"] == x
+    assert ex["items"][0]["reasons"][0]["excerpt"] == "Remote - US only"
+    assert client.get("/api/excluded", params={"rule": "yoe"}).json()["total"] == 0
+    fit = client.get(f"/api/jobs/{k}/fit").json()
+    assert fit["fit_score"] == 66 and fit["components"] == {"skills": 66} and fit["why"] == "good fit"
+    assert client.get("/api/jobs/nope/fit").status_code == 404
+    client.post(f"/api/jobs/{k}/status", json={"status": "ready_to_submit"})
+    t = client.get("/api/tracker").json()
+    cols = {c["status"]: c for c in t["columns"]}
+    assert cols["ready_to_submit"]["count"] == 1
+    assert cols["ready_to_submit"]["items"][0]["status_changed_at"]
+    assert t["ready_to_submit"][0]["days_waiting"] == 0 and t["ready_to_submit"][0]["reminder_due"] is False
+    assert t["followups_due"] == []
+
+
+def test_runs_endpoints_start_in_background_and_refuse_a_second(client, monkeypatch):
+    import time as _time
+
+    from jobcopilot import daily
+
+    def fake_run(*, run_id, skip_discovery=False, **_kw):
+        store.update_run(run_id, status="ok", summary={"skip": skip_discovery}, finished=True)
+        return {"run_id": run_id}
+    monkeypatch.setattr(daily, "run", fake_run)
+    r = client.post("/api/runs/daily", json={"skip_discovery": True})
+    assert r.status_code == 200
+    run_id = r.json()["run_id"]
+    for _ in range(200):
+        if store.get_run(run_id)["status"] != "running":
+            break
+        _time.sleep(0.01)
+    assert client.get(f"/api/runs/{run_id}").json()["summary"] == {"skip": True}
+    runs = client.get("/api/runs").json()
+    assert runs["runs"][0]["id"] == run_id and runs["running"] is None
+
+    live = store.start_run("daily")
+    r = client.post("/api/runs/daily")
+    assert r.status_code == 409 and r.json()["detail"]["run_id"] == live
+    assert client.get("/api/runs/99999").status_code == 404

@@ -35,8 +35,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "outside_india_require_india_eligible": True,
             "min_ist_overlap_hours": 3,
             "keep_unknown_country": True,
+            "workday_hours": 8,          # IST overlap = workday_hours - |offset - 5.5|
+            "scan_description": True,    # "US only" / "must be based in the EU" in the JD body
         },
-        "roles": {"families": []},  # empty -> built-in DEFAULT_TARGET_ROLES
+        "seniority": {"exclude_senior_titles": True, "allow_if_jd_yoe_within_max": True},
+        "roles": {"families": [], "exclude_internships": True},  # empty -> built-in DEFAULT_TARGET_ROLES
         "companies": {
             "require_tier": ["brand", "funded"],
             "funded_min_stage": "series_a",
@@ -45,7 +48,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "watchlist": {"enabled": True, "signals": ["simplify-newgrad", "speedyapply", "zshah"],
                           "min_signals": 2},
             "include_extended": True,   # fetch them, in a separate lane from the main queue
+            "unknown_tier_lane": "extended",   # extended (+flag company:unverified) | excluded
         },
+        "freshness": {"stale_flag_days": 60},   # flag only; age never excludes
         "queue": {"daily_target_min": 15, "daily_target_max": 25, "max_per_company": 3},
     },
     "sources": {

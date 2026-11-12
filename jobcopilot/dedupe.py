@@ -156,7 +156,7 @@ def url_key(url: Optional[str]) -> str:
 # Sources whose ids are only unique inside one employer's tenant (Workday
 # requisition ids like "R-12345" repeat across companies). job_sources is
 # UNIQUE(source, external_id), so those ids are qualified with the company.
-_TENANT_SCOPED_IDS = {"workday"}
+_TENANT_SCOPED_IDS = {"workday", "bamboohr", "personio", "pinpoint", "keka"}  # ids only unique per employer
 
 
 def listing_id(job: Job) -> str:

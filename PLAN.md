@@ -207,7 +207,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - every approved source has a passing offline test
   - a live ingest shows per-source counts
 
-### Phase 2: Filtering, scoring, queue, nightly run ◐
+### Phase 2: Filtering, scoring, queue, nightly run ☑
 - ☐ YOE v2:
   - anchor to the requirements section; handle `1.5+`, `0–2`, fresher / new grad / entry level
   - prefer the lowest hard floor on junior titles (F10)
@@ -430,3 +430,7 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
   - **Backlog:**
     - main lane is small (~82 on the existing DB); grows as probes + new-grad sources accumulate
     - jobs with no description still score on role/location/company (~75): consider a penalty or fetching full JDs
+- 2026-11-12: **Phase 2 done.**
+  - **Live run #2** (corrected rules): 232 sources ok, 23,348 raw → 440 eligible / 7,885 excluded with reasons; queue 25 main / 15 extended / 10 near-miss. Top: Prodigal FDE, Hevo SDE II, Skylark AI Eng, HackerRank FDE, Netomi Agentic Eng, Bureau Assoc. DS.
+  - **19:00 LaunchAgent** fired, saw the manual run and stepped aside (run lock works). Re-enabled for nightly runs.
+  - **Next:** your Phase 3/3b/4 input checklist, then Phase 3.

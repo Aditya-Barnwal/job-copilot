@@ -209,7 +209,7 @@ class OtherHost(FakeConn):
     BASE = "https://other.fake/{slug}"
 
 
-def _seed(name, slug, *, ats="greenhouse", sources=("seed:x",), tier=None, conf=0.5, **kw):
+def _seed(name, slug, *, ats="greenhouse", sources=("seed:x",), tier="funded", conf=0.5, **kw):
     return co.upsert_company(name, ats=ats, ats_slug=slug, ats_confidence=conf,
                              ats_evidence=kw.pop("ev", "seed: x"), signal_sources=list(sources),
                              tier=tier, **kw)
@@ -220,7 +220,7 @@ def _reset(boards):
 
 
 def test_probe_priority_order():
-    _seed("Plain", "plain")
+    _seed("Plain", "plain", tier="unknown")
     _seed("Funded", "funded", tier="funded")
     _seed("Newgrad", "newgrad", sources=("seed:x", "simplify-newgrad"))
     _seed("Both", "both", sources=("simplify-newgrad", "yc-oss"))
@@ -229,8 +229,18 @@ def test_probe_priority_order():
     _seed("Verified", "verified", conf=1.0, ev="ats_detect: matched")              # not ours
     _seed("Cfg", "cfg", sources=("config",), ev="config")                         # config
     _seed("SR", "sr", ats="smartrecruiters")                                       # not supported
-    order = [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=10**9)]
-    assert order == ["Both", "Newgrad", "Funded", "Plain", "Old"]
+    _seed("Excluded", "excl", tier="excluded")      # live ingest would never read it
+    _seed("NoTier", "notier", tier=None)
+    order = [c["name"] for c in probe.candidates(
+        supported={"greenhouse"}, now=10**9, cfg={"require_tier": ["brand", "funded", "unknown"]})]
+    assert order == ["Both", "Newgrad", "Funded", "Old", "Plain", "NoTier"]
+    # default gate = config/filters.yaml companies.require_tier (brand, funded)
+    default = [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=10**9)]
+    assert "Plain" not in default and "Excluded" not in default and "NoTier" not in default
+    assert default == ["Both", "Newgrad", "Funded", "Old"]
+    _seed("Watch", "watch", tier="watchlist")
+    assert "Watch" in [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=10**9)]
+    assert "Excluded" not in [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=10**9)]
 
 
 def test_probe_activates_only_india_relevant_and_demotes():
@@ -304,3 +314,119 @@ def test_probe_relevance_needs_target_role_and_not_senior():
     assert not probe._relevant_title(NS(title="Senior Software Engineer"), cfg)
     assert not probe._relevant_title(NS(title="Account Executive"), cfg)
     assert probe._relevant_title(NS(title="Account Executive"), {"require_role_match": False})
+
+
+# ------------------------------------------------------------ Phase 1b review fixes
+
+def test_probe_activated_accepted_tier_reaches_live_ingest_and_gate_matches():
+    """L6: the probe queues exactly the tiers enabled_ats_companies accepts."""
+    _seed("Funded Co", "fundedco", tier="funded")
+    _seed("Nobody", "nobody", tier="unknown")
+    due = [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=10**9)]
+    assert due == ["Funded Co"]
+    _reset({"fundedco": [("Remote", REMOTE)], "nobody": [("Remote", REMOTE)]})
+    probe.run_probe(connectors={"greenhouse": FakeConn}, now=10**9, cfg={"enabled": True})
+    assert FakeConn.calls == ["fundedco"]
+    live = {r["name"] for r in co.enabled_ats_companies()}
+    assert "Funded Co" in live and "Nobody" not in live
+    assert set(co.ingest_tiers()) >= {"brand", "funded"} and not {"unknown", "excluded"} & set(co.ingest_tiers())
+
+
+def _row(name):
+    return next(r for r in co.list_companies() if r["name"] == name)
+
+
+def test_transient_failure_does_not_demote_and_retries_soon():
+    """L5: 5xx / 429 / timeout keep confidence + schedule a ~1 day retry; 3 in a row demote."""
+    _seed("Live", "live", conf=co.VERIFIED_CONFIDENCE, ev="probe: old jobs=3 india_or_remote=1 -> active",
+          ats_checked_at=1.0)
+    t = 10**9
+    for status in (503, 429, 401, 403):
+        _reset({"live": HttpStatusError("GET", "u", _resp(status))})
+        probe.run_probe(connectors={"greenhouse": FakeConn}, now=t, cfg={"enabled": True, "max_consecutive_failures": 99})
+        r = _row("Live")
+        assert r["ats_confidence"] == co.VERIFIED_CONFIDENCE and f"HTTP {status}" in r["ats_evidence"]
+        # not due right away, due again a day later (not after stale_days)
+        assert not probe.candidates(supported={"greenhouse"}, now=t + 3600)
+        assert [c["name"] for c in probe.candidates(supported={"greenhouse"}, now=t + 86400 + 10)] == ["Live"]
+        t += 86400 + 10
+    for exc in (TimeoutError("slow"), requests.ConnectionError("x"), ValueError("bad json")):
+        _reset({"live": exc})
+        probe.run_probe(connectors={"greenhouse": FakeConn}, now=t, cfg={"enabled": True, "max_consecutive_failures": 99})
+        assert _row("Live")["ats_confidence"] == co.VERIFIED_CONFIDENCE
+        t += 86400 + 10
+
+
+def test_third_consecutive_failure_demotes_and_success_resets_counter():
+    _seed("Flaky", "flaky", conf=co.VERIFIED_CONFIDENCE, ev="probe: old -> active", ats_checked_at=1.0)
+    t = 10**9
+    boom = HttpStatusError("GET", "u", _resp(500))
+    for n in (1, 2):
+        _reset({"flaky": boom})
+        probe.run_probe(connectors={"greenhouse": FakeConn}, now=t, cfg={"enabled": True})
+        assert _row("Flaky")["ats_confidence"] == co.VERIFIED_CONFIDENCE and f"fails={n}" in _row("Flaky")["ats_evidence"]
+        t += 2 * 86400
+    _reset({"flaky": [("Remote", REMOTE)]})                         # a success resets the counter
+    probe.run_probe(connectors={"greenhouse": FakeConn}, now=t, cfg={"enabled": True})
+    assert "fails=" not in _row("Flaky")["ats_evidence"]
+    t += 8 * 86400
+    for n in (1, 2, 3):
+        _reset({"flaky": boom})
+        probe.run_probe(connectors={"greenhouse": FakeConn}, now=t, cfg={"enabled": True})
+        t += 2 * 86400
+    r = _row("Flaky")
+    assert r["ats_confidence"] == co.UNVERIFIED_CONFIDENCE and "3 failures in a row" in r["ats_evidence"]
+
+
+def test_gone_board_demotes_immediately():
+    _seed("Gone2", "gone2", conf=co.VERIFIED_CONFIDENCE, ev="probe: old -> active", ats_checked_at=1.0)
+    _reset({"gone2": HttpStatusError("GET", "u", _resp(410))})
+    probe.run_probe(connectors={"greenhouse": FakeConn}, now=10**9, cfg={"enabled": True})
+    assert _row("Gone2")["ats_confidence"] == co.UNVERIFIED_CONFIDENCE
+
+
+def test_global_word_inside_a_place_name_is_not_global():
+    """L11."""
+    no = [_job("Global Delivery Hub, Chicago"), _job("International Business Park, Singapore"),
+          _job("Global Delivery Hub, Chicago", REMOTE), _job("Anywhere in the US"),
+          _job("Global Technology Center, Dublin")]
+    yes = [_job("Global"), _job("Global (Remote)"), _job("Worldwide"), _job("APAC"),
+           _job("Remote - Worldwide"), _job("Asia Pacific"), _job("Global Technology Center, Pune")]
+    assert not any(probe.is_india_or_remote(j) for j in no), [j.location_text for j in no if probe.is_india_or_remote(j)]
+    assert all(probe.is_india_or_remote(j) for j in yes), [j.location_text for j in yes if not probe.is_india_or_remote(j)]
+
+
+class RecruiteeA(FakeConn):
+    BASE = "https://{slug}.recruitee.com/api/offers/"
+
+
+class TeamtailorA(FakeConn):
+    BASE = "https://{slug}.teamtailor.com/jobs.rss"
+
+
+def test_platform_cap_binds_across_tenants_but_not_across_platforms():
+    """S1/L7: a.recruitee.com and b.recruitee.com count against ONE platform cap."""
+    for i in range(8):
+        _seed(f"R{i}", f"r{i}", ats="recruitee")
+    for i in range(3):
+        _seed(f"T{i}", f"t{i}", ats="teamtailor")
+    assert probe.board_host("recruitee", {"slug": "r0"}, RecruiteeA) == "r0.recruitee.com"
+    from jobcopilot.connectors import KekaConnector
+    assert probe.cap_key(probe.board_host("keka", {"slug": "acme"}, KekaConnector)) == "platform:keka.com"
+    assert probe.cap_key("r0.recruitee.com") == probe.cap_key("r7.recruitee.com") == "platform:recruitee.com"
+    assert probe.cap_key("a.wd1.myworkdayjobs.com") == probe.cap_key("b.wd5.myworkdayjobs.com")
+    assert probe.cap_key("boards-api.greenhouse.io") == "boards-api.greenhouse.io"   # shared host: per host
+    _reset({})
+    out = probe.run_probe(connectors={"recruitee": RecruiteeA, "teamtailor": TeamtailorA}, now=10**9,
+                          cfg={"enabled": True, "max_per_platform_per_run": 3})
+    assert out["hosts"] == {"platform:recruitee.com": 3, "platform:teamtailor.com": 3}
+    assert out["probed"] == 6 and out["host_capped"] == 5
+    assert len(FakeConn.calls) == 6
+
+
+def test_retry_later_blocks_the_whole_platform():
+    for i in range(4):
+        _seed(f"R{i}", f"r{i}", ats="recruitee")
+    _reset({"r0": RetryLater("u", 3600)})
+    out = probe.run_probe(connectors={"recruitee": RecruiteeA}, now=10**9, cfg={"enabled": True})
+    assert out["probed"] == 0 and len(FakeConn.calls) == 1 and out["host_blocked"] == 4

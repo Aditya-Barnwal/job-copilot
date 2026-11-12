@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .base import Connector
-from .speedyapply import INDIA_RE, clean_apply_url, validate_github_path
+from .speedyapply import (  # noqa: F401  (remote_regions is re-exported for callers/tests)
+    INDIA_RE, WORLDWIDE_MIN_COUNTRIES, _REMOTE_IN_RE, clean_apply_url, remote_regions, validate_github_path)
 from ..models import Job, REMOTE, UNKNOWN, IN
 from ..normalize import infer_country_bucket, infer_workplace_type
 
@@ -31,23 +32,12 @@ DEFAULT_BRANCH = "dev"
 DEFAULT_PATH = ".github/scripts/listings.json"
 MAX_BYTES = 25_000_000
 DEADLINE_SEC = 180.0
-WORLDWIDE_MIN_COUNTRIES = 40   # "Remote in <country>" x 200+ means "anywhere"
 
-_REMOTE_IN_RE = re.compile(r"^\s*remote\s+in\s+(.+?)\s*$", re.I)
 _REMOTE_RE = re.compile(r"\bremote\b", re.I)
 
 
 def _wanted(locations: list[str]) -> bool:
     return any(INDIA_RE.search(loc) or _REMOTE_RE.search(loc) for loc in locations)
-
-
-def remote_regions(locations: list[str]) -> list[str]:
-    """["Remote in USA", "Remote in Canada"] -> ["USA", "Canada"]; a list of
-    40+ countries collapses to ["Worldwide"]."""
-    countries = [m.group(1) for loc in locations if (m := _REMOTE_IN_RE.match(loc))]
-    if len(countries) >= WORLDWIDE_MIN_COUNTRIES:
-        return ["Worldwide"]
-    return list(dict.fromkeys(countries))
 
 
 def _location_text(locations: list[str], regions: list[str]) -> str:

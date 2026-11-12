@@ -31,6 +31,15 @@ companies:
   require_tier: [brand, funded]   # recognised brand OR seriously funded startup
   funded_min_stage: series_a
   yc_counts_as_funded: true
+  # Extended watchlist: companies that are not brand/funded, but appear on a curated
+  # early-career list (SimplifyJobs new-grad, speedyapply, zshah internships). They are
+  # fetched into a SEPARATE lane (tier 'watchlist'), never mixed into the main queue.
+  # Body shops stay excluded. Set include_extended: false to switch the lane off.
+  watchlist:
+    enabled: true
+    signals: [simplify-newgrad, speedyapply, zshah]
+    min_signals: 2        # named by at least this many curated lists (1 = ~4,400 companies, 2 = ~2,500)
+  include_extended: true
 
 queue:
   daily_target_min: 15

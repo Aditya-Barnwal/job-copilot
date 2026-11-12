@@ -42,7 +42,32 @@ _XML_ENTITIES = {b"amp", b"lt", b"gt", b"quot", b"apos"}
 
 
 class UnsafeFeed(ValueError):
-    """The document declares a DTD / entities (entity-expansion risk) or is too big."""
+    """The document declares a DTD / entities (entity-expansion risk), uses an
+    encoding the DTD guards cannot read, or is too big."""
+
+
+_BOMS = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")
+_DECL_ENC_RE = re.compile(rb"<\?xml\s[^>]*?encoding\s*=\s*([\"'])(.*?)\1", re.I | re.S)
+_SAFE_ENCODINGS = frozenset({b"utf-8", b"utf8", b"us-ascii", b"ascii", b"iso-8859-1", b"latin1",
+                             b"latin-1", b"iso_8859-1"})
+
+
+def check_encoding(data: bytes) -> None:
+    """Refuse a body whose bytes the byte-level DOCTYPE / ENTITY guards cannot read.
+
+    WHY: those guards look for ASCII '<!DOCTYPE', but expat also decodes UTF-16/32
+    (and other declared encodings), where the same markup is spelled differently
+    and would slip past. So: no UTF-16/32 BOM, no NUL in the first 4 bytes
+    (BOM-less UTF-16/32), and a declared encoding must be utf-8 / us-ascii /
+    iso-8859-1 (a declaration may also not hide behind an unreadable prolog)."""
+    head = data[:4]
+    if head.startswith(_BOMS) or b"\x00" in head:
+        raise UnsafeFeed("feed is UTF-16/32 encoded; refusing to parse")
+    start = 3 if data.startswith(b"\xef\xbb\xbf") else 0
+    if data.startswith(b"<?xml", start):
+        m = _DECL_ENC_RE.match(data[start:start + 512])
+        if m and m.group(2).strip().lower() not in _SAFE_ENCODINGS:
+            raise UnsafeFeed(f"feed declares encoding {m.group(2).decode('latin-1')!r}; refusing to parse")
 
 
 def _fix_amp(m: re.Match[bytes]) -> bytes:
@@ -70,6 +95,7 @@ def safe_feed_root(body: Any) -> ET.Element:
     data = body.encode("utf-8") if isinstance(body, str) else bytes(body or b"")
     if len(data) > MAX_FEED_BYTES:
         raise UnsafeFeed(f"feed is {len(data)} bytes (> {MAX_FEED_BYTES})")
+    check_encoding(data)
     if _DTD_RE.search(data):
         raise UnsafeFeed("feed declares a DOCTYPE / ENTITY; refusing to parse")
     out: list[bytes] = []

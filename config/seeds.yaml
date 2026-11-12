@@ -1,7 +1,7 @@
 # Employer job-board seed datasets (Phase 1b) + the rotating India probe.
 # Survey + verdicts: docs/SOURCES.md "Phase 1b survey". Seeds only fill the
 # companies table with UNVERIFIED ATS guesses; the probe (discovery/probe.py)
-# verifies a few hundred boards per run and activates only those with at least
+# verifies up to 4000 boards per run (7-day refresh) and activates only those with at least
 # one India / APAC / worldwide-remote role. Jobs still come from each ATS API.
 #
 # Every dataset is a static file on raw.githubusercontent.com (robots.txt: 404 =
@@ -43,8 +43,14 @@ seeds:
 
 probe:
   enabled: true
-  limit: 4000                    # boards per run; the per-host throttle (1 req/s) is the real politeness limit
+  limit: 4000                    # boards per run (7-day refresh). NOT the politeness limit by itself:
+                                 # PoliteClient also holds every platform family to ONE shared 1 req/s bucket
+                                 # (all *.recruitee.com / *.myworkdayjobs.com / teamtailor / pinpoint / personio /
+                                 # bamboohr / keka tenants), and the two caps below bound each system per run.
+  max_per_platform_per_run: 300  # boards per run on one subdomain-per-company platform (recruitee, workday, ...)
   max_per_host_per_run: 3000     # shared hosts (boards-api.greenhouse.io, api.lever.co, ...)
+  retry_after_days: 1            # a board whose probe failed transiently (5xx/429/timeout) is retried after this
+  max_consecutive_failures: 3    # ...and only demoted after this many failures in a row (404/410 demotes at once)
   stale_days: 7                  # re-probe a probed board after this long
   require_role_match: true       # a board is 'active' only with an India/remote role whose title matches target roles
   skip_senior: true              # ...and is not senior+ (Staff/Principal/Lead/Manager...)

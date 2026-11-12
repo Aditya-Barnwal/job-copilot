@@ -366,3 +366,26 @@ def test_normalize_company_name_more_legal_suffixes():
     assert n("Mercari K.K.") == "mercari" and n("Philips N.V.") == "philips"
     # never empty, and a bare suffix-looking name is kept
     assert n("AB") == "ab" and n("SAS") == "sas" and n("S.A.") == "sa"
+
+
+# ---- L4: country signals are whole words ------------------------------------
+
+@pytest.mark.parametrize("text,bucket", [
+    ("Indianapolis", "unknown"),
+    ("Indiana", "unknown"),
+    ("Remote - Indiana", "unknown"),
+    ("Indianapolis, IN, United States", NON_IN),
+    ("Bengaluru, India", IN),
+    ("India", IN),
+    ("Pune", IN),
+    ("Remote - New Delhi", IN),
+    ("Remote, Ukraine", "unknown"),          # "uk" inside a word
+    ("Susa, Italy", "unknown"),              # "usa" inside a word
+    ("Punedhar", "unknown"),
+    ("London, UK", NON_IN),
+    ("Delhi, NY, USA", NON_IN),              # a stated non-India country beats a bare city
+    ("Remote - US or India", IN),
+])
+def test_infer_country_bucket_uses_word_boundaries(text, bucket):
+    from jobcopilot.normalize import infer_country_bucket
+    assert infer_country_bucket(text) == bucket

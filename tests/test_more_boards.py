@@ -201,6 +201,52 @@ def test_every_feed_connector_refuses_entity_expansion(cls):
         cls().parse(BILLION_LAUGHS, {})
 
 
+_UTF16_DTD = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE r [<!ENTITY a "aaaa">]><rss><channel/></rss>'
+_RSS_OK = '<?xml version="1.0"?><rss><channel><item><title>T</title></item></channel></rss>'
+
+
+def _utf16_variants() -> list[bytes]:
+    return [
+        _UTF16_DTD.encode("utf-16"),                              # BOM, native order
+        _UTF16_DTD.encode("utf-16-le"),                           # no BOM
+        _UTF16_DTD.encode("utf-16-be"),
+        b"\xff\xfe" + _UTF16_DTD.encode("utf-16-le"),
+        b"\xfe\xff" + _UTF16_DTD.encode("utf-16-be"),
+        _UTF16_DTD.encode("utf-32"),
+        _UTF16_DTD.encode("utf-32-le"),
+        _UTF16_DTD.encode("utf-32-be"),
+        _RSS_OK.encode("utf-16"),                                 # even a clean one: refused
+        b'<?xml version="1.0" encoding="UTF-16"?><rss/>',        # declared, ASCII bytes
+        b'<?xml version="1.0" encoding=\'cp037\'?><rss/>',
+        b'\xef\xbb\xbf<?xml version="1.0" encoding="utf-16"?><rss/>',
+    ]
+
+
+@pytest.mark.parametrize("body", _utf16_variants())
+def test_safe_feed_root_refuses_utf16_utf32_and_odd_encodings(body):
+    """S5: the byte-level DOCTYPE guard cannot read UTF-16; the body must be refused."""
+    with pytest.raises(UnsafeFeed):
+        safe_feed_root(body)
+
+
+@pytest.mark.parametrize("cls", [RealWorkFromAnywhereConnector, CryptoJobsListConnector,
+                                 HasjobConnector, NoDeskConnector])
+def test_every_feed_connector_refuses_utf16_doctype(cls):
+    for body in _utf16_variants():
+        with pytest.raises(UnsafeFeed):
+            cls().parse(body, {})
+
+
+@pytest.mark.parametrize("body", [
+    '<?xml version="1.0" encoding="utf-8"?><rss><channel/></rss>'.encode(),
+    '<?xml version=\'1.0\' encoding=\'ISO-8859-1\'?><rss><channel/></rss>'.encode("latin-1"),
+    b'<?xml version="1.0" encoding="US-ASCII"?><rss><channel/></rss>',
+    b'\xef\xbb\xbf<rss><channel/></rss>',
+])
+def test_safe_feed_root_still_accepts_utf8_ascii_latin1(body):
+    assert safe_feed_root(body).tag == "rss"
+
+
 def test_safe_feed_root_refuses_oversized_body():
     with pytest.raises(UnsafeFeed):
         safe_feed_root(b"<rss>" + b" " * MAX_FEED_BYTES + b"</rss>")

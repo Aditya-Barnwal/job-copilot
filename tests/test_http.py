@@ -288,6 +288,56 @@ def test_host_rates_suffix_key_matches_subdomains(ft):
     assert client._rate_for("boards-api.greenhouse.io") == 1000.0
 
 
+def test_platform_tenants_share_one_bucket_robots_included(ft):
+    """S1/L7: a.recruitee.com and b.recruitee.com are different hosts but one platform:
+    robots.txt fetches and API calls of every tenant go through ONE 1 req/s bucket."""
+    def reply(request):
+        if request.url.endswith("/robots.txt"):
+            return 404, {}, b""
+        return 200, JSON, b"[]"
+    sess, adapter = fake_session({})
+    adapter.fallback = reply
+    client = make_client(ft, session=sess, default_rate_per_sec=1000.0)
+    assert client.platform_for("a.recruitee.com") == client.platform_for("b.recruitee.com") == "recruitee.com"
+    assert client.platform_for("x.wd5.myworkdayjobs.com") == "myworkdayjobs.com"
+    assert client.platform_for("acme.jobs.personio.de") == "personio.de"
+    assert client.platform_for("evilrecruitee.com") is None and client.platform_for("example.org") is None
+    for host in ("a", "b", "c", "d"):
+        client.get(f"https://{host}.recruitee.com/api/offers/")
+    # 4 robots.txt + 4 list calls = 8 requests through one bucket: 7 waits of 1 s
+    assert len(adapter.sent) == 8 and len(ft.big_sleeps()) == 7
+    assert ft.now - 1000.0 >= 7.0 - 1e-6
+
+
+def test_platform_rate_is_configurable_and_other_hosts_are_unaffected(ft):
+    sess, adapter = fake_session({})
+    adapter.fallback = lambda r: (404, {}, b"") if r.url.endswith("/robots.txt") else (200, JSON, b"[]")
+    client = make_client(ft, session=sess, platform_rates={"recruitee.com": 0.5})
+    client.get("https://a.recruitee.com/x")
+    client.get("https://b.recruitee.com/x")
+    assert 2.0 in ft.big_sleeps()
+    ft.sleeps.clear()
+    client.get("https://one.example.org/x")
+    client.get("https://two.example.org/x")
+    assert ft.big_sleeps() == []        # unrelated hosts keep their own (fast) buckets
+
+
+def test_one_tenants_crawl_delay_does_not_slow_the_platform(ft):
+    def reply(request):
+        if request.url == "https://slow.teamtailor.com/robots.txt":
+            return 200, {}, b"User-agent: *\nCrawl-delay: 30\n"
+        if request.url.endswith("/robots.txt"):
+            return 404, {}, b""
+        return 200, JSON, b"[]"
+    sess, adapter = fake_session({})
+    adapter.fallback = reply
+    client = make_client(ft, session=sess, platform_rates={"teamtailor.com": 1000.0})
+    client.get("https://slow.teamtailor.com/jobs.rss")
+    client.get("https://fast.teamtailor.com/jobs.rss")
+    client.get("https://fast.teamtailor.com/jobs.rss")
+    assert ft.big_sleeps() == [30.0]    # the slow tenant's own bucket only; fast tenant never waits
+
+
 # ------------------------------------------------------------------- robots
 
 def test_robots_disallow_raises_and_makes_no_request(ft, server):

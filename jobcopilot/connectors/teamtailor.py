@@ -19,6 +19,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 from .base import Connector
+from .realworkfromanywhere import check_encoding
 from ..ats_detect import host_label
 from ..models import Job, REMOTE, HYBRID, ONSITE
 from ..normalize import strip_html, infer_workplace_type, infer_country_bucket
@@ -33,6 +34,7 @@ def _check_prolog(data: bytes) -> None:
     """Walk the XML prolog (declaration, comments, processing instructions) up to the
     root element and refuse a DOCTYPE. Walking it, rather than searching for the first
     '<x', matters: a comment such as '<!-- <x -->' must not hide a DOCTYPE after it."""
+    check_encoding(data)    # UTF-16/32 or an odd declared encoding hides the DOCTYPE below
     pos = 3 if data.startswith(b"\xef\xbb\xbf") else 0
     while True:
         pos = _SKIP_WS.match(data, pos).end()

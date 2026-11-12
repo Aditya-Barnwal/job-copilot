@@ -7,7 +7,10 @@ connector makes goes through `PoliteClient`, which:
     `HostDenied` before any network I/O, on every redirect hop too;
   * sends the honest User-Agent from config/sources.yaml (callers can't override it);
   * rate-limits per host with a token bucket, slowing further when robots.txt
-    sets Crawl-delay / Request-rate;
+    sets Crawl-delay / Request-rate; hosts of a platform family (every
+    <tenant>.recruitee.com, *.myworkdayjobs.com, ...) ALSO share one
+    per-platform bucket (`platform_rates`, 1 req/s by default), robots.txt
+    fetches included, so thousands of tenants cannot out-run the platform;
   * reads robots.txt before the first request to a host and refuses a
     disallowed URL with `RobotsDisallowed` (the request is never sent);
   * retries only 429 / 5xx / connection errors, honouring Retry-After, with
@@ -352,6 +355,63 @@ class TokenBucket:
             self._rate = float(rate_per_sec)
 
 
+# Platform families: registrable suffix -> shared requests/sec. One bucket per
+# suffix, whatever the tenant subdomain. config `http.platform_rates` overrides
+# or extends this (a rate per suffix; keys are lowercased, leading dot ignored).
+SUBDOMAIN_PLATFORMS = (
+    "recruitee.com", "teamtailor.com", "pinpointhq.com", "personio.de", "personio.com",
+    "bamboohr.com", "keka.com", "myworkdayjobs.com",
+)
+DEFAULT_PLATFORM_RATES: dict[str, float] = {
+    **{p: 1.0 for p in SUBDOMAIN_PLATFORMS},
+    **{p: 1.0 for p in ("ashbyhq.com", "greenhouse.io", "lever.co", "workable.com",
+                        "rippling.com", "gem.com", "smartrecruiters.com")},
+}
+
+
+def platform_of(host: str, platforms: Iterable[str] = DEFAULT_PLATFORM_RATES) -> Optional[str]:
+    """The longest platform suffix `host` equals or is a subdomain of (label
+    boundary), else None. 'a.jobs.personio.de' -> 'personio.de'."""
+    host = _norm_host(host)
+    best: Optional[str] = None
+    for p in platforms:
+        if (host == p or host.endswith("." + p)) and (best is None or len(p) > len(best)):
+            best = p
+    return best
+
+
+class _BucketChain:
+    """A host bucket plus the shared platform bucket. Both are charged for every
+    request; the caller waits for the slower one. Robots Crawl-delay adjusts only
+    the host's own bucket (one tenant's delay must not slow the whole platform)."""
+
+    def __init__(self, host: TokenBucket, platform: Optional[TokenBucket] = None) -> None:
+        self.host, self.platform = host, platform
+
+    @property
+    def rate(self) -> float:
+        return self.host.rate
+
+    def set_rate(self, rate_per_sec: float) -> None:
+        self.host.set_rate(rate_per_sec)
+
+    def reserve(self) -> float:
+        delays = [self.host.reserve()]
+        if self.platform is not None:
+            delays.append(self.platform.reserve())
+        return max(delays)
+
+    def refund(self) -> None:
+        self.host.refund()
+        if self.platform is not None:
+            self.platform.refund()
+
+    def penalize(self, seconds: float) -> None:
+        self.host.penalize(seconds)
+        if self.platform is not None:
+            self.platform.penalize(seconds)
+
+
 # ------------------------------------------------------------- robots.txt
 
 _UA_KEYS = frozenset({"user-agent", "useragent", "user agent"})
@@ -670,7 +730,7 @@ class PoliteClient:
 
     CONFIG_KEYS = (
         "user_agent", "timeout_sec", "default_rate_per_sec", "max_retries", "host_rates",
-        "robots_exempt_hosts", "max_wait_sec", "backoff_base_sec", "backoff_max_sec",
+        "platform_rates", "robots_exempt_hosts", "max_wait_sec", "backoff_base_sec", "backoff_max_sec",
         "robots_ttl_sec", "robots_retry_ttl_sec", "cache_dir", "denied_hosts",
         "max_response_bytes", "request_deadline_sec",
     )
@@ -683,6 +743,7 @@ class PoliteClient:
         default_rate_per_sec: float = 1.0,
         max_retries: int = 3,
         host_rates: Optional[Mapping[str, float]] = None,
+        platform_rates: Optional[Mapping[str, float]] = None,
         robots_exempt_hosts: Optional[Mapping[str, str]] = None,
         denied_hosts: Optional[Iterable[str]] = None,
         max_wait_sec: float = 120.0,
@@ -714,6 +775,11 @@ class PoliteClient:
         self.host_rates = {_norm_host(str(h)): float(r) for h, r in (host_rates or {}).items()}
         if any(r <= 0 for r in self.host_rates.values()):
             raise ValueError("host_rates values must be > 0")
+        self.platform_rates = {
+            _norm_host(str(h)).lstrip("."): float(r)
+            for h, r in {**DEFAULT_PLATFORM_RATES, **(platform_rates or {})}.items()}
+        if any(r <= 0 for r in self.platform_rates.values()):
+            raise ValueError("platform_rates values must be > 0")
         self.max_response_bytes = None if max_response_bytes is None else int(max_response_bytes)
         self.request_deadline_sec = None if request_deadline_sec is None else float(request_deadline_sec)
         if self.max_response_bytes is not None and self.max_response_bytes <= 0:
@@ -734,6 +800,7 @@ class PoliteClient:
 
         self._lock = threading.Lock()
         self._buckets: dict[str, TokenBucket] = {}            # by normalised host
+        self._platform_buckets: dict[str, TokenBucket] = {}   # by platform suffix
         self._robots: dict[str, _RobotsRules] = {}            # by normalised origin
         self._robots_locks: dict[str, threading.Lock] = {}
         self._robots_rates: dict[str, dict[str, float]] = {}  # host -> origin -> req/s
@@ -1032,7 +1099,7 @@ class PoliteClient:
         log.debug("%s %s -> HTTP %d", method, label, resp.status_code)
         return resp
 
-    def _wait(self, bucket: TokenBucket, label: str, deadline_at: Optional[float] = None,
+    def _wait(self, bucket: _BucketChain, label: str, deadline_at: Optional[float] = None,
               deadline_sec: Optional[float] = None) -> None:
         delay = bucket.reserve()
         if delay > self.max_wait_sec:
@@ -1189,16 +1256,29 @@ class PoliteClient:
                     if k.startswith(".") and (host.endswith(k) or host == k[1:])]
         return self.host_rates[max(suffixes, key=len)] if suffixes else self.default_rate_per_sec
 
-    def _bucket(self, host: str) -> TokenBucket:
-        """One bucket per host name, whatever the scheme or port (D7: per-host limits)."""
+    def platform_for(self, host: str) -> Optional[str]:
+        """The configured platform family `host` belongs to, if any."""
+        return platform_of(host, self.platform_rates)
+
+    def _bucket(self, host: str) -> _BucketChain:
+        """The host's own bucket (one per host name, whatever the scheme or port)
+        chained to its platform bucket, so every tenant of a platform shares one
+        aggregate limit (D7)."""
+        plat = self.platform_for(host)
         with self._lock:
             bucket = self._buckets.get(host)
             if bucket is None:
                 bucket = self._buckets[host] = TokenBucket(self._rate_for(host), clock=self._clock)
-            return bucket
+            pbucket = None
+            if plat is not None:
+                pbucket = self._platform_buckets.get(plat)
+                if pbucket is None:
+                    pbucket = self._platform_buckets[plat] = TokenBucket(
+                        self.platform_rates[plat], clock=self._clock)
+            return _BucketChain(bucket, pbucket)
 
     def _check_robots(self, url: str, label: str, origin: str, host: str,
-                      bucket: TokenBucket) -> None:
+                      bucket: _BucketChain) -> None:
         exempt = self._exemption(url, host)
         if exempt is not None:
             key, reason = exempt
@@ -1214,7 +1294,7 @@ class PoliteClient:
                 raise RobotsUnavailable(label, rules.reason, transient=rules.transient)
             raise RobotsDisallowed(label, rules.reason)
 
-    def _robots_for(self, origin: str, host: str, bucket: TokenBucket) -> _RobotsRules:
+    def _robots_for(self, origin: str, host: str, bucket: _BucketChain) -> _RobotsRules:
         with self._lock:
             lock = self._robots_locks.setdefault(origin, threading.Lock())
         with lock:  # one fetch per origin even when threads race
@@ -1224,7 +1304,7 @@ class PoliteClient:
                 self._apply_robots_rate(origin, host, bucket, rules)
             return rules
 
-    def _fetch_robots(self, origin: str, bucket: TokenBucket) -> _RobotsRules:
+    def _fetch_robots(self, origin: str, bucket: _BucketChain) -> _RobotsRules:
         """GET <origin>/robots.txt (redirects followed here, each hop denylist-checked)
         and turn the answer into a verdict; see the table in the module docstring."""
 
@@ -1302,7 +1382,7 @@ class PoliteClient:
             hop_bucket.penalize(retry_delay)
             attempt += 1
 
-    def _apply_robots_rate(self, origin: str, host: str, bucket: TokenBucket,
+    def _apply_robots_rate(self, origin: str, host: str, bucket: _BucketChain,
                            rules: _RobotsRules) -> None:
         """Bucket rate = the slowest of the configured rate and every cached robots.txt
         on this host (http and https share one bucket but have their own robots.txt)."""

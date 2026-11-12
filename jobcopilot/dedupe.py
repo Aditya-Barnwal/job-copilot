@@ -31,10 +31,45 @@ log = logging.getLogger("jobcopilot.dedupe")
 
 # Employer ATS first: their data is the employer's own. Boards after, Himalayas
 # first among them because its terms make its applicationLink THE apply link.
-ATS_SOURCES: tuple[str, ...] = ("greenhouse", "lever", "ashby", "workday", "smartrecruiters", "gem")
-BOARD_SOURCES: tuple[str, ...] = ("himalayas", "remoteok", "workingnomads", "weworkremotely",
-                                  "jobspresso", "adzuna", "jsearch")
-_RANK = {s: i for i, s in enumerate(ATS_SOURCES + BOARD_SOURCES)}
+#
+# Both tiers are DERIVED from the connector registry (a new connector can't be
+# forgotten): every REGISTRY source that is not a board or an aggregator is an
+# employer ATS. Imported lazily because jobcopilot.connectors is a heavy import.
+_AGGREGATORS = ("adzuna", "jsearch")   # many employers, but not in connectors.BOARD_SOURCES
+_ATS_ORDER = ("greenhouse", "lever", "ashby", "workday", "smartrecruiters", "gem")
+# Board preference, best first: the boards that expose real employer apply links
+# and full descriptions lead; community lists scraped from GitHub / HN come last.
+_BOARD_ORDER = ("himalayas", "remoteok", "workingnomads", "weworkremotely", "jobspresso",
+                "adzuna", "jsearch", "remotecom", "jobicy", "arbeitnow", "fourdayweek",
+                "nodesk", "realworkfromanywhere", "cryptojobslist", "hasjob",
+                "hn_hiring", "speedyapply", "simplify")
+_tiers_cache: Optional[tuple[tuple[str, ...], tuple[str, ...]]] = None
+
+
+def _tiers() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    global _tiers_cache
+    if _tiers_cache is None:
+        from .connectors import BOARD_SOURCES as declared_boards, REGISTRY
+        boards_all = set(declared_boards) | set(_AGGREGATORS)
+        ats = [s for s in _ATS_ORDER if s in REGISTRY]
+        ats += [s for s in REGISTRY if s not in boards_all and s not in ats]
+        boards = [s for s in _BOARD_ORDER if s in boards_all or s in REGISTRY]
+        boards += sorted(boards_all - set(boards))
+        _tiers_cache = (tuple(ats), tuple(boards))
+    return _tiers_cache
+
+
+def __getattr__(name: str):   # PEP 562: dedupe.ATS_SOURCES / BOARD_SOURCES stay importable
+    if name == "ATS_SOURCES":
+        return _tiers()[0]
+    if name == "BOARD_SOURCES":
+        return _tiers()[1]
+    raise AttributeError(name)
+
+
+def _ranks() -> dict[str, int]:
+    ats, boards = _tiers()
+    return {s: i for i, s in enumerate(ats + boards)}
 
 # Query params that only say where a click came from. Anything else (gh_jid,
 # job ids on custom career pages) can identify the posting, so it is kept.
@@ -55,11 +90,12 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 def source_rank(source: Optional[str]) -> int:
     """Lower is better; unknown sources sort after every known one."""
-    return _RANK.get((source or "").lower(), len(_RANK))
+    ranks = _ranks()
+    return ranks.get((source or "").lower(), len(ranks))
 
 
 def is_ats(source: Optional[str]) -> bool:
-    return (source or "").lower() in ATS_SOURCES
+    return (source or "").lower() in _tiers()[0]
 
 
 def _fold(text: str) -> str:

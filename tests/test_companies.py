@@ -328,3 +328,26 @@ def test_renormalize_rekeys_and_merges_only_same_company():
                     "proxify", "wolt", "wolt#wolt.com"]
     assert co.get_company("wolt.com")["name"] == "Wolt Oy"
     assert co.renormalize_names() == {"rekeyed": 0, "merged": 0}      # idempotent
+
+
+def test_watchlist_tier_is_curated_separate_and_never_a_body_shop():
+    """Unvetted companies named by a curated early-career list get their own lane
+    ('watchlist'); random seed rows stay 'unknown'; body shops stay excluded."""
+    rules = co.prepare_rules({"require_tier": ["brand", "funded"]})
+    one = co.prepare_rules({"watchlist": {"min_signals": 1}})
+    assert co.compute_tier({"name": "Tiny Tools", "signal_sources": ["seed:simplify-newgrad"]}, rules)[0] == "unknown"  # default needs 2 lists
+    tier, why = co.compute_tier({"name": "Tiny Tools", "signal_sources": ["seed:simplify-newgrad"]}, one)
+    assert tier == "watchlist" and "simplify-newgrad" in why[0]
+    tier, why = co.compute_tier({"name": "Tiny Tools", "signal_sources": ["seed:simplify-newgrad", "seed:zshah-internships"]}, rules)
+    assert tier == "watchlist"
+    assert co.compute_tier({"name": "Tiny Tools", "signal_sources": ["seed:ats-scrapers"]}, rules)[0] == "unknown"
+    real = co.prepare_rules(co.load_rules())   # includes config/brands.yaml body-shop names + keywords
+    assert co.compute_tier({"name": "Acme Staffing Solutions", "signal_sources": ["seed:simplify-newgrad", "seed:zshah-internships"]}, real)[0] == "excluded"
+    assert co.compute_tier({"name": "Infosys", "signal_sources": ["seed:simplify-newgrad", "seed:zshah-internships"]}, real)[0] == "excluded"
+    # a funded signal still wins over the watchlist lane
+    assert co.compute_tier({"name": "Seedling", "yc_batch": "W24", "signal_sources": ["seed:simplify-newgrad"]}, rules)[0] == "funded"
+    # switches
+    assert co.ingest_tiers({"require_tier": ["brand", "funded"]}) == ["brand", "funded", "watchlist"]
+    assert co.ingest_tiers({"require_tier": ["brand", "funded"], "include_extended": False}) == ["brand", "funded"]
+    off = co.prepare_rules({"watchlist": {"enabled": False}})
+    assert co.compute_tier({"name": "Tiny Tools", "signal_sources": ["seed:simplify-newgrad", "seed:zshah-internships"]}, off)[0] == "unknown"

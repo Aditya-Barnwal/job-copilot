@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .base import Connector, DEFAULT_HEADERS
-from ..models import Job, REMOTE, UNKNOWN
+from ..models import Job, REMOTE, UNKNOWN, SOURCE_HOSTS, safe_url
 from ..normalize import strip_html, infer_country_bucket
 from ..regions import partition_location, parse_utc_offsets
 
@@ -53,7 +53,9 @@ class ArbeitnowConnector(Connector):
             if slug in seen:
                 continue
             seen.add(slug)
-            listing = str(j.get("url") or "").strip()
+            listing = safe_url(j.get("url"), hosts=SOURCE_HOSTS["arbeitnow"])
+            if not listing:
+                continue   # terms: link back to the Arbeitnow listing; none valid, no job
             location = str(j.get("location") or "").strip()
             is_bare = location.lower() in _NOT_A_REGION
             regions, tz_text = ([], None) if is_bare else partition_location(location)
@@ -71,12 +73,12 @@ class ArbeitnowConnector(Connector):
                 description_text=strip_html(j.get("description")),
                 department=tags[0] if tags else None,
                 posted_at=_iso(j.get("created_at")),
-                apply_url=listing or None,
+                apply_url=listing,
                 region_restrictions=regions if remote else [],
                 timezone_restrictions=parse_utc_offsets(tz_text) if tz_text else [],
                 tz_requirement_text=tz_text,
                 attribution_name=attr.get("name") or "Arbeitnow",
-                attribution_url=listing or attr.get("url") or "https://www.arbeitnow.com",
+                attribution_url=listing,
                 raw=j,
             ))
         return jobs

@@ -41,6 +41,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             "require_tier": ["brand", "funded"],
             "funded_min_stage": "series_a",
             "yc_counts_as_funded": True,
+            # Extended lane: unvetted companies named by human-curated early-career lists.
+            "watchlist": {"enabled": True, "signals": ["simplify-newgrad", "speedyapply", "zshah"],
+                          "min_signals": 2},
+            "include_extended": True,   # fetch them, in a separate lane from the main queue
         },
         "queue": {"daily_target_min": 15, "daily_target_max": 25, "max_per_company": 3},
     },

@@ -44,6 +44,7 @@ from xml.etree import ElementTree as ET
 import yaml
 
 from . import llm
+from .connectors.realworkfromanywhere import safe_feed_root
 
 
 log = logging.getLogger("jobcopilot.funding")
@@ -79,7 +80,7 @@ def _parse_rss(url: str) -> list[dict]:
     from .http import default_client
     r = default_client().get(url, timeout=10)
     items = []
-    root = ET.fromstring(r.content)
+    root = safe_feed_root(r.content)   # untrusted feed: no DTDs, bounded
     for it in root.iter("item"):
         items.append({
             "title": (it.findtext("title") or "").strip(),

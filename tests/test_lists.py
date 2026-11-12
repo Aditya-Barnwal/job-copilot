@@ -349,3 +349,153 @@ def test_simplify_fetch_uses_size_cap_and_deadline():
     assert seen["url"] == ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/"
                            ".github/scripts/listings.json")
     assert seen["max_bytes"] >= 20_000_000 and seen["deadline_sec"] > 0
+
+
+# ------------------------------------------------- Phase 1b review fixes (L1/L2/L8/S4/L9/L10)
+
+@pytest.mark.parametrize("text,cur,lo,hi", [
+    ("$120k, equity", "USD", 120000, 120000),             # L1: trailing comma kept the "k"
+    ("$100k-$130k, DOE", "USD", 100000, 130000),          # L1: bounds were swapped
+    ("$100k - $130k, equity + bonus", "USD", 100000, 130000),
+    ("$150-200k, 20 days PTO", "USD", 150000, 200000),    # a later bare number is not a bound
+    ("€50 000 - €70 000", "EUR", 50000, 70000),
+    ("€50 000 – €70 000", "EUR", 50000, 70000),
+    ("70.000 - 90.000 EUR", "EUR", 70000, 90000),
+    ("50k–70k €", "EUR", 50000, 70000),
+    ("£55,000 - £65,000", "GBP", 55000, 65000),
+    ("CA$100k", "CAD", 100000, 100000),                   # L8
+    ("C$100k-120k", "CAD", 100000, 120000),
+    ("A$120k", "AUD", 120000, 120000),
+    ("AU$120k", "AUD", 120000, 120000),
+    ("NZ$90k", "NZD", 90000, 90000),
+    ("S$8,000/month", "SGD", 8000, 8000),
+    ("HK$50k", "HKD", 50000, 50000),
+    ("US$130k", "USD", 130000, 130000),
+])
+def test_parse_salary_review_strings(text, cur, lo, hi):
+    c = parse_salary(text)
+    assert c is not None and (c.currency, c.min_value, c.max_value) == (cur, lo, hi), text
+    assert c.min_value <= c.max_value
+
+
+def test_non_usd_dollars_have_no_inr_estimate_instead_of_wrong_usd():
+    assert parse_salary("CA$100k").annual_inr() is None
+    assert parse_salary("A$120k").annual_inr() is None
+    assert parse_salary("$100k").annual_inr() == pytest.approx(100000 * 83.0)
+
+
+@pytest.mark.parametrize("text", ["$40M Series B", "Raised $12M", "$12M seed round", "$2B valuation",
+                                  "ARR $5M", "$40,000,000", "$40,000,000 salary"])
+def test_funding_and_implausible_amounts_are_not_salary(text):
+    assert parse_salary(text) is None
+
+
+def test_funding_field_never_becomes_the_salary():
+    p = parse_header("Acme | Backend Engineer | Series B ($40M raised) | $150-200k | REMOTE")
+    assert p.salary and (p.salary.min_value, p.salary.max_value) == (150000, 200000)
+    p = parse_header("Acme | $40M Series B | Backend Engineer | REMOTE")
+    assert p.salary is None and p.roles == ["Backend Engineer"]
+    p = parse_header("Acme | Raised $12M | Backend Engineer | $130-160k/yr | REMOTE")
+    assert p.salary and p.salary.max_value == 160000
+    # the funding amount sits in the same field as the real range
+    p = parse_header("Acme | Backend Engineer | Series B ($40M raised) $150-200k/yr | REMOTE")
+    assert p.salary and p.salary.max_value == 200000
+    # two salary-looking fields: the one with a range / yearly cue wins
+    p = parse_header("Acme | Backend Engineer | $30k signing | $150-200k | REMOTE")
+    assert p.salary and (p.salary.min_value, p.salary.max_value) == (150000, 200000)
+
+
+def test_m_multiplier_needs_salary_words():
+    c = parse_salary("comp up to $1.2M")
+    assert c and c.max_value == 1_200_000
+
+
+@pytest.mark.parametrize("text", [
+    "josé@example.com", "müller@example.de", "jane@münchen.de", "田中@例え.jp",  # pii-ok: fake scrubber test input
+    "jane @ example.com", "jane@ example.com", "jane [at] example [dot] com",
+    "email jane at example dot com", "contact: jane at example dot com", "mail me at jane at example dot com",
+])
+def test_scrub_emails_unicode_spaced_and_word_forms(text):
+    out = scrub_emails(f"Reach us: {text} thanks")
+    assert EMAIL_PLACEHOLDER in out
+    for leak in ("jane", "mü", "josé", "田中", "example", "münchen"):
+        assert leak not in out, (text, out)
+
+
+def test_scrub_emails_leaves_ordinary_prose_alone():
+    s = "We are looking at foo dot bar and meet at 5pm @home"
+    assert scrub_emails(s) == s
+
+
+def test_link_with_email_is_dropped_from_apply_candidates():
+    html = ('Acme | Engineer | REMOTE | <a href="https://acme.com/apply?e=jane@acme.com">'  # pii-ok: fake scrubber test input
+            'https://acme.com/apply?e=jane@ac...</a> and '
+            '<a href="https://acme.com/jobs">https://acme.com/jobs</a><p>email jane at acme dot com')
+    post, text = parse_post(html)
+    assert post.apply_url == "https://acme.com/jobs"
+    assert "jane" not in text and "jane" not in post.header
+    # when the only link carries an email there is no apply link (the connector falls back)
+    post, text = parse_post("Acme | Engineer | REMOTE | https://acme.com/apply/jane@acme.com<p>x")  # pii-ok: fake scrubber test input
+    assert post.apply_url is None and "jane" not in text and "@" not in text
+
+
+def test_hn_connector_no_email_survives_unicode_and_spaced_forms():
+    thread = {"id": 1, "title": "Ask HN: Who is hiring? (November 2026)", "children": [{
+        "id": 5, "type": "comment", "parent_id": 1, "author": "x", "created_at": "2026-11-01T00:00:00Z",
+        "text": ('Acme | Backend Engineer | REMOTE (US) | <a href="https://acme.com/apply?u=josé@example.com">'
+                 'https://acme.com/apply?u=jos...</a> | contact josé@example.com<p>Write jane @ example.com '
+                 'or müller@example.de, email: jane at example dot com')}]}  # pii-ok: fake scrubber test input
+    jobs = HNHiringConnector().parse(thread, BOARDS["hn_hiring"])
+    assert jobs
+    for j in jobs:
+        blob = json.dumps([j.description_text, j.raw, j.apply_url, j.url, j.title, j.location_text],
+                          ensure_ascii=False)
+        for leak in ("@", "josé", "jane", "müller", "example.com", "example.de"):
+            assert leak not in blob, (leak, blob)
+        assert j.apply_url == j.url      # no email-free link left: HN permalink fallback
+
+
+def test_speedyapply_split_row_unescapes_pipes_and_splits_on_unescaped_only():
+    from jobcopilot.connectors.speedyapply import _split_row
+    assert _split_row(r"| A \| B | Eng \| Ops | Remote | x | 1d |") == ["A | B", "Eng | Ops", "Remote", "x", "1d"]
+    assert _split_row("| a || c | |") == ["a", "", "c", ""]
+
+
+def test_speedyapply_counts_rows_with_wrong_cell_count():
+    md = ("| Company | Position | Location | Posting | Age |\n|---|---|---|---|---|\n"
+          "| Good | Eng | Remote in USA | <a href=\"https://g.example/1\">x</a> | 1d |\n"
+          "| Bad | Eng | Remote in USA | extra | <a href=\"https://b.example/1\">x</a> | 1d |\n"
+          "| Pipe | Eng \\| Ops | Remote | <a href=\"https://p.example/1\">x</a> | 2d |\n")
+    stats: dict = {}
+    rows = parse_tables(md, stats)
+    assert [r["company"] for r in rows] == ["Good", "Pipe"] and stats == {"mismatched_rows": 1}
+    assert rows[1]["position"] == "Eng | Ops"
+
+
+@pytest.mark.parametrize("location,regions", [
+    ("Remote in USA", ["USA"]),
+    ("Remote in USA; Remote in Canada", ["USA", "Canada"]),
+    ("Remote, India", ["India"]),
+    ("United States (Remote)", ["United States"]),
+    ("Remote", []),
+])
+def test_speedyapply_remote_rows_get_region_restrictions(location, regions):
+    from jobcopilot.connectors.speedyapply import location_regions
+    assert location_regions(location) == regions
+
+
+def test_speedyapply_usa_remote_row_is_region_restricted_onsite_row_is_not():
+    jobs = SpeedyApplyConnector().parse(_json("speedyapply.json"), BOARDS["speedyapply"], now=NOW)
+    remote_us = next(j for j in jobs if j.company == "RemoteCo")
+    assert remote_us.workplace_type == REMOTE and remote_us.region_restrictions == ["USA"]
+    acme = next(j for j in jobs if j.company == "Acme" and j.title == "Software Engineer I")
+    assert acme.region_restrictions == ["India"]
+    assert all(j.region_restrictions == [] for j in jobs if j.workplace_type != REMOTE)
+
+
+@pytest.mark.parametrize("bad", ["javascript:alert(1)", "file:///etc/passwd", "http://169.254.169.254/x",
+                                 "http://localhost:9/x", "https://u:p@example.com/x",
+                                 "https://example.com/?url=http://127.0.0.1/admin"])
+def test_clean_apply_url_rejects_unsafe_targets(bad):
+    assert clean_apply_url(bad) is None
+    assert clean_apply_url("https://example.com/a?utm_source=x") == "https://example.com/a"

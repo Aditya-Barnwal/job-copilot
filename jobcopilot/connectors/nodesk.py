@@ -17,7 +17,7 @@ from .base import Connector
 from .realworkfromanywhere import (
     fetch_feed, keep_description, rfc822_iso, safe_feed_root, split_role_at_company, text_of,
 )
-from ..models import Job, REMOTE, COUNTRY_UNKNOWN
+from ..models import Job, REMOTE, COUNTRY_UNKNOWN, SOURCE_HOSTS, safe_url
 from ..normalize import strip_html
 
 
@@ -37,8 +37,9 @@ class NoDeskConnector(Connector):
         if not raw:
             return jobs
         for it in safe_feed_root(raw).iterfind("./channel/item"):
-            link = text_of(it.find("link")) or text_of(it.find("guid"))
-            if urlsplit(link).hostname not in ("nodesk.co", "www.nodesk.co") or link in seen:
+            link = safe_url(text_of(it.find("link")) or text_of(it.find("guid")),
+                            hosts=SOURCE_HOSTS["nodesk"])
+            if not link or link in seen:
                 continue
             seen.add(link)
             title, company_name = split_role_at_company(text_of(it.find("title")))

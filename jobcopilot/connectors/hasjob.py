@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from .base import Connector
 from .realworkfromanywhere import fetch_feed, keep_description, safe_feed_root, text_of
-from ..models import Job, REMOTE, ONSITE, UNKNOWN
+from ..models import Job, REMOTE, ONSITE, UNKNOWN, SOURCE_HOSTS, safe_url
 from ..normalize import strip_html, infer_country_bucket
 from ..regions import partition_location, parse_utc_offsets
 
@@ -59,10 +59,10 @@ class HasjobConnector(Connector):
         if not raw:
             return jobs
         for e in safe_feed_root(raw).iterfind("a:entry", ATOM):
-            link = _link(e)
-            parts = urlsplit(link)
-            if parts.hostname != "hasjob.co" or link in seen:
+            link = safe_url(_link(e), hosts=SOURCE_HOSTS["hasjob"])
+            if not link or link in seen:
                 continue
+            parts = urlsplit(link)
             seen.add(link)
             segs = [s for s in parts.path.split("/") if s]
             domain = segs[0].lower() if segs and _DOMAIN_RE.match(segs[0].lower()) else ""

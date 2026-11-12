@@ -13,7 +13,12 @@ from typing import Any
 
 import pytest
 
+from jobcopilot.connectors.arbeitnow import ArbeitnowConnector
+from jobcopilot.connectors.fourdayweek import FourDayWeekConnector
+from jobcopilot.connectors.hasjob import HasjobConnector
 from jobcopilot.connectors.himalayas import HimalayasConnector
+from jobcopilot.connectors.jobicy import JobicyConnector
+from jobcopilot.connectors.nodesk import NoDeskConnector
 from jobcopilot.connectors.jobspresso import JobspressoConnector, parse_salary_text
 from jobcopilot.connectors.remoteok import RemoteOKConnector
 from jobcopilot.connectors.weworkremotely import WeWorkRemotelyConnector, split_title
@@ -375,3 +380,124 @@ def test_workingnomads_country_bucket_uses_full_location():
     assert job.region_restrictions == ["India"] and job.tz_requirement_text == "IST"
     item["location"] = "Time zone: IST (+/- 2 hours)"   # tz-only text still says India
     assert WorkingNomadsConnector().parse([item], {})[0].country_bucket == "unknown"
+
+
+# --- Phase 1b: URL allowlist (S3) ---------------------------------------------------
+
+MORE = FIX / "more_boards"
+MORE_BOARDS: dict[str, dict[str, Any]] = {
+    "jobicy": {"attribution": {"name": "Jobicy", "url": "https://jobicy.com"}},
+    "arbeitnow": {"attribution": {"name": "Arbeitnow", "url": "https://www.arbeitnow.com"}, "remote_only": True},
+    "fourdayweek": {"attribution": {"name": "4 Day Week", "url": "https://4dayweek.io"}},
+    "nodesk": {"attribution": {"name": "NoDesk", "url": "https://nodesk.co"}, "store": "minimal"},
+    "hasjob": {"attribution": {"name": "Hasjob", "url": "https://hasjob.co"}, "store": "minimal"},
+}
+
+
+def _more_json(name: str) -> Any:
+    return json.loads((MORE / name).read_text(encoding="utf-8"))
+
+
+BAD_URLS = [
+    "javascript:alert(1)", "JaVaScRiPt://x.example/%0aalert(1)", "file:///etc/passwd", "data:text/html,<b>x",
+    "ftp://x.example/a", "//x.example/a", "x.example/a", "",
+    "http://169.254.169.254/latest/meta-data", "http://127.0.0.1:8000/", "http://localhost/admin",
+    "http://[::1]/", "http://10.0.0.5/x", "http://192.168.1.1/", "http://2130706433/", "http://0x7f.0.0.1/",
+    "https://user:pw@x.example/a", "https://x.example@127.0.0.1/", "https://x.example\\@127.0.0.1/",
+    "https://x.example/a b", "https://x.example/\x00",
+]
+
+
+@pytest.mark.parametrize("url", BAD_URLS)
+def test_safe_url_rejects(url):
+    from jobcopilot.models import safe_url
+    assert safe_url(url) is None
+
+
+def test_safe_url_accepts_public_http_and_enforces_hosts():
+    from jobcopilot.models import safe_url
+    assert safe_url(" https://Jobs.Example.com/a?b=1 ") == "https://Jobs.Example.com/a?b=1"
+    assert safe_url("http://8.8.8.8/x") == "http://8.8.8.8/x"
+    assert safe_url("https://www.jobicy.com/j/1", hosts=("jobicy.com",))
+    assert safe_url("https://jobicy.com.evil.example/j/1", hosts=("jobicy.com",)) is None
+    assert safe_url("https://evil.example/jobicy.com", hosts=("jobicy.com",)) is None
+
+
+@pytest.mark.parametrize("bad", BAD_URLS)
+def test_job_never_stores_an_unsafe_url(bad):
+    from jobcopilot.models import Job
+    j = Job(source="workable", company="Acme", company_sector=None, external_id="1", title="t",
+            location_text="", workplace_type="remote", country_bucket="unknown", url=bad,
+            description_text="", apply_url=bad, attribution_url=bad)
+    assert j.url == "" and j.apply_url is None and j.attribution_url is None
+
+
+def test_job_enforces_fixed_host_for_single_host_boards():
+    from jobcopilot.models import Job
+
+    def mk(source, url):
+        return Job(source=source, company="A", company_sector=None, external_id="1", title="t",
+                   location_text="", workplace_type="remote", country_bucket="unknown", url=url,
+                   description_text="", apply_url=url)
+    assert mk("jobicy", "https://evil.example/jobs/1").url == ""
+    assert mk("jobicy", "https://jobicy.com/jobs/1").url == "https://jobicy.com/jobs/1"
+    assert mk("greenhouse", "https://boards.greenhouse.io/a/jobs/1").url   # ATS: any public host
+
+
+def _assert_all_urls_safe(jobs, source):
+    from jobcopilot.models import SOURCE_HOSTS, safe_url
+    for j in jobs:
+        for u in (j.url, j.apply_url, j.attribution_url):
+            assert u and safe_url(u, hosts=SOURCE_HOSTS.get(source)), (source, u)
+
+
+def _mutate(obj, old_prefix, bad):
+    """Deep copy of a JSON fixture with every URL string under old_prefix replaced by `bad`."""
+    if isinstance(obj, dict):
+        return {k: _mutate(v, old_prefix, bad) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mutate(v, old_prefix, bad) for v in obj]
+    return bad if isinstance(obj, str) and obj.startswith(old_prefix) else obj
+
+
+MUTATIONS = ["javascript:alert(document.cookie)", "file:///etc/passwd", "http://169.254.169.254/latest",
+             "http://127.0.0.1/admin", "https://evil.example/jobs/1"]
+
+
+@pytest.mark.parametrize("bad", MUTATIONS)
+@pytest.mark.parametrize("cls,fixture,prefix,source", [
+    (JobicyConnector, "jobicy.json", "https://jobicy.com/", "jobicy"),
+    (ArbeitnowConnector, "arbeitnow.json", "https://www.arbeitnow.", "arbeitnow"),
+    (FourDayWeekConnector, "fourdayweek.json", "https://4dayweek.io/", "fourdayweek"),
+])
+def test_json_board_urls_from_payload_are_validated(cls, fixture, prefix, source, bad):
+    payload = _mutate(_more_json(fixture), prefix, bad)
+    jobs = cls().parse(payload, MORE_BOARDS[source])
+    _assert_all_urls_safe(jobs, source)
+    blob = json.dumps([j.to_dict() for j in jobs])
+    assert "javascript:" not in blob and "file://" not in blob and "169.254" not in blob and "127.0.0.1" not in blob
+    assert "evil.example" not in blob
+
+
+def test_fourdayweek_bad_listing_url_falls_back_to_slug_link_even_when_prefix_matches():
+    payload = _more_json("fourdayweek.json")
+    payload = _mutate(payload, "https://4dayweek.io/", "https://4dayweek.io.evil.example/job/x")
+    jobs = FourDayWeekConnector().parse(payload, MORE_BOARDS["fourdayweek"])
+    assert jobs and all(j.url.startswith("https://4dayweek.io/job/") for j in jobs)
+    # an invalid slug AND a bad URL: no link back possible, so no job (never a bad link)
+    payload = _mutate(_more_json("fourdayweek.json"), "https://4dayweek.io/", "javascript:alert(1)")
+    for row in payload["data"]:
+        row["slug"] = "bad slug/../x"
+    assert FourDayWeekConnector().parse(payload, MORE_BOARDS["fourdayweek"]) == []
+
+
+@pytest.mark.parametrize("bad", MUTATIONS)
+@pytest.mark.parametrize("cls,fixture,old,source", [
+    (NoDeskConnector, "nodesk.xml", "https://nodesk.co/", "nodesk"),
+    (HasjobConnector, "hasjob.xml", "https://hasjob.co/", "hasjob"),
+])
+def test_feed_board_urls_from_payload_are_validated(cls, fixture, old, source, bad):
+    body = (MORE / fixture).read_text(encoding="utf-8").replace(old, bad.replace("&", "&amp;") + "#")
+    jobs = cls().parse(body.encode(), MORE_BOARDS[source])
+    assert jobs == [] or all(j.url.startswith("https://") for j in jobs)
+    _assert_all_urls_safe(jobs, source)

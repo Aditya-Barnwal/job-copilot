@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
+from .realworkfromanywhere import safe_feed_root
 from .base import Connector
 from ..models import Job, Compensation, REMOTE
 from ..normalize import infer_country_bucket
@@ -136,7 +137,7 @@ class JobspressoConnector(Connector):
         attr = board.get("attribution") or {}
         if not raw:
             return []
-        root = ET.fromstring(raw.encode("utf-8") if isinstance(raw, str) else raw)
+        root = safe_feed_root(raw)   # refuses DTDs / odd encodings / oversize feeds
         jobs: list[Job] = []
         for it in root.iterfind("./channel/item"):
             link = (it.findtext("link") or it.findtext("guid") or "").strip()

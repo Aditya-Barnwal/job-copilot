@@ -7,8 +7,11 @@ from Greenhouse, Lever, Ashby, or Workday.
 """
 from __future__ import annotations
 
+import ipaddress
+import re
 from dataclasses import dataclass, field, asdict
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
+from urllib.parse import urlsplit
 
 
 # Allowed values for Job.workplace_type
@@ -17,6 +20,70 @@ WORKPLACE_TYPES = {REMOTE, ONSITE, HYBRID, UNKNOWN}
 
 # Allowed values for Job.country_bucket
 IN, NON_IN, COUNTRY_UNKNOWN = "IN", "non-IN", "unknown"
+
+
+# ---------------------------------------------------------------------------
+# URL allowlist (S3). Every URL a third-party payload hands us ends up as a
+# link the user clicks (or a fetch target), so Job.__post_init__ runs them all
+# through safe_url: http(s) with a real public hostname, nothing else.
+# ---------------------------------------------------------------------------
+MAX_URL_LEN = 4096
+_BAD_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_NUMERIC_HOST = re.compile(r"(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*", re.I)
+# Boards that have exactly one host: a link elsewhere is not that board's listing.
+SOURCE_HOSTS: dict[str, tuple[str, ...]] = {
+    "fourdayweek": ("4dayweek.io",),
+    "jobicy": ("jobicy.com",),
+    "arbeitnow": ("arbeitnow.com", "arbeitnow.co.uk"),   # the API links UK rows to .co.uk
+    "nodesk": ("nodesk.co",),
+    "hasjob": ("hasjob.co",),
+}
+
+
+def _public_ip(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def safe_url(url: Any, *, hosts: Optional[Iterable[str]] = None) -> Optional[str]:
+    """The URL if it is safe to store and link to, else None.
+
+    Only http/https with a hostname, no userinfo, no whitespace / control
+    characters / backslashes; not localhost; IP-literal hosts must be public
+    (loopback, link-local, private, reserved and non-canonical forms such as
+    "2130706433" or "0x7f.1" are rejected). With `hosts`, the host must equal
+    one of them or be a subdomain of it.
+    """
+    if not isinstance(url, str):
+        return None
+    u = url.strip()
+    if not u or len(u) > MAX_URL_LEN or _BAD_URL_CHARS.search(u):
+        return None
+    try:
+        parts = urlsplit(u)
+        host = (parts.hostname or "").lower().rstrip(".")
+        parts.port  # noqa: B018 - raises ValueError on a bad port
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    if "@" in parts.netloc or parts.username is not None or parts.password is not None:
+        return None
+    if host == "localhost" or host.endswith(".localhost"):
+        return None
+    if ":" in host or _NUMERIC_HOST.fullmatch(host):
+        if not _public_ip(host):
+            return None
+    if hosts is not None:
+        allowed = [h.lower().lstrip(".") for h in hosts]
+        if not any(host == h or host.endswith("." + h) for h in allowed):
+            return None
+    return u
 
 
 @dataclass
@@ -102,6 +169,13 @@ class Job:
     sources: list[dict] = field(default_factory=list)  # every place this job was seen (dedupe.merge)
     canonical_key: Optional[str] = None    # cross-source identity (dedupe.canonical_key)
     raw: dict = field(default_factory=dict)  # original payload, kept for debugging
+
+    def __post_init__(self) -> None:
+        # Choke point for S3: no connector can store a javascript:/file:/internal URL.
+        hosts = SOURCE_HOSTS.get((self.source or "").lower())
+        self.url = safe_url(self.url, hosts=hosts) or ""
+        self.apply_url = safe_url(self.apply_url, hosts=hosts)
+        self.attribution_url = safe_url(self.attribution_url)
 
     @property
     def key(self) -> str:

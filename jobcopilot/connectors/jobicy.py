@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from .base import Connector, DEFAULT_HEADERS
 from ..http import HttpError
-from ..models import Job, Compensation, REMOTE
+from ..models import Job, Compensation, REMOTE, SOURCE_HOSTS, safe_url
 from ..normalize import strip_html, infer_country_bucket
 from ..regions import partition_location, parse_utc_offsets
 
@@ -111,7 +111,9 @@ class JobicyConnector(Connector):
                 if external_id in seen:
                     continue   # same job matched by the APAC and the worldwide query
                 seen.add(external_id)
-                listing = str(j.get("url") or "").strip()
+                listing = safe_url(j.get("url"), hosts=SOURCE_HOSTS["jobicy"])
+                if not listing:
+                    continue   # terms: Apply must be the feed's own link; none valid, no job
                 geo = " ".join(str(j.get("jobGeo") or "").split())
                 regions, tz_text = partition_location(geo)
                 jobs.append(Job(
@@ -129,12 +131,12 @@ class JobicyConnector(Connector):
                     compensation=_compensation(j),
                     posted_at=str(j.get("pubDate") or "").strip() or None,
                     # Terms: Apply must go to the original job URL from the feed.
-                    apply_url=listing or None,
+                    apply_url=listing,
                     region_restrictions=regions,
                     timezone_restrictions=parse_utc_offsets(tz_text) if tz_text else [],
                     tz_requirement_text=tz_text,
                     attribution_name=attr.get("name") or "Jobicy",
-                    attribution_url=listing or attr.get("url") or "https://jobicy.com",
+                    attribution_url=listing,
                     raw={k: v for k, v in j.items() if k not in _LOGO_KEYS},
                 ))
         return jobs

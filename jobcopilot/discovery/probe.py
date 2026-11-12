@@ -1,26 +1,44 @@
-"""Rotating India probe: verify a few hundred seeded boards per run (Phase 1b).
+"""Rotating India probe: verify seeded employer boards, a bounded slice per run (Phase 1b).
 
 The seed datasets name ~30k employer boards with no country tags; polling all
-of them daily would break the low-volume rule. Instead each run calls the list
-endpoint of at most `limit` boards (config/seeds.yaml `probe`, default 500)
-ONCE, through the board's own connector, and keeps only the boards that show
-at least one India / APAC / worldwide-remote role.
+of them every day would break the low-volume rule. Instead each run calls the
+list endpoint of at most `limit` boards (config/seeds.yaml `probe`; 4000 per
+run, at the user's request) ONCE, through the board's own connector, and keeps
+only the boards that show at least one relevant India / APAC / worldwide-remote
+role. A probed board is re-probed after `stale_days` (7), so the whole seed
+set cycles through in about a week.
+
+The real politeness bounds are per system, not the 4000 total:
+  * PoliteClient rate-limits every host to 1 req/s, and every platform family
+    (all <tenant>.recruitee.com, *.myworkdayjobs.com, teamtailor, pinpoint,
+    personio, bamboohr, keka, plus the shared-host ATSs) shares ONE 1 req/s
+    bucket, robots.txt fetches included;
+  * a run sends at most `max_per_platform_per_run` (300) requests to one
+    subdomain-per-company platform and at most `max_per_host_per_run` (3000) to
+    any other single host;
+  * a host (or platform) that answers 429 / asks us to wait too long is dropped
+    for the rest of the run; a robots disallow drops that host only.
 
 Queue order: overlap with lists we already trust (simplify-newgrad,
 speedyapply, yc-oss, bsm), then brand/funded tier, then never- / oldest-probed.
-A board is due when it was never probed and its ATS is not yet verified, or
-when the probe itself last looked more than `stale_days` ago. Rows whose ATS
-came from config or a verifying detector are never touched.
+Only boards whose tier live ingest accepts (co.ingest_tiers():
+config/filters.yaml companies.require_tier + the extended watchlist) are queued: a board that can never be ingested is not
+worth a request. A board is due when it was never probed and its ATS is not yet
+verified, or when the probe itself last looked more than `stale_days` ago (or,
+after a transient failure, more than ~1 day ago). Rows whose ATS came from
+config or a verifying detector are never touched.
 
 What a probe writes on the companies row (no dedicated columns exist yet):
   * ats_checked_at = probed_at
   * ats_evidence   = "probe: <date> jobs=N india_or_remote=K -> active|inactive"
   * ats_confidence = VERIFIED_CONFIDENCE when K >= 1 (live ingest picks it up);
     a board the probe activated earlier drops back to UNVERIFIED when K == 0
-    or the board is gone.
-Per-host politeness: PoliteClient rate-limits every host; on top of that a run
-sends at most `max_per_host_per_run` requests to one host, and a host that
-answers 429 / robots-disallow is dropped for the rest of the run.
+    on a successful probe, when the board is gone (404 / 410), or after
+    `max_consecutive_failures` (3) failed probes in a row.
+  * a transient failure (HTTP 5xx / 429 / 401 / 403, timeout, any other error)
+    never demotes: confidence is kept, the evidence says
+    "probe: <date> -> error (<why>) fails=N", and ats_checked_at is backdated so
+    the board is due again in ~`retry_after_days` (1) instead of `stale_days`.
 """
 from __future__ import annotations
 
@@ -45,7 +63,9 @@ log = logging.getLogger("jobcopilot.discovery.probe")
 SOURCE = "india-probe"
 EVIDENCE_PREFIX = "probe:"
 DEFAULTS: dict[str, Any] = {
-    "enabled": True, "limit": 4000, "max_per_host_per_run": 3000, "stale_days": 7,
+    "enabled": True, "limit": 4000, "max_per_host_per_run": 3000,
+    "max_per_platform_per_run": 300, "stale_days": 7, "retry_after_days": 1,
+    "max_consecutive_failures": 3, "require_tier": None,
     "require_role_match": True, "skip_senior": True, "target_roles": None,
     "workday_max_jobs": 20, "priority_signals": ["simplify-newgrad", "speedyapply", "yc-oss", "bsm"],
     "priority_tiers": ["brand", "funded"], "skip_ats": ["smartrecruiters"],
@@ -61,20 +81,24 @@ _REMOTE_RE = re.compile(r"\b(?:remote(?:[- ]first)?|work from home|wfh|distribut
 
 
 def is_india_or_remote(job: Any) -> bool:
-    """True if a role is open to someone in India: an Indian location, APAC /
-    Asia / worldwide wording, or "remote" that names no other geography
-    ("Remote" yes, "Remote - US" no, "Remote (Worldwide)" yes)."""
+    """True if a role is open to someone in India: an Indian location, or "remote"
+    / a stand-alone global word naming no other geography ("Remote" yes,
+    "Remote - US" no, "Remote (Worldwide)" yes, "Global" / "APAC" yes). A global
+    word inside a physical place name ("Global Delivery Hub, Chicago") does not count."""
     loc = str(getattr(job, "location_text", "") or "")
     regions = [str(r) for r in getattr(job, "region_restrictions", None) or []]
     text = " / ".join([loc, *regions])
-    if infer_country_bucket(text) == IN or _GLOBAL_RE.search(text):
+    bucket = infer_country_bucket(text)
+    if bucket == IN:
         return True
     remote = getattr(job, "workplace_type", None) == REMOTE or re.search(r"\bremote\b", text, re.I)
-    if not remote or infer_country_bucket(text) == NON_IN:
+    if remote and bucket == NON_IN:
         return False
-    rest = [t for t in split_regions(_REMOTE_RE.sub(" ", text))
+    rest = [t for t in split_regions(_REMOTE_RE.sub(" ", _GLOBAL_RE.sub(" ", text)))
             if re.sub(r"[\W_]+", "", t)]
-    return not rest
+    if remote:
+        return not rest
+    return bool(_GLOBAL_RE.search(text)) and not rest and bucket != NON_IN
 
 
 # --------------------------------------------------------------- queue
@@ -132,21 +156,40 @@ def board_host(ats: str, board: Mapping[str, Any], connector: Any = None) -> str
         return f"{board['tenant']}.{board['wd_server']}.myworkdayjobs.com".lower()
     slug = urllib.parse.quote(str(board.get("slug") or ""), safe="")
     url = None
-    try:
-        if connector is not None and hasattr(connector, "list_url"):
-            url = connector.list_url(slug)
-        elif connector is not None and isinstance(getattr(connector, "BASE", None), str):
-            url = connector.BASE.format(slug=slug)
-    except Exception:   # noqa: BLE001 — signature varies per connector; fall back below
-        url = None
-    host = urllib.parse.urlsplit(url).hostname if url else None
+    attempts = (lambda: connector.list_url(slug),                       # signature varies per connector
+                lambda: connector.BASE.format(slug=slug),
+                lambda: connector.PAGE.format(slug=slug))               # keka: list_url needs an org id
+    for attempt in attempts:
+        try:
+            url = attempt() if connector is not None else None
+        except Exception:   # noqa: BLE001 — try the next shape, then fall back to the per-ATS key
+            url = None
+        if isinstance(url, str) and url:
+            break
+    host = urllib.parse.urlsplit(url).hostname if isinstance(url, str) and url else None
     return (host or f"{ats}:*").lower()
+
+
+def cap_key(host: str, client: Any = None) -> str:
+    """Accounting key for the per-run caps: the platform for subdomain-per-company
+    platforms (a.recruitee.com and b.recruitee.com are one system), else the host."""
+    from ..http import SUBDOMAIN_PLATFORMS, platform_of
+    host = host.lower()
+    plat = platform_of(host, SUBDOMAIN_PLATFORMS)
+    return f"platform:{plat}" if plat else host
+
+
+def _fail_count(c: Mapping[str, Any]) -> int:
+    m = re.search(r"\bfails=(\d+)", str(c.get("ats_evidence") or "")) if _probed(c) else None
+    return int(m.group(1)) if m else 0
 
 
 def candidates(*, db_path: Any = None, cfg: Optional[Mapping[str, Any]] = None,
                supported: Optional[Iterable[str]] = None, now: Optional[float] = None) -> list[dict]:
-    """Every due row, best first (not capped; run_probe applies limit + host caps)."""
+    """Every due row, best first (not capped; run_probe applies limit + host caps).
+    Only boards whose tier live ingest accepts (co.ingest_tiers(): require_tier + watchlist) are queued."""
     cfg = {**DEFAULTS, **(cfg or {})}
+    require_tier = set(cfg.get("require_tier") or co.ingest_tiers())
     now = time.time() if now is None else float(now)
     cutoff = now - float(cfg["stale_days"]) * 86400
     supported = set(supported if supported is not None else _registry(cfg["skip_ats"]))
@@ -160,6 +203,8 @@ def candidates(*, db_path: Any = None, cfg: Optional[Mapping[str, Any]] = None,
         if (c.get("ats") or "").lower() not in supported or "config" in c["signal_sources"]:
             continue
         if str(c.get("ats_evidence") or "").startswith("config"):
+            continue
+        if c.get("tier") not in require_tier:   # live ingest would never read this board
             continue
         if _probed(c):
             if (c.get("ats_checked_at") or 0) >= cutoff:
@@ -177,16 +222,37 @@ def candidates(*, db_path: Any = None, cfg: Optional[Mapping[str, Any]] = None,
 # --------------------------------------------------------------- record
 
 def _record(c: Mapping[str, Any], *, now: float, db_path: Any, jobs: Optional[int],
-            india: Optional[int], note: str) -> str:
-    """Write one probe outcome; returns 'active' / 'inactive'."""
-    active = bool(india)
+            india: Optional[int], note: str, transient: bool = False,
+            cfg: Optional[Mapping[str, Any]] = None) -> str:
+    """Write one probe outcome; returns 'active' / 'inactive' / 'retry'.
+
+    `transient` (HTTP 5xx / 429 / 401 / 403, timeout, any other error) never demotes:
+    confidence is kept and ats_checked_at is backdated so the board is due again
+    after `retry_after_days`. Only the Nth consecutive failure demotes."""
+    cfg = {**DEFAULTS, **(cfg or {})}
     day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
-    counts = f" jobs={jobs} india_or_remote={india}" if jobs is not None else ""
-    ev = f"{EVIDENCE_PREFIX} {day}{counts} -> {'active' if active else 'inactive'}"
-    ev = (ev + (f" ({note})" if note else ""))[:500]
     old_conf = c.get("ats_confidence") or 0.0
+    checked = now
+    if transient:
+        fails = _fail_count(c) + 1
+        if fails >= int(cfg["max_consecutive_failures"]):
+            active, outcome = False, "inactive"
+            ev = f"{EVIDENCE_PREFIX} {day} -> inactive ({note}; {fails} failures in a row) fails={fails}"
+        else:
+            active, outcome = None, "retry"
+            ev = f"{EVIDENCE_PREFIX} {day} -> error ({note}) fails={fails} retry-soon"
+            checked = now - (float(cfg["stale_days"]) - float(cfg["retry_after_days"])) * 86400
+    else:
+        active = bool(india)
+        outcome = "active" if active else "inactive"
+        counts = f" jobs={jobs} india_or_remote={india}" if jobs is not None else ""
+        ev = f"{EVIDENCE_PREFIX} {day}{counts} -> {outcome}"
+        ev = ev + (f" ({note})" if note else "")
+    ev = ev[:500]
     if active:
         conf = max(old_conf, co.VERIFIED_CONFIDENCE)
+    elif active is None:
+        conf = old_conf                       # transient: keep what we knew
     elif _probed(c) and old_conf >= co.VERIFIED_CONFIDENCE:
         conf = co.UNVERIFIED_CONFIDENCE       # we activated it; the India roles are gone
     else:
@@ -194,8 +260,8 @@ def _record(c: Mapping[str, Any], *, now: float, db_path: Any, jobs: Optional[in
     with store.connect(db_path) as conn:
         conn.execute("UPDATE companies SET ats_confidence = ?, ats_checked_at = ?, ats_evidence = ?, "
                      "updated_at = ? WHERE id = ? AND COALESCE(ats_evidence, '') NOT LIKE 'config%'",
-                     (conf, now, ev, now, int(c["id"])))
-    return "active" if active else "inactive"
+                     (conf, checked, ev, now, int(c["id"])))
+    return outcome
 
 
 # --------------------------------------------------------------- run
@@ -210,13 +276,15 @@ def run_probe(limit: Optional[int] = None, *, client: Any = None, db_path: Any =
         return {"skipped": "disabled in config/seeds.yaml"}
     limit = int(cfg["limit"] if limit is None else limit)
     per_host = int(cfg["max_per_host_per_run"])
+    per_platform = int(cfg["max_per_platform_per_run"])
     now = time.time() if now is None else float(now)
     registry = dict(connectors) if connectors is not None else _registry(cfg["skip_ats"])
     if client is None and connectors is None:
         from ..http import default_client
         client = default_client()
     out: dict[str, Any] = {"probed": 0, "active": 0, "inactive": 0, "gone": 0, "errors": 0,
-                           "host_capped": 0, "host_blocked": 0, "limit": limit, "hosts": {}}
+                           "host_capped": 0, "host_blocked": 0, "retry": 0, "limit": limit,
+                           "hosts": {}}
     hosts: dict[str, int] = {}
     blocked: set[str] = set()
     instances: dict[str, Any] = {}
@@ -233,40 +301,48 @@ def run_probe(limit: Optional[int] = None, *, client: Any = None, db_path: Any =
             instances[ats] = registry[ats](client)
         conn = instances[ats]
         host = board_host(ats, board, conn)
-        if host in blocked:
+        key = cap_key(host)
+        if host in blocked or key in blocked:
             out["host_blocked"] += 1
             continue
-        if hosts.get(host, 0) >= per_host:
+        if hosts.get(key, 0) >= (per_platform if key.startswith("platform:") else per_host):
             out["host_capped"] += 1
             continue
-        hosts[host] = hosts.get(host, 0) + 1
+        hosts[key] = hosts.get(key, 0) + 1
         out["probed"] += 1
         try:
             jobs = conn.parse(conn.fetch_raw(board), board)
         except (RetryLater, RobotsDisallowed) as exc:   # the host's call, not the board's
-            blocked.add(host)
+            # RetryLater: the shared bucket is exhausted, so the whole platform backs off;
+            # a robots disallow is per tenant origin.
+            blocked.add(key if isinstance(exc, RetryLater) else host)
             out["probed"] -= 1
+            hosts[key] -= 1
             out["host_blocked"] += 1
-            log.warning("probe: dropping host %s for this run: %s", host, exc)
+            log.warning("probe: dropping %s for this run: %s", key, exc)
             continue
         except HttpStatusError as exc:
-            gone = exc.status_code in (404, 410)
-            out["gone" if gone else "errors"] += 1
-            _record(c, now=now, db_path=db_path, jobs=None, india=None,
-                    note=f"HTTP {exc.status_code}" + (" board gone" if gone else ""))
+            if exc.status_code in (404, 410):
+                out["gone"] += 1
+                _record(c, now=now, db_path=db_path, jobs=None, india=None, cfg=cfg,
+                        note=f"HTTP {exc.status_code} board gone")
+            else:   # 5xx / 429 / 401 / 403 ...: not the board's verdict
+                out["errors"] += 1
+                out[_record(c, now=now, db_path=db_path, jobs=None, india=None, cfg=cfg,
+                            transient=True, note=f"HTTP {exc.status_code}")] += 1
             continue
         except Exception as exc:   # noqa: BLE001 — one bad board never sinks the run
             out["errors"] += 1
             log.warning("probe %s (%s) failed: %s", c["name"], ats, exc)
-            _record(c, now=now, db_path=db_path, jobs=None, india=None,
-                    note=f"error {type(exc).__name__}"[:120])
+            out[_record(c, now=now, db_path=db_path, jobs=None, india=None, cfg=cfg,
+                        transient=True, note=f"error {type(exc).__name__}"[:120])] += 1
             continue
         # A board only counts when it has a role you could actually take: open to
         # India / worldwide-remote AND a target-role title (SDE / backend / ML / AI /
         # data ...). Optionally ignores senior+ titles, so more boards means more
         # relevant jobs, not more noise.
         india = sum(1 for j in jobs if is_india_or_remote(j) and _relevant_title(j, cfg))
-        out[_record(c, now=now, db_path=db_path, jobs=len(jobs), india=india, note="")] += 1
+        out[_record(c, now=now, db_path=db_path, jobs=len(jobs), india=india, note="", cfg=cfg)] += 1
     out["hosts"] = dict(sorted(hosts.items(), key=lambda kv: -kv[1])[:10])
     co.put_source_state(SOURCE, db_path, last_run=now, last_ok=now, last_error=None,
                         items=out["probed"], state={k: v for k, v in out.items() if k != "hosts"})

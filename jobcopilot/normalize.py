@@ -60,22 +60,39 @@ def infer_workplace_type(location_text: Optional[str]) -> str:
 
 # A small, ext-friendly set of signals for the India / non-India geo bucket.
 # This is intentionally not exhaustive; add to it as you see your real feeds.
-_INDIA_SIGNALS = (
-    "india", "bengaluru", "bangalore", "hyderabad", "pune", "chennai",
+# Every signal is matched as a WHOLE WORD (see _signal_re): "india" must not
+# fire inside "Indianapolis" / "Indiana", nor "uk" inside "Ukraine".
+_INDIA_COUNTRY = ("india",)
+_INDIA_CITIES = (
+    "bengaluru", "bangalore", "hyderabad", "pune", "chennai",
     "mumbai", "gurgaon", "gurugram", "noida", "delhi", "kolkata",
     "ahmedabad", "kochi", "coimbatore", "thiruvananthapuram", "trivandrum",
     "indore", "jaipur",
 )
+_INDIA_SIGNALS = _INDIA_COUNTRY + _INDIA_CITIES
 
 # Strong non-India signals. Presence of one of these *without* an India signal
 # pushes a posting into the non-IN bucket (where only remote roles survive).
-_NON_INDIA_SIGNALS = (
-    "united states", "usa", "u.s.", " uk", "united kingdom", "canada",
+_NON_INDIA_COUNTRIES = (
+    "united states", "usa", "u.s.", "uk", "united kingdom", "canada",
     "germany", "ireland", "france", "netherlands", "singapore", "australia",
-    "poland", "spain", "israel", "japan", "san francisco", "new york",
-    "seattle", "london", "berlin", "dublin", "toronto", "austin", "boston",
-    "amsterdam", "sydney", "tel aviv",
+    "poland", "spain", "israel", "japan",
 )
+_NON_INDIA_CITIES = (
+    "san francisco", "new york", "seattle", "london", "berlin", "dublin",
+    "toronto", "austin", "boston", "amsterdam", "sydney", "tel aviv",
+)
+_NON_INDIA_SIGNALS = _NON_INDIA_COUNTRIES + _NON_INDIA_CITIES
+
+
+def _signal_re(signals: tuple[str, ...]) -> "re.Pattern[str]":
+    return re.compile(r"(?<!\w)(?:" + "|".join(re.escape(x) for x in signals) + r")(?!\w)")
+
+
+_INDIA_COUNTRY_RE = _signal_re(_INDIA_COUNTRY)
+_INDIA_CITY_RE = _signal_re(_INDIA_CITIES)
+_NON_INDIA_COUNTRY_RE = _signal_re(_NON_INDIA_COUNTRIES)
+_NON_INDIA_RE = _signal_re(_NON_INDIA_SIGNALS)
 
 
 _WORKDAY_REL_RE = re.compile(r"(\d+)\s*\+?\s*day", re.I)
@@ -133,10 +150,13 @@ def infer_country_bucket(location_text: Optional[str]) -> str:
     """Bucket a location into IN / non-IN / unknown for the geo filter."""
     if not location_text:
         return COUNTRY_UNKNOWN
-    t = " " + location_text.lower() + " "
-    if any(sig in t for sig in _INDIA_SIGNALS):
+    t = location_text.lower()
+    if _INDIA_COUNTRY_RE.search(t):
         return IN
-    if any(sig in t for sig in _NON_INDIA_SIGNALS):
+    if _INDIA_CITY_RE.search(t):
+        # A bare city name is weaker than a stated country: "Delhi, NY, USA".
+        return NON_IN if _NON_INDIA_COUNTRY_RE.search(t) else IN
+    if _NON_INDIA_RE.search(t):
         return NON_IN
     return COUNTRY_UNKNOWN
 

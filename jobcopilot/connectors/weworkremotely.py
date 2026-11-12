@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+from .realworkfromanywhere import safe_feed_root
 from .base import Connector
 from ..http import HttpError
 from ..models import Job, REMOTE
@@ -80,7 +81,7 @@ class WeWorkRemotelyConnector(Connector):
         for body in bodies:
             if not body:
                 continue
-            root = ET.fromstring(body.encode("utf-8") if isinstance(body, str) else body)
+            root = safe_feed_root(body)   # refuses DTDs / odd encodings / oversize feeds
             for it in root.iterfind("./channel/item"):
                 link = (it.findtext("link") or it.findtext("guid") or "").strip()
                 external_id = _slug(link) if link else (it.findtext("guid") or "").strip()

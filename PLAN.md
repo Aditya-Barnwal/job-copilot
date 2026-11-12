@@ -193,7 +193,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - a failing source doesn't abort the run (test)
   - `make smoke-live` prints per-source counts
 
-### Phase 1b: Many more sources (your request, 2026-11-11) ☐
+### Phase 1b: Many more sources (your request, 2026-11-11) ☑
 - ☐ Survey the top-starred job-automation / job-aggregation repos on GitHub (e.g. JobSpy, AIHawk, ApplyPilot, jobpilot, and the topic lists `job-scraper`, `job-search`, `job-board`, `job-application-automation`) and extract **every job source they use**.
 - ☐ For each candidate, apply the same gate as Phase 1 (official API / RSS / public JSON, robots.txt, terms) and record the verdict in `docs/SOURCES.md`. Sources that need scraping a ToS-protected site (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound...) stay link-out only, even when popular repos scrape them.
 - ☐ Candidates to check first:
@@ -377,3 +377,19 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
     - quote and validate config slugs in the Greenhouse / Lever / SmartRecruiters / Gem connectors (Ashby done) (P1b)
     - add `max_response_bytes` / `request_deadline_sec` to config defaults (P1b)
     - Postman board 404 (P1b)
+- 2026-11-12: **Phase 1b done.** 16 job boards (incl. Hacker News, speedyapply, SimplifyJobs), 8 more ATS connectors (Recruitee, Workable, Rippling, Teamtailor, Pinpoint, Personio, BambooHR, Keka), seed import of ~33k employer boards, rotating India probe. 2 reviewers found 17 issues (6 high), all fixed with tests.
+  - **Highlights:**
+    - shared 1 req/s limit and a per-run cap per hiring platform (probe was only throttled per tenant)
+    - link allowlist (web links only; no local/internal hosts) at the Job model
+    - hn_parse salary/funding/currency fixes
+    - Unicode email scrubbing
+    - India-vs-Indiana word matching
+    - transient failures no longer demote a probed board
+    - feed guards against entity tricks in every RSS reader
+  - **Extended watchlist (your call):** tier `watchlist` = not brand/funded but named by >= 2 curated early-career lists (~2,500 companies), fetched into a separate lane; `include_extended: false` turns it off.
+  - **Probe:** up to 4,000 boards/run, 7-day refresh, a board counts only with an India/remote role whose title matches target roles (not senior+).
+  - **Verification:** 1,039 tests green, PII clean.
+  - **Backlog:**
+    - the job-description text fed to the tailoring prompt must be marked untrusted (P3)
+    - add `probed_at` / `probe_job_count` / `probe_india_count` columns (P2)
+    - config files are the source of truth for `include_extended`; the Phase 5 UI needs a watchlist tab

@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from .base import Connector, DEFAULT_HEADERS
 from ..http import HttpError
-from ..models import Job, Compensation, REMOTE, HYBRID, ONSITE, UNKNOWN
+from ..models import Job, Compensation, REMOTE, HYBRID, ONSITE, UNKNOWN, SOURCE_HOSTS, safe_url
 from ..normalize import strip_html, infer_country_bucket
 from ..regions import parse_utc_offsets
 
@@ -123,10 +123,12 @@ class FourDayWeekConnector(Connector):
                 if external_id in seen:
                     continue
                 seen.add(external_id)
-                listing = str(j.get("url") or "").strip()
                 slug = str(j.get("slug") or "")
-                if not listing.startswith("https://4dayweek.io/") and _SLUG_RE.match(slug):
+                listing = safe_url(j.get("url"), hosts=SOURCE_HOSTS["fourdayweek"])
+                if not listing and _SLUG_RE.match(slug):
                     listing = f"https://4dayweek.io/job/{quote(slug, safe='')}"
+                if not listing:
+                    continue   # terms: link back to 4dayweek.io; no valid link, no job
                 co = j.get("company") if isinstance(j.get("company"), dict) else {}
                 arrangement = _ARRANGEMENT.get(str(j.get("work_arrangement") or "").lower(), UNKNOWN)
                 location, countries = _locations(j)
@@ -149,12 +151,12 @@ class FourDayWeekConnector(Connector):
                     department=str(j.get("category") or "").strip() or None,
                     compensation=_compensation(j),
                     posted_at=str(j.get("posted_at") or "").strip() or None,
-                    apply_url=listing or None,   # link back required; no separate apply link
+                    apply_url=listing,   # link back required; no separate apply link
                     region_restrictions=regions if arrangement == REMOTE else [],
                     timezone_restrictions=parse_utc_offsets(tz_text) if tz_text else [],
                     tz_requirement_text=tz_text,
                     attribution_name=attr.get("name") or "4 Day Week",
-                    attribution_url=listing or attr.get("url") or "https://4dayweek.io",
+                    attribution_url=listing,
                     raw={**{k: v for k, v in j.items() if k != "company"},
                          "company": {k: v for k, v in co.items() if k != "logo_url"}},
                 ))

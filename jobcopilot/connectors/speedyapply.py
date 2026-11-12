@@ -28,8 +28,10 @@ from typing import Any, Optional
 
 from .base import Connector
 from ..http import HttpError
-from ..models import Job
+from ..models import Job, safe_url
+from ..models import REMOTE
 from ..normalize import infer_country_bucket, infer_workplace_type
+from ..regions import partition_location
 
 log = logging.getLogger("jobcopilot.connectors.speedyapply")
 
@@ -47,6 +49,9 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
 _AGE_RE = re.compile(r"^\s*(\d+)\s*(h|d|w|mo|m|y)\b", re.I)
 _REMOTE_RE = re.compile(r"\bremote\b", re.I)
+_REMOTE_IN_RE = re.compile(r"^\s*remote\s+in\s+(.+?)\s*$", re.I)
+_REMOTE_WORD_RE = re.compile(r"\(?\bremote(?:ly)?\b\)?(?:\s+(?:in|within|from))?", re.I)
+WORLDWIDE_MIN_COUNTRIES = 40   # "Remote in <country>" x 200+ means "anywhere"
 INDIA_RE = re.compile(
     r"\b(?:india|bengaluru|bangalore|hyderabad|pune|chennai|mumbai|gurgaon|gurugram|noida|"
     r"new delhi|delhi|kolkata|ahmedabad|kochi|coimbatore|thiruvananthapuram|trivandrum|"
@@ -81,7 +86,7 @@ def clean_apply_url(url: Optional[str]) -> Optional[str]:
     url = html.unescape(url.strip())
     for _ in range(3):
         parts = urllib.parse.urlsplit(url)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
+        if parts.scheme not in ("http", "https") or not parts.netloc or not safe_url(url):
             return None
         query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
         inner = next((v for k, v in query if k.lower() in _REDIRECT_PARAMS
@@ -89,9 +94,34 @@ def clean_apply_url(url: Optional[str]) -> Optional[str]:
         if inner is None:
             kept = [(k, v) for k, v in query if k.lower() not in _TRACKING_PARAMS
                     and not k.lower().startswith("utm_")]
-            return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(kept)))
+            return safe_url(urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(kept))))
         url = inner
     return None   # redirect chain deeper than 3: not an employer link we trust
+
+
+def remote_regions(locations: list[str]) -> list[str]:
+    """["Remote in USA", "Remote in Canada"] -> ["USA", "Canada"]; a list of
+    40+ countries collapses to ["Worldwide"]."""
+    countries = [m.group(1) for loc in locations if (m := _REMOTE_IN_RE.match(loc))]
+    if len(countries) >= WORLDWIDE_MIN_COUNTRIES:
+        return ["Worldwide"]
+    return list(dict.fromkeys(countries))
+
+
+def location_regions(location: str) -> list[str]:
+    """Who may apply, from a remote row's location cell: "Remote in USA" ->
+    ["USA"], "Remote, India" -> ["India"], "United States (Remote)" ->
+    ["United States"], plain "Remote" -> [] (no stated restriction)."""
+    pieces = [p.strip() for p in re.split(r"[;\n]", location or "") if p.strip()]
+    out = remote_regions(pieces)
+    if out == ["Worldwide"]:
+        return out
+    for piece in pieces:
+        if _REMOTE_IN_RE.match(piece) or not _REMOTE_RE.search(piece):
+            continue
+        rest = _REMOTE_WORD_RE.sub(" ", piece).strip(" ,-–—/|:")
+        out.extend(partition_location(rest)[0] if rest else [])
+    return list(dict.fromkeys(out))
 
 
 def keep_location(location: str, mode: str) -> bool:
@@ -112,7 +142,7 @@ def age_days(text: Optional[str]) -> Optional[int]:
 
 
 def _cell_text(cell: str) -> str:
-    text = _MD_LINK_RE.sub(r"\1", cell)
+    text = _MD_LINK_RE.sub(r"\1", re.sub(r"<br\s*/?>", "; ", cell, flags=re.I))
     return re.sub(r"\s+", " ", html.unescape(_TAG_RE.sub(" ", text))).strip()
 
 
@@ -125,12 +155,37 @@ def _cell_link(cell: str) -> Optional[str]:
 
 
 def _split_row(line: str) -> list[str]:
-    return [c.strip() for c in line.strip().strip("|").split("|")]
+    """Cells of one table row. Only an UNESCAPED pipe separates cells; "\\|"
+    inside a cell is a literal pipe. One leading / trailing pipe is the frame."""
+    cells: list[str] = []
+    cur: list[str] = []
+    s = line.strip()
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s) and s[i + 1] == "|":
+            cur.append("|")
+            i += 2
+            continue
+        if ch == "|":
+            cells.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    cells.append("".join(cur))
+    if cells and not cells[0].strip():
+        cells = cells[1:]
+    if cells and not cells[-1].strip():
+        cells = cells[:-1]
+    return [c.strip() for c in cells]
 
 
-def parse_tables(markdown: str) -> list[dict[str, Any]]:
+def parse_tables(markdown: str, stats: Optional[dict[str, int]] = None) -> list[dict[str, Any]]:
     """Every data row of every `| Company | Position | ... |` table, keyed by
-    lower-case header name, with `<name>_link` for cells that hold a link."""
+    lower-case header name, with `<name>_link` for cells that hold a link.
+    Rows whose cell count differs from the header are skipped and counted in
+    `stats["mismatched_rows"]` (when given)."""
     rows: list[dict[str, Any]] = []
     header: Optional[list[str]] = None
     section = None
@@ -151,6 +206,8 @@ def parse_tables(markdown: str) -> list[dict[str, Any]]:
         if all(set(c) <= set("-: ") for c in cells):
             continue   # the |---|---| separator
         if len(cells) != len(header):
+            if stats is not None:
+                stats["mismatched_rows"] = stats.get("mismatched_rows", 0) + 1
             continue
         row: dict[str, Any] = {"section": section}
         for name, cell in zip(header, cells):
@@ -215,7 +272,8 @@ class SpeedyApplyConnector(Connector):
         for path, markdown in (raw or {}).items():
             mode = keep.get(path, "all")
             dropped = 0
-            for row in parse_tables(markdown):
+            stats: dict[str, int] = {}
+            for row in parse_tables(markdown, stats):
                 location = row.get("location") or ""
                 if not keep_location(location, mode):
                     dropped += 1
@@ -245,10 +303,15 @@ class SpeedyApplyConnector(Connector):
                     posted_at=posted,
                     posted_age_days=age,
                     apply_url=apply_url,
+                    region_restrictions=(location_regions(location)
+                                         if infer_workplace_type(location) == REMOTE else []),
                     attribution_name=attr.get("name") or "speedyapply (GitHub)",
                     attribution_url=f"{repo_url}/blob/{board.get('branch') or 'main'}/{path}",
                     raw={**row, "file": path},
                 ))
+            if stats.get("mismatched_rows"):
+                log.warning("speedyapply: %s skipped %d rows whose cell count != header (format drift?)",
+                            path, stats["mismatched_rows"])
             if dropped:
                 log.info("speedyapply: %s skipped %d rows outside keep=%s", path, dropped, mode)
         return jobs

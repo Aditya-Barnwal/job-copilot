@@ -44,7 +44,7 @@ from .normalize import domain_of, normalize_company_name
 
 log = logging.getLogger("jobcopilot.companies")
 
-TIERS = ("brand", "funded", "unknown", "excluded")
+TIERS = ("brand", "funded", "watchlist", "unknown", "excluded")
 VERIFIED_CONFIDENCE = 0.9      # ats_confidence at/above which an ATS counts as verified
 UNVERIFIED_CONFIDENCE = 0.5    # a guess (config `verify: true`, a BSM role-id hint)
 
@@ -214,6 +214,12 @@ def prepare_rules(rules: Mapping[str, Any]) -> dict:
     r["require_tier"] = list(r.get("require_tier") or ["brand", "funded"])
     r["funded_min_stage"] = r.get("funded_min_stage") or "series_a"
     r["yc_counts_as_funded"] = bool(r.get("yc_counts_as_funded", True))
+    wl = dict(r.get("watchlist") or {})
+    r["watchlist"] = {"enabled": bool(wl.get("enabled", True)),
+                      "signals": [str(x).lower() for x in (wl.get("signals") or
+                                  ["simplify-newgrad", "speedyapply", "zshah"])],
+                      "min_signals": max(1, int(wl.get("min_signals", 2)))}
+    r["include_extended"] = bool(r.get("include_extended", True))
     # brands: a plain string is a distinctive name (loose match: "Google India").
     # A mapping {name, domains, aliases} is an AMBIGUOUS common-word brand
     # ("Zoom", "Linear"): it matches when the company's domain is one of its
@@ -334,6 +340,17 @@ def compute_tier(company: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[
     hit = keyword_hit()
     if hit:
         return "excluded", [hit]
+
+    # Extended watchlist: not vetted as brand/funded, but a human-curated list of tech
+    # employers hiring early-career names this company. Kept in its own lane so the
+    # main queue stays strict; never applies to body shops (handled above).
+    wl = r.get("watchlist") or {}
+    if wl.get("enabled"):
+        # distinct curated lists that name this company (a list = one configured signal)
+        named = [sig for sig in wl.get("signals") or []
+                 if any(sig in str(x).lower() for x in sources)]
+        if len(named) >= wl.get("min_signals", 2):
+            return "watchlist", [f"named by {len(named)} curated early-career list(s): {', '.join(named)}"]
 
     why = [f"{stage_src}: {stage} (below {r['funded_min_stage']})"] if stage else []
     return "unknown", why or ["no brand, YC or funding signal"]
@@ -638,6 +655,17 @@ def _ingest_connectors() -> set[str]:
     return set(REGISTRY) - {"adzuna", "jsearch", "manual"}
 
 
+def ingest_tiers(rules: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Tiers whose boards are fetched/probed: require_tier, plus the extended
+    watchlist when companies.include_extended is on. Jobs from watchlist companies
+    stay in their own lane (tier is joined via jobs.company_id)."""
+    r = prepare_rules(rules if rules is not None else (config.filters().get("companies") or {}))
+    tiers = list(r["require_tier"])
+    if r["include_extended"] and r["watchlist"]["enabled"] and "watchlist" not in tiers:
+        tiers.append("watchlist")
+    return tiers
+
+
 def enabled_ats_companies(db_path: Any = None, rules: Optional[Mapping[str, Any]] = None,
                           *, include_config: bool = False) -> list[dict]:
     """Discovered companies ready for live ingest, as config/companies.yaml-style rows.
@@ -648,8 +676,7 @@ def enabled_ats_companies(db_path: Any = None, rules: Optional[Mapping[str, Any]
     files; re-adding them here could resurrect stale DB copies) unless
     include_config=True.
     """
-    req = (prepare_rules(rules) if rules is not None
-           else prepare_rules(config.filters().get("companies") or {}))["require_tier"]
+    req = ingest_tiers(rules)
     supported = _ingest_connectors()
     out: list[dict] = []
     for c in list_companies(tier=req, enabled=True, db_path=db_path):

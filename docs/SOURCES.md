@@ -7,7 +7,7 @@ Re-check terms when a source starts failing or every ~6 months. Anything marked 
 
 | Source | Verdict | How we ingest | Must-dos |
 |---|---|---|---|
-| Greenhouse / Lever / Ashby / Workday CXS | OK-API (public board APIs) | existing connectors | per-host rate limit |
+| Greenhouse / Lever / Ashby / Workday CXS | OK-API (public board APIs) | existing connectors | per-host rate limit (plus a shared per-platform bucket) |
 | SmartRecruiters | **robots disallow** (`User-agent: * Disallow: /`, only LinkedInBot allowed; checked 2026-11-11) | connector built, not used | Freshworks stays manual — do not exempt |
 | Gem | OK-API — robots.txt unreadable (403), **exempted** as a documented public job-board API (user's call, 2026-11-11) | `api.gem.com/job_board/v0/{slug}/job_posts/` | rate-limited like every host |
 | **Himalayas** | OK-API + **attribution** | `/jobs/api/search` (filtered, few pages/day) | visible "via Himalayas" link; **Apply must use `applicationLink`**; drop jobs after `expiryDate`; no bulk collection; free key → 60/min, 10k/day |
@@ -136,4 +136,4 @@ Many of them scrape LinkedIn / Indeed / Naukri / Glassdoor — those stay link-o
 | amikai/openings-mcp `companies.yaml` per ATS | MIT | ~1–4k per ATS |
 | slugs from SimplifyJobs listing URLs | none (facts only) | ~2,400 new-grad-hiring employers |
 
-None carry country tags, and polling ~30k boards daily would break the low-volume rule, so the plan is a **rotating India probe**: ~500 boards/day, keeping boards that show at least one India / APAC / worldwide-remote role, prioritised by overlap with new-grad lists, yc-oss and Bangalore Startup Map.
+None carry country tags, and polling ~30k boards daily would break the low-volume rule, so the plan is a **rotating India probe**: up to **4000 boards per run** (raised from ~500 at the user's request), each board's list endpoint called once, re-probed after 7 days (so the seed set cycles in about a week), keeping boards that show at least one relevant India / APAC / worldwide-remote role, prioritised by overlap with new-grad lists, yc-oss and Bangalore Startup Map, and queued only if the board's company tier is one live ingest accepts (`co.ingest_tiers()`: `companies.require_tier` plus the extended `watchlist` lane). The 4000 total is not the politeness limit; per-system caps are: **1 req/s per platform** (every `<tenant>.recruitee.com`, `*.myworkdayjobs.com`, teamtailor, pinpoint, personio, bamboohr, keka tenant shares one token bucket in `PoliteClient`, robots.txt fetches included; shared-host ATSs such as Greenhouse, Lever and Ashby are 1 req/s per host), at most **300 boards per run per subdomain platform** (`probe.max_per_platform_per_run`) and 3000 per other host. A host or platform that answers 429 or asks for a long wait is dropped for the run. A transient failure (5xx, 429, 401/403, timeout) never demotes a board: it is retried after ~1 day and demoted only after 3 failures in a row, or at once on 404 / 410.

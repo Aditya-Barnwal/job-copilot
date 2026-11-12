@@ -1,6 +1,8 @@
 """Cross-source dedupe + multi-source storage (Phase 1, PLAN.md L#6 / D11)."""
 from __future__ import annotations
 
+import pytest
+
 from jobcopilot import dedupe, store
 from jobcopilot.filters import FilterResult
 from jobcopilot.models import Compensation, Job
@@ -297,3 +299,47 @@ def test_store_canonical_match_respects_region_conflict(tmp_path):
     store.upsert_jobs([_fr(j) for j in dedupe.merge([a])], db_path=db)
     b = _with(_job("remoteok", "r1", location="Canada"), bucket="non-IN", regions=["Canada"])
     assert store.upsert_jobs([_fr(j) for j in dedupe.merge([b])], db_path=db) == (1, 0)
+
+
+# --- Phase 1b: every ATS / board connector has a tier (L3) -----------------------
+
+NEW_ATS = ("recruitee", "workable", "rippling", "teamtailor", "pinpoint", "personio", "bamboohr", "keka")
+NEW_BOARDS = ("jobicy", "arbeitnow", "fourdayweek", "hn_hiring", "speedyapply", "simplify",
+              "realworkfromanywhere", "cryptojobslist", "hasjob", "remotecom", "nodesk")
+
+
+def test_tiers_are_derived_from_the_connector_registry():
+    from jobcopilot.connectors import BOARD_SOURCES, REGISTRY
+    ats, boards = set(dedupe.ATS_SOURCES), set(dedupe.BOARD_SOURCES)
+    assert not ats & boards
+    for src in REGISTRY:       # a connector added tomorrow lands in exactly one tier
+        assert (src in ats) != (src in boards), src
+    assert set(NEW_ATS) <= ats and set(NEW_BOARDS) <= boards
+    assert set(BOARD_SOURCES) <= boards
+    assert all(dedupe.is_ats(s) for s in NEW_ATS) and not any(dedupe.is_ats(s) for s in NEW_BOARDS)
+    ranks = [dedupe.source_rank(s) for s in dedupe.ATS_SOURCES + dedupe.BOARD_SOURCES]
+    assert len(set(ranks)) == len(ranks) and dedupe.source_rank("no-such-source") > max(ranks)
+    assert max(dedupe.source_rank(s) for s in dedupe.ATS_SOURCES) < min(dedupe.source_rank(s) for s in dedupe.BOARD_SOURCES)
+    assert dedupe.source_rank("himalayas") == min(dedupe.source_rank(s) for s in dedupe.BOARD_SOURCES)
+
+
+
+@pytest.mark.parametrize("src", NEW_ATS)
+def test_new_ats_beats_himalayas_copy_and_supplies_the_apply_url(src):
+    ats = _job(src, "x-1", url=f"https://jobs.{src}.example/acme/x-1", desc="full employer description")
+    merged = dedupe.merge([_himalayas("h1"), ats])
+    assert len(merged) == 1
+    j = merged[0]
+    assert j.source == src
+    assert j.apply_url == f"https://jobs.{src}.example/acme/x-1"      # D11: the employer's link
+    assert {s["source"] for s in j.sources} == {src, "himalayas"}
+    assert j.attribution_name == "Himalayas"
+
+
+@pytest.mark.parametrize("board", NEW_BOARDS)
+def test_new_boards_rank_below_ats_and_himalayas_wins_among_boards(board):
+    other = _job(board, "b-1", url=f"https://{board}.example/b-1")
+    ats = _job("ashby", "a-1", url="https://jobs.ashbyhq.com/acme/a-1")
+    assert dedupe.merge([other, ats])[0].source == "ashby"
+    merged = dedupe.merge([other, _himalayas("h2")])
+    assert len(merged) == 1 and merged[0].source == "himalayas"

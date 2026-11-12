@@ -193,6 +193,29 @@ def test_xml_feeds_with_a_doctype_are_refused(body: str) -> None:
         TeamtailorConnector().parse(body, {"name": "A"})
 
 
+_TT_UTF16 = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE r [<!ENTITY a "aaaa">]><rss><channel/></rss>'
+
+
+@pytest.mark.parametrize("body", [
+    _TT_UTF16.encode("utf-16"), _TT_UTF16.encode("utf-16-le"), _TT_UTF16.encode("utf-16-be"),
+    _TT_UTF16.encode("utf-32"), _TT_UTF16.encode("utf-32-be"),
+    b"\xff\xfe" + _TT_UTF16.encode("utf-16-le"), b"\xfe\xff" + _TT_UTF16.encode("utf-16-be"),
+    b'<?xml version="1.0" encoding="UTF-16"?><rss/>',
+])
+def test_xml_feeds_in_utf16_utf32_are_refused(body: bytes) -> None:
+    """S5: a UTF-16 body with a DOCTYPE must not slip past the ASCII prolog check."""
+    with pytest.raises(ValueError):
+        xml_root(body)
+    for conn in (TeamtailorConnector(), PersonioConnector()):
+        with pytest.raises(ValueError):
+            conn.parse(body, {"name": "A", "slug": "a"})
+
+
+def test_xml_root_accepts_latin1_and_utf8_declarations() -> None:
+    assert xml_root('<?xml version="1.0" encoding="UTF-8"?><r/>'.encode()).tag == "r"
+    assert xml_root('<?xml version="1.0" encoding="iso-8859-1"?><r>é</r>'.encode("latin-1")).tag == "r"
+
+
 def test_xml_root_accepts_cdata_that_mentions_doctype_and_empty_bodies() -> None:
     assert xml_root('<?xml version="1.0"?><r><![CDATA[<!DOCTYPE html>]]></r>').tag == "r"
     assert xml_root("") is None and xml_root(None) is None

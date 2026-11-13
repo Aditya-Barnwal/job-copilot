@@ -137,6 +137,18 @@ cmd_deploy() {
   echo "  project=$project  region=$REGION  service=$SERVICE  (public URL, max 1 instance)"
   confirm "Continue?" || die "cancelled"
 
+  # Pre-flight: build + run + smoke-test the exact demo image locally first, so a
+  # broken image never reaches Cloud Run. Needs podman or docker; SKIP_DEMO_CHECK=1
+  # skips it (e.g. on a machine without a container engine).
+  if [[ "${SKIP_DEMO_CHECK:-0}" != "1" ]]; then
+    if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then
+      info "pre-flight: local demo image check (scripts/demo_check.sh)"
+      "$(dirname "$0")/demo_check.sh" || die "local demo check failed - not deploying"
+    else
+      info "pre-flight skipped: no podman/docker on this machine"
+    fi
+  fi
+
   info "enabling APIs (no-op when already on)"
   "$GCLOUD" services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
     --project "$project"

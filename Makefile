@@ -82,6 +82,9 @@ export GCLOUD REGION SERVICE
 demo-local:  ## the public demo on http://127.0.0.1:8000 (fixtures, fake profile, no network/LLM)
 	JOBCOPILOT_DEMO=1 $(PY) -m uvicorn server.app:app --host 127.0.0.1 --port $(PORT)
 
+demo-check:  ## build the demo image locally (podman/docker), run it like Cloud Run, smoke-test it
+	scripts/demo_check.sh
+
 deploy-demo:  ## build + deploy the demo to Cloud Run (PROJECT=…; asks first)
 	scripts/deploy_cloudrun.sh deploy $(PROJECT)
 

@@ -807,3 +807,19 @@ def test_artifact_pdf_is_confined_to_applications_dir(client, tmp_path):
     assert client.get(f"/api/artifacts/{aid}/pdf").status_code == 404
     assert client.get("/api/artifacts/12345/pdf").status_code == 404
     assert client.get("/api/jobs/nope/artifacts").status_code == 404
+
+
+def test_legacy_browse_hides_excluded_jobs_by_default(client):
+    """The old Browse tab must not show jobs the eligibility rules excluded."""
+    import sqlite3
+    from jobcopilot import store
+    db = store.resolve_db_path()
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO jobs(key, source, company, title, lane, excluded) VALUES "
+                  "('t:sre', 'greenhouse', 'BigCo', 'Site Reliability Engineer', 'excluded', 1)")
+        c.execute("INSERT INTO jobs(key, source, company, title, lane, excluded) VALUES "
+                  "('t:sde', 'greenhouse', 'BigCo', 'Software Engineer', 'main', 0)")
+    keys = {j["key"] for j in client.get("/api/jobs").json()["jobs"]}
+    assert "t:sde" in keys and "t:sre" not in keys
+    keys_all = {j["key"] for j in client.get("/api/jobs?include_excluded=true").json()["jobs"]}
+    assert {"t:sde", "t:sre"} <= keys_all

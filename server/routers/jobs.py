@@ -37,14 +37,21 @@ def list_jobs_endpoint(
     hide_senior_high: bool = False,
     max_yoe: Optional[int] = None,
     limit: int = 500,
+    include_excluded: bool = False,
 ):
+    # Phase 2 stores excluded jobs too (with reasons, for the Excluded view). This
+    # legacy Browse list hides them — and postings that vanished — unless asked.
     rows = store.list_jobs(
         status=status, sector=sector, country_bucket=country_bucket,
         workplace_type=workplace_type, role_family=role_family,
         freshness=freshness, q=q, min_score=min_score,
         max_age_days=max_age_days, hide_senior_high=hide_senior_high,
-        limit=limit,
+        limit=limit if include_excluded else max(limit * 10, 5000),
     )
+    if not include_excluded:
+        rows = [r for r in rows
+                if not r.get("excluded") and r.get("lane") not in ("excluded", "gone")
+                and not r.get("gone_at")][:limit]
     rows = filter_max_yoe(rows, max_yoe)
     return {"jobs": enrich(rows), "count": len(rows)}
 

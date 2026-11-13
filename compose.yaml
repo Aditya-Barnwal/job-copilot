@@ -2,7 +2,11 @@
 # Data, config and profile stay on the host and are mounted in (nothing personal in the image).
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        REQS: requirements.txt   # full runtime (semantic scoring); the demo uses requirements-demo.txt
+        DEMO: "0"
     ports:
       - "127.0.0.1:8000:8000"   # loopback only — this app is for you, not the network
     env_file:

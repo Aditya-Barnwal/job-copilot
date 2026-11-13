@@ -10,8 +10,12 @@ words by default (config/writing.yaml `cover_letter.max_words`).
 
 Fail closed: no confirmed facts → status `refused` and the model is never
 called. Any grounding flag (incl. unsupported capability claims), leak,
-over-length body or too few cited facts → `needs_review`, with each offending
-sentence quoted in the warnings. Clichés are deleted sentence by sentence.
+over-length body, markdown / links / look-alike characters, an evidence
+paragraph mixing experiences or too few cited facts → `needs_review`, with
+each offending sentence quoted in the warnings (retries are told only the
+paragraph / sentence numbers and the kind of problem). Clichés are deleted
+sentence by sentence. The subject line is built in code from the title and
+company; the model never writes it.
 
 Word limit: an over-long draft is retried once (fresh conversation, told how
 many words over); if the best draft is still over, whole sentences are trimmed
@@ -40,11 +44,14 @@ SYSTEM = (
     "generic praise of the company.\n"
     "3. Structure, exactly 4 paragraphs:\n"
     "   a. Opening: ONE sentence naming the role and the company plus one specific "
-    "hook taken from the JD (a product, problem or requirement it names).\n"
+    "hook taken from the JD (a product, problem or requirement it names). Put the hook in "
+    "a sentence about the company only, with no I / my / me (e.g. '<Company> builds ...'): "
+    "a sentence about the applicant can never use the JD.\n"
     "   b. Evidence paragraph 1: map ONE JD must-have to one or two cited facts, "
     "stated plainly as what the applicant did.\n"
     "   c. Evidence paragraph 2: the same for a DIFFERENT must-have and different facts.\n"
-    "   d. Close: 1-2 sentences on what you'd like to discuss, then thanks.\n"
+    "   d. Close: 1-2 sentences on what you'd like to discuss, then thanks. No claims about "
+    "the applicant's skills or experience in the close.\n"
     "   No salutation, no sign-off, no placeholders.\n"
     "4. State facts; never interpret them. No bridging sentences such as 'this "
     "demonstrates', 'showcasing', 'this experience shows', 'reinforcing my'. Never "
@@ -54,10 +61,15 @@ SYSTEM = (
     "5. Plain, direct, specific. No clichés (e.g. 'I am writing to express', "
     "'passionate about', 'team player', 'perfect fit', 'proven track record'). "
     "Plain ASCII hyphens only; no em-dashes.\n"
-    "6. Copy numbers, metrics and names exactly as the facts write them.\n"
+    "6. Copy numbers, metrics and names exactly as the facts write them. Never write a "
+    "quantity in words (five, dozens, millions, half, twice) and never add a scope claim "
+    "(team of, sole, single-handedly, independently, entire).\n"
+    "7. Each evidence paragraph is about exactly ONE employer or project and cites only its "
+    "facts; name that employer or project in the paragraph. Never write the target company "
+    "or role title as if it were the applicant's past employer or title.\n"
+    "8. Plain text only: no markdown, no links, no e-mail addresses.\n"
     + style.UNTRUSTED_RULE + common.ID_RULE +
-    "\nReturn ONLY JSON: {\"paragraphs\": [{\"text\": str, \"fact_ids\": [str]}], "
-    "\"subject\": str}"
+    "\nReturn ONLY JSON: {\"paragraphs\": [{\"text\": str, \"fact_ids\": [str]}]}"
 )
 
 PROMPT = """{facts}
@@ -67,7 +79,6 @@ PROMPT = """{facts}
 TASK: write the cover letter body in {lo}-{hi} words. HARD LIMIT: {max_words} words
 for the whole body; count them before you answer. 4 paragraphs: opening, evidence,
 evidence, closing. Evidence paragraphs must cite at least one fact id each.
-"subject" is a short email subject naming the role.
 """
 
 
@@ -95,7 +106,6 @@ def generate_cover_letter(job: dict, *, facts: Any = None, answers: Any = None,
         cited = built["grounding"].get("cited_fact_ids") or []
         if len(cited) < min_facts:
             issues.append(f"cites {len(cited)} fact(s); at least {min_facts} expected")
-        built["subject"] = subject
         return built, issues
 
     built, issues, n = common.best_attempt(SYSTEM, user, build,
@@ -105,23 +115,24 @@ def generate_cover_letter(job: dict, *, facts: Any = None, answers: Any = None,
         paras, trimmed = common.trim_to_limit(built["paragraphs"], built["grounding"], usable,
                                               max_words)
         if trimmed:
-            subject = built.get("subject", "")
             removed = built["removed"]
-            built, issues = build({"paragraphs": paras, "subject": subject})
+            built, issues = build({"paragraphs": paras})
             built["removed"] = removed + built["removed"]
     warnings = list(issues)
     if trimmed:
         warnings.append(f"trimmed {len(trimmed)} sentence(s) to fit {max_words} words: "
                         + " | ".join(f'"{t}"' for t in trimmed))
+    if built["words"] > max_words:
+        warnings.append(f"still over the {max_words}-word limit ({built['words']} words): "
+                        "no more sentences could be removed safely; edit it by hand")
+    if built.get("normalised"):
+        warnings.append("normalised metric(s) to the facts' wording: " + ", ".join(built["normalised"]))
     if built["removed"]:
         warnings.append("removed cliché sentence(s): " + ", ".join(dict.fromkeys(built["removed"])))
     signoff = common.signoff_block(data, warnings)
     body = "\n\n".join(p["text"] for p in built["paragraphs"])
     text = f"{cl['salutation']}\n\n{body}\n\n{signoff}".strip()
-    title = job.get("title") or "the role"
-    subject = built["subject"] or f"Application: {title}"
-    if len(subject) > 90 or style.find_leaks(subject):
-        subject = f"Application: {title}"
+    subject = common.application_subject(job, rec)          # built in code, never by the model
     status = "ok" if not issues and built["grounding"].get("clean") else "needs_review"
     log.info("cover_letter job=%s status=%s words=%d attempts=%d cited=%d",
              job.get("key"), status, built["words"], n,

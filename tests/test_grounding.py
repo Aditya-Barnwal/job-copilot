@@ -225,11 +225,13 @@ def test_spelled_out_quantity_matching_original_digits_is_not_new():
     assert g["new_numbers"] == [], g["new_numbers"]
 
 
-def test_plain_number_words_are_not_flagged():
-    # Bare small numbers ("one of", "two services") are everyday prose.
+def test_bare_number_words_are_flagged_but_one_idioms_are_not():
+    # R3W-1: "two engineers", "three services" are quantity claims; "one of" is an idiom.
     tailored = BASE + " One of two engineers on three services."
     g = check_grounding(BASE, tailored, job_missing_keywords=[])
-    assert g["new_numbers"] == [], g["new_numbers"]
+    assert g["new_numbers"] == ["three", "two"], g["new_numbers"]
+    g = check_grounding(BASE + " Ran 2 engineers on 3 services.", tailored, job_missing_keywords=[])
+    assert g["new_numbers"] == [], g["new_numbers"]           # same value in digits
 
 
 # --- grounding v3: per-line checks against cited facts ------------------------
@@ -357,3 +359,78 @@ def test_v3_capability_claim_phrase_reported_once():
     out = capability_claims("This experience demonstrates my skills needed for end-to-end AI deployment.",
                             FACTS["b1"])
     assert len(out) == 1 and out[0].startswith("This experience demonstrates")
+
+
+# --- Phase 3 review 3 (R3W-1 / R3W-4 / R3W-11) ---------------------------------
+
+@pytest.mark.parametrize("text, token", [
+    ("Built a Go order service handling 200+ requests per second for millions of users.", "millions"),
+    ("Built a Go order service handling 200+ requests per second with a team of five.", "five"),
+    ("Built a Go order service handling 200+ requests per second and cut costs in half.", "in half"),
+    ("Built a Go order service handling 200+ requests per second for dozens of shops.", "dozens"),
+    ("Built a Go order service handling 200+ requests per second for thousands of merchants.", "thousands"),
+    ("Built a Go order service handling 200+ requests per second, twice as fast.", "twice"),
+    ("Built a Go order service handling 200+ requests per second for several hundred shops.",
+     "several hundred"),
+])
+def test_r3w1_quantities_in_words_are_numbers(text, token):
+    g = _one(text)
+    assert token in g["flags"]["new_numbers"], g["flags"]
+
+
+def test_r3w1_word_quantity_supported_by_same_value_or_word():
+    facts = {"f": "Cut cloud spend by 50% for hundreds of merchants with 5 engineers."}
+    for t in ("Cut cloud spend in half for hundreds of merchants with five engineers.",):
+        g = check_lines([{"text": t, "fact_ids": ["f"]}], facts)
+        assert g["flags"]["new_numbers"] == [], g["flags"]
+
+
+@pytest.mark.parametrize("text, fam", [
+    ("Single-handedly built a Go order service handling 200+ requests per second.", "single-handedly (scope)"),
+    ("Built a Go order service handling 200+ requests per second as the sole engineer.", "sole (scope)"),
+    ("Independently built a Go order service handling 200+ requests per second.", "independently (scope)"),
+    ("Built a Go order service handling 200+ requests per second in a team of 200+.", "team of (scope)"),
+    ("Built a solo Go order service handling 200+ requests per second.", "solo (scope)"),
+    ("Built a senior-grade Go order service handling 200+ requests per second.", "senior (title)"),
+])
+def test_r3w1_scope_claims_need_the_cue_in_evidence(text, fam):
+    assert fam in _one(text)["flags"]["inflated_claims"]
+    assert check_lines([{"text": text, "fact_ids": ["f"]}], {"f": text})["clean"]
+
+
+@pytest.mark.parametrize("text, key", [
+    ("Lеd a Go order service handling 200+ requests per second.", "inflated_claims"),     # Cyrillic е
+    ("Built a Go order service handling 200+ requests per second on kаfka.", "unsupported_skills"),
+    ("Built a Go order service handling 200+ requests per second on Kaf​ka.", "unsupported_skills"),
+    ("Built a Go order service handling ９００ requests per second.", "new_numbers"),
+])
+def test_r3w4_confusables_fold_for_checking(text, key):
+    assert _one(text)["flags"][key], _one(text)["flags"]
+
+
+def test_r3w4_confusable_problem():
+    from jobcopilot.grounding import confusable_problem
+    assert confusable_problem("Lеd") == "non-Latin or confusable characters"
+    assert confusable_problem("Kaf​ka") and confusable_problem("x﻿")
+    assert confusable_problem("Zürich, Łódź, résumé") is None             # Latin-1 / Extended-A
+    assert confusable_problem("Built Δ-sync", "Built Δ-sync for docs") is None   # in the cited fact
+
+
+@pytest.mark.parametrize("text", ["Served over 1 M users.", "Served over 1 million users.",
+                                  "Served more than one million users.", "Served over a million users."])
+def test_r3w11_normalize_metrics(text):
+    from jobcopilot.grounding import normalize_metrics
+    out, changes = normalize_metrics(text, ["1M+", "30%"])
+    assert out == "Served 1M+ users." and len(changes) == 1 and changes[0]["to"] == "1M+"
+
+
+@pytest.mark.parametrize("text, metrics", [
+    ("Served 1 million users.", ["1M+"]),                        # no "over": a different claim
+    ("Served over 2 million users.", ["1M+"]),                   # another value: never invented
+    ("Served over a million users and over a million calls.", ["1M+"]),   # ambiguous
+    ("Served over a million users.", ["1M+", "1M"]),             # two metrics share the value
+    ("Served 1M+ users, over a million calls.", ["1M+"]),        # token already there
+])
+def test_r3w11_normalize_metrics_only_when_unambiguous(text, metrics):
+    from jobcopilot.grounding import normalize_metrics
+    assert normalize_metrics(text, metrics) == (text, [])

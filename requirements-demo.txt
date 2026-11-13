@@ -1,0 +1,15 @@
+# Public demo image only (Cloud Run, JOBCOPILOT_DEMO=1; see docs/DEPLOY.md).
+# Same runtime as requirements.txt minus the heavy optional parts:
+#   - sentence-transformers / torch: semantic scoring is optional; the demo
+#     never loads the model (jobcopilot/demo.py), so fit scores skip that component
+#   - playwright: autofill is local-only (requirements-autofill.txt)
+#   - openai: jobcopilot/llm.py imports it lazily, and demo mode never calls an LLM
+requests>=2.31
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pypdf>=4.0
+reportlab>=4.0
+python-dotenv>=1.0
+jinja2>=3.1

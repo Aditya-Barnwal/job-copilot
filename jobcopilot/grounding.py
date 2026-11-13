@@ -181,6 +181,70 @@ def _numbers(text: str) -> set[str]:
     return {tok.replace(",", "").lower() for tok in raw if tok}
 
 
+# --- confusables / invisible characters ---------------------------------------
+# A Cyrillic "е" in "Lеd" or a zero-width space in "Kaf\u200bka" would slip past
+# ASCII token checks. For CHECKING, known Cyrillic / Greek look-alikes fold to
+# Latin and format (Cf) characters are dropped; generated text that contains
+# them is rejected outright (`confusable_problem`).
+_CONFUSABLE_MAP = str.maketrans({
+    # Cyrillic
+    "а": "a", "в": "b", "е": "e", "ё": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p",
+    "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "i", "ї": "i", "ј": "j",
+    "һ": "h", "ԁ": "d", "ԛ": "q", "ԝ": "w", "ӏ": "l", "ɡ": "g", "ь": "b",
+    "А": "A", "В": "B", "Е": "E", "Ё": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "Ѕ": "S", "І": "I", "Ї": "I",
+    "Ј": "J", "Һ": "H", "Ԁ": "D", "Ԛ": "Q", "Ԝ": "W", "Ӏ": "I",
+    # Greek
+    "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p",
+    "τ": "t", "υ": "u", "χ": "x", "γ": "y", "ω": "w",
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M",
+    "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+    # Latin look-alikes outside ASCII
+    "ı": "i", "ȷ": "j", "ʟ": "L", "ɪ": "I",
+})
+_LATIN_MAX = 0x17F          # Basic Latin + Latin-1 + Latin Extended-A
+
+
+def fold_confusables(text: str) -> str:
+    """NFKC, drop format characters (zero-width etc.), map known Cyrillic /
+    Greek look-alikes to Latin. For checking only — never shown to the user."""
+    t = unicodedata.normalize("NFKC", text or "")
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+    return t.translate(_CONFUSABLE_MAP)
+
+
+def confusable_problem(text: str, evidence: str = "") -> str | None:
+    """'non-Latin or confusable characters' when `text` (after NFKC) has a
+    format / zero-width character, or a letter outside Latin / Latin-1 /
+    Latin Extended-A that `evidence` (the cited facts) doesn't contain."""
+    t = unicodedata.normalize("NFKC", text or "")
+    ev = set(unicodedata.normalize("NFKC", evidence or ""))
+    if any(unicodedata.category(ch) == "Cf" for ch in t) or any(
+            ch.isalpha() and ord(ch) > _LATIN_MAX and ch not in ev for ch in t):
+        return "non-Latin or confusable characters"
+    return None
+
+
+def _fold_for_tokens(text: str) -> str:
+    """Accent-fold (é -> e), fold look-alikes / drop zero-width characters, and
+    normalise Unicode hyphens/dashes — for tokenising only."""
+    t = unicodedata.normalize("NFKD", fold_confusables(text)).translate(_DASHES)
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+# Markup and links in generated text (shared by tailoring and writing).
+MARKUP_RE = re.compile(r"\*\*|__|`|^\s*#|^\s*[-*•]\s|\[[^\]]*\]\([^)]*\)|<[a-z/!][^>]*>|[\\{}]",
+                       re.I | re.M)
+URL_RE = re.compile(r"(?i:\b(?:https?://|www\.)[^\s<>\"')]+)|(?i:\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+)"
+                    r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|io|ai|dev|org|net|co|app|in|me|xyz|us|uk|"
+                    r"gg|ly|sh|so|tech|site|info|biz)(?:/[^\s<>\"')]*)?(?![A-Za-z0-9])")
+
+
+def links_in(text: str) -> list[str]:
+    """URLs / e-mail addresses / bare domains in `text`, trailing punctuation trimmed."""
+    return [m.group(0).rstrip(".,;:!?") for m in URL_RE.finditer(text or "")]
+
+
 # --- spelled-out quantities ---------------------------------------------------
 _ONES = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
          "seven": 7, "eight": 8, "nine": 9}
@@ -219,11 +283,45 @@ def _word_value(num: str) -> int:
     return sum(_TENS.get(p, 0) or _SMALL.get(p, 0) for p in parts)
 
 
+# Vague quantities ("millions of", "dozens", "in half", "twice"): a number
+# claim without digits. Those with an exact value map to its digit forms; the
+# rest ("hundreds", "a handful") only match the same words in the evidence.
+_VAGUE_RE = re.compile(
+    r"(?<![a-z0-9-])(?:(?:several|a\s+few|few|many)\s+(?:hundred|thousand|million|billion|lakh|crore)s?"
+    r"|hundreds|thousands|millions|billions|lakhs|crores|dozens|tens\s+of|scores\s+of"
+    r"|a\s+dozen|dozen|a\s+handful|handful|in\s+half|half|a\s+third|one[\s-]third"
+    r"|two[\s-]thirds|a\s+quarter|one[\s-]quarter|three[\s-]quarters|twice|thrice)(?![a-z])")
+_VAGUE_CANON = {"a dozen": {"12"}, "dozen": {"12"}, "in half": {"50%", "0.5x"},
+                "half": {"50%", "0.5x"}, "a third": {"33%"}, "one third": {"33%"},
+                "two thirds": {"66%", "67%"}, "a quarter": {"25%"}, "one quarter": {"25%"},
+                "three quarters": {"75%"}, "twice": {"2x"}, "thrice": {"3x"}}
+# Bare cardinals ("a team of five", "two services"). "one" in idioms ("one of",
+# "no one", "one-off") is not a quantity claim.
+_BARE_RE = re.compile(
+    rf"(?<![a-z0-9-])(?:(?:{_alt(_TENS)})(?:[\s-](?:{_alt(_ONES)}))?|{_alt(_SMALL)})(?![a-z])")
+_ONE_IDIOM_NEXT_RE = re.compile(r"\s*-|\s+(?:of|another|more|day|way|by|or|at|thing|point)\b")
+_ONE_IDIOM_PREV_RE = re.compile(r"(?:\b(?:the|this|that|each|every|any|no|which|some|at|as|only|a)\s+)$")
+
+
 def _spelled_numbers(text: str) -> dict[str, set[str]]:
     """Spelled-out quantities → the digit forms they're equivalent to, so
-    'forty percent' matches an original '40%' and 'doubled' matches '2x'."""
-    low = (text or "").lower()
+    'forty percent' matches an original '40%' and 'doubled' matches '2x'.
+    Vague quantities ("millions of", "dozens") and bare cardinals ("five")
+    count too; a vague one with no exact value maps to no digits, so only the
+    same words in the evidence support it."""
+    low = _fold_for_tokens(text or "").lower()
     out: dict[str, set[str]] = {}
+    taken: list[tuple[int, int]] = []
+
+    def free(m: re.Match) -> bool:
+        if any(m.start() < e and s < m.end() for s, e in taken):
+            return False
+        taken.append((m.start(), m.end()))
+        return True
+
+    def key(m: re.Match) -> str:
+        return re.sub(r"[\s-]+", " ", m.group(0))
+
     for m in _SPELLED_QTY_RE.finditer(low):
         n = _word_value(m.group("num"))
         if m.group("hundred"):
@@ -236,13 +334,25 @@ def _spelled_numbers(text: str) -> dict[str, set[str]]:
         else:
             canon = {str(n * _SCALES[unit])}
             canon |= {f"{n}{suf}" for suf in _SHORT_SUFFIX.get(unit, ())}
-        out[re.sub(r"\s+", " ", m.group(0))] = canon
+        if free(m):
+            out[re.sub(r"\s+", " ", m.group(0))] = canon
     for m in _MULTIPLIER_RE.finditer(low):
-        out[m.group(0)] = set(_MULTIPLIER_CANON[m.group(1)])
+        if free(m):
+            out[m.group(0)] = set(_MULTIPLIER_CANON[m.group(1)])
     for m in _FOLD_RE.finditer(low):
         word = m.group(1)
         n = 100 if word == "hundred" else (_TENS.get(word) or _SMALL[word])
-        out[m.group(0)] = {f"{n}x"}
+        if free(m):
+            out[m.group(0)] = {f"{n}x"}
+    for m in _VAGUE_RE.finditer(low):
+        if free(m):
+            out[key(m)] = set(_VAGUE_CANON.get(key(m), ()))
+    for m in _BARE_RE.finditer(low):
+        if m.group(0) == "one" and (_ONE_IDIOM_NEXT_RE.match(low, m.end())
+                                    or _ONE_IDIOM_PREV_RE.search(low[:m.start()])):
+            continue
+        if free(m):
+            out[key(m)] = {str(_word_value(m.group(0)))}
     return out
 
 
@@ -362,14 +472,29 @@ def _is_claim(toks: list[_Tok], i: int, text: str) -> bool:
     return True
 
 
+# Scope claims: how much of the work was the applicant's, or how big it was.
+# Like ownership verbs, each needs the same cue in the evidence.
+_SCOPE_RES = tuple((re.compile(rx, re.I), fam) for rx, fam in (
+    (r"\bteams?\s+of\b", "team of (scope)"),
+    (r"\bsole(?:ly)?\b|\bby myself\b|\bon my own\b", "sole (scope)"),
+    (r"\bsingle[\s-]?handed(?:ly)?\b", "single-handedly (scope)"),
+    (r"\bindependently\b", "independently (scope)"),
+    (r"\bsolo\b", "solo (scope)"),
+    (r"\ball\s+of\s+(?:the|its|our|their)\b|\bentire\b|"
+     r"\b(?:company|org|organi[sz]ation|team)[\s-]wide\b", "company-wide (scope)"),
+    (r"\bsenior[\s-](?:grade|level|quality)\b", "senior (title)"),
+))
+
+
 def _ownership_families(text: str) -> set[str]:
-    text = text or ""
+    text = _fold_for_tokens(text or "")
     toks = [_Tok(m) for m in _TOKEN_RE.finditer(text)]
     families, used = _title_claims(toks, text)
     for i, t in enumerate(toks):
         fam = _FORM_TO_FAMILY.get(t.low)
         if fam and fam not in families and i not in used and _is_claim(toks, i, text):
             families.add(fam)
+    families |= {fam for rx, fam in _SCOPE_RES if rx.search(text)}
     return families
 
 
@@ -390,6 +515,8 @@ def check_grounding(original_resume: str,
                     user_approved_keywords: set[str] | None = None) -> dict:
     approved = {k.lower() for k in (user_approved_keywords or set())}
     missing = job_missing_keywords or []
+    original_resume = _fold_for_tokens(original_resume)
+    tailored_text = _fold_for_tokens(tailored_text)
     missing_lower = {k.lower() for k in missing}
 
     inserted_unsupported = [
@@ -603,12 +730,6 @@ def _line_proper_nouns(text: str, evidence: str, attested_words: set[str]) -> li
 _DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2212"), "-")
 
 
-def _fold_for_tokens(text: str) -> str:
-    """Accent-fold (é -> e) and normalise Unicode hyphens/dashes for tokenising only."""
-    t = unicodedata.normalize("NFKD", text or "").translate(_DASHES)
-    return "".join(ch for ch in t if not unicodedata.combining(ch))
-
-
 # --------------------------------------------------------------------------- capability claims
 # A sentence about the applicant that uses a capability / experience cue
 # ("experience with …", "scaled … to production", "end-to-end", "showcasing …",
@@ -804,6 +925,8 @@ def check_lines(lines: list[dict], facts, *, attested=None,
     `unsupported_claims` (capability_claims) runs on every line unless it sets
     `check_claims: False` (a letter sentence that isn't about the applicant);
     its evidence is the cited facts whose id doesn't start with "_".
+    A line may carry `names`: strings whose words are allowed as proper nouns
+    in that line only — never as skills, numbers or claims.
     """
     fmap = _fact_map(facts)
     att_terms = _attested_terms(attested)
@@ -825,7 +948,8 @@ def check_lines(lines: list[dict], facts, *, attested=None,
              "unsupported_skills": _line_skills(text, evidence, att_terms),
              "new_numbers": _line_numbers(text, evidence),
              "inflated_claims": sorted(_ownership_families(text) - _ownership_families(evidence)),
-             "new_proper_nouns": _line_proper_nouns(text, evidence, att_words),
+             "new_proper_nouns": _line_proper_nouns(text, evidence, att_words | {
+                 w.lower() for n in (line.get("names") or ()) for w in _WORD_RE.findall(_fold_for_tokens(str(n)))}),
              "unsupported_claims": [], "similarity": None, "low_similarity": []}
         if line.get("check_claims", True):
             real = "\n".join(_fact_evidence(fmap[x]) for x in ids
@@ -863,3 +987,77 @@ def unconfirmed_line_flags(grounding: dict, confirmed) -> dict[str, list[str]]:
         if missing:
             out[key] = missing
     return out
+
+
+# --------------------------------------------------------------------------- metric normalisation
+# A rephrase that writes a fact's metric another way ("over a million" for
+# "1M+") is put back to the fact's exact token — but only when that is
+# unambiguous. Never produces a value the facts don't have.
+
+_NM_SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6,
+             "b": 1e9, "bn": 1e9, "billion": 1e9}
+_NM_METRIC_RE = re.compile(r"^(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(k|m|mn|b|bn|%)?\s*(\+)?$", re.I)
+_NM_SPAN_RE = re.compile(
+    r"(?<![A-Za-z0-9.,])(?P<pre>(?:over|more\s+than|upwards\s+of|in\s+excess\s+of|north\s+of)\s+)?"
+    rf"(?P<num>\d{{1,3}}(?:,\d{{3}})+|\d+(?:\.\d+)?|an?|(?:{_alt(_TENS)})(?:[\s-](?:{_alt(_ONES)}))?|{_alt(_SMALL)})"
+    r"(?:\s*(?P<unit>%|percent|per\s+cent|k|mn|m|bn|b|thousand|million|billion)(?![A-Za-z]))?"
+    r"(?P<plus>\s*\+)?(?![A-Za-z0-9])", re.I)
+
+
+def _nm_value(num: str, unit: str | None) -> tuple[float, str] | None:
+    num = num.lower().replace(",", "")
+    if num in ("a", "an"):
+        if not unit or unit.lower() in ("%", "percent") or re.match(r"per\s+cent", unit, re.I):
+            return None
+        n = 1.0
+    elif num[0].isdigit():
+        n = float(num)
+    else:
+        n = float(_word_value(num))
+    u = (unit or "").lower()
+    if u in ("%", "percent") or u.startswith("per"):
+        return n, "%"
+    return n * _NM_SCALE.get(u, 1), ""
+
+
+def normalize_metrics(text: str, metrics) -> tuple[str, list[dict]]:
+    """Rewrite another spelling of a fact metric ("over 1 M", "over 1 million",
+    "more than one million", "over a million") to the fact's exact token
+    ("1M+"). Only when unambiguous: the token is not already in the text,
+    exactly one span expresses that value (and its "+"/"over"), and no other
+    metric in `metrics` shares the value. Returns (text, [{from, to}])."""
+    text = text or ""
+    parsed = []
+    for tok in metrics or []:
+        m = _NM_METRIC_RE.match(str(tok).strip())
+        if not m:
+            continue
+        unit = m.group(2) or ""
+        val = _nm_value(m.group(1), None if unit == "%" else unit)
+        if unit == "%":
+            val = (float(m.group(1).replace(",", "")), "%")
+        if val is not None:
+            parsed.append((str(tok).strip(), val, bool(m.group(3))))
+    changes: list[dict] = []
+    for tok, val, plus in parsed:
+        if re.search(r"(?<![A-Za-z0-9])" + re.escape(tok) + r"(?![A-Za-z0-9])", text) or \
+                sum(1 for _t, v, _p in parsed if v == val) > 1:
+            continue
+        spans = []
+        for m in _NM_SPAN_RE.finditer(text):
+            if not (m.group("pre") or m.group("plus") or m.group("unit") or not m.group("num")[0].isdigit()):
+                continue                         # a bare digit run: nothing to normalise
+            v = _nm_value(m.group("num"), m.group("unit"))
+            if v is None or v != val or bool(m.group("pre") or m.group("plus")) != plus:
+                continue
+            spans.append(m)
+        if len(spans) != 1:
+            continue
+        m = spans[0]
+        old = m.group(0)
+        if old.strip() == tok:
+            continue
+        text = text[:m.start()] + tok + text[m.end():]
+        changes.append({"from": old.strip(), "to": tok})
+    return text, changes
+

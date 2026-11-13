@@ -284,7 +284,7 @@ def test_approve_with_every_flag_confirmed_succeeds(client):
     store.set_resume(ORIGINAL, "resume.txt")
     confirmed = {"inserted_unsupported": ["Kubernetes"],   # case-insensitive
                  "unsupported_skills": ["TERRAFORM", "extra is fine"],
-                 "new_numbers": ["5"], "inflated_claims": ["led"]}
+                 "new_numbers": ["5"], "inflated_claims": ["led", "team of (scope)"]}
     r = approve(client, key, tailored_text=FABRICATED_MORE, confirmed_flags=confirmed)
     assert r.status_code == 200, r.text
     assert len(store.list_versions()) == 1
@@ -294,7 +294,7 @@ def test_approve_with_partial_confirmation_is_rejected(client):
     key = seed_job()
     store.set_resume(ORIGINAL, "resume.txt")
     confirmed = {"inserted_unsupported": ["kubernetes"], "unsupported_skills": ["terraform"],
-                 "inflated_claims": ["led"]}   # new_numbers not confirmed
+                 "inflated_claims": ["led", "team of (scope)"]}   # new_numbers not confirmed
     r = approve(client, key, tailored_text=FABRICATED_MORE, confirmed_flags=confirmed)
     assert r.status_code == 409
     assert r.json()["unconfirmed"] == {"new_numbers": ["5"]}

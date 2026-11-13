@@ -48,6 +48,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -55,6 +56,7 @@ from typing import Any, Iterable, Optional
 from . import facts as F
 from . import llm, store
 from . import skills as SK
+from . import grounding as G
 from .grounding import check_lines, unconfirmed_line_flags
 
 log = logging.getLogger("jobcopilot.tailor_v2")
@@ -77,8 +79,7 @@ _LEAK_RE = re.compile(
     r"i'm unable|i am unable|i'm sorry|i apologi[sz]e|here is|here's|here are|"
     r"certainly[,!]|sure[,!]|of course[,!]|let me know|hope this helps|edit plan|"
     r"placeholder|lorem ipsum|\[insert)")
-_MARKUP_RE = re.compile(r"\*\*|__|`|^\s*#|^\s*[-*•]\s|\[[^\]]*\]\([^)]*\)|<[a-z/!][^>]*>|[\\{}]",
-                        re.I)
+_MARKUP_RE = G.MARKUP_RE
 _FENCE_RE = re.compile(r"<{3,}|>{3,}|`{3,}|(?i:end_untrusted_job_description|untrusted_job_description)")
 _FENCE_OPEN = "<<<UNTRUSTED_JOB_DESCRIPTION>>>"
 _FENCE_CLOSE = "<<<END_UNTRUSTED_JOB_DESCRIPTION>>>"
@@ -336,11 +337,16 @@ def build_prompt(job: dict, usable: list[F.Fact], base: str, keywords: dict) -> 
 
 # --------------------------------------------------------------------------- plan
 
-def leak_problem(text: str) -> Optional[str]:
+def leak_problem(text: str, evidence: str = "") -> Optional[str]:
+    """An LLM leak phrase, markup / LaTeX, or a URL / e-mail address that
+    `evidence` (the fact's own text) doesn't contain."""
     if _LEAK_RE.search(text or ""):
         return "LLM leak phrase"
     if _MARKUP_RE.search(text or ""):
         return "markup or LaTeX"
+    ev = (evidence or "").lower()
+    if any(link.lower() not in ev for link in G.links_in(text)):
+        return "a URL or e-mail address"
     return None
 
 
@@ -402,16 +408,24 @@ def validate_plan(raw: Any, usable: list[F.Fact], *,
             continue
         if not isinstance(text, str) or not text.strip():
             continue
-        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip()
         if text == f.text:
             continue
-        bad = leak_problem(text)
+        if G.confusable_problem(text, _evidence_text(f)):
+            keep(fid, "rephrase contained non-Latin or confusable characters")
+            continue
+        bad = leak_problem(text, _evidence_text(f))
         if bad:
             keep(fid, f"rephrase contained {bad}")
             continue
         if len(text) > max(REPHRASE_MAX_CHARS, int(len(f.text) * 1.5) + 40):
             keep(fid, "rephrase was too long")
             continue
+        text, changes = G.normalize_metrics(text, f.metrics)
+        for ch in changes:
+            plan["kept_original"].append({
+                "fact_id": fid, "normalised": True,
+                "reason": f"kept the fact's metric {ch['to']!r} (the rephrase wrote {ch['from']!r})"})
         lost = [m for m in f.metrics if m not in text]
         if lost:
             keep(fid, f"rephrase dropped or altered locked metric(s) {lost}")
@@ -525,7 +539,7 @@ def revert_ungrounded_rephrases(plan: dict, usable: list[F.Fact], base: Optional
             reverted = True
     if reverted:
         lines = apply_plan(usable, base, plan)
-    by_id = {k["fact_id"]: k["reason"] for k in plan["kept_original"]}
+    by_id = {k["fact_id"]: k["reason"] for k in plan["kept_original"] if not k.get("normalised")}
     for ln in lines:
         if ln.get("kind") == "bullet" and ln["fact_ids"][0] in by_id:
             ln["kept_original"] = by_id[ln["fact_ids"][0]]
@@ -667,7 +681,7 @@ def _ask_plan(job: dict, usable: list[F.Fact], base: str, keywords: dict,
         attempts = attempt + 1
         system = system_prompt()
         if problems:
-            system += ("\n\nA previous plan was rejected for: " + "; ".join(problems[:8])
+            system += ("\n\nA previous plan was rejected for: " + "; ".join(_model_problem(p) for p in problems[:8])
                        + ". Return a corrected plan that follows every rule.")
         try:
             raw, _meta = llm.complete_json(system, user, temperature=0.2, max_tokens=1800)
@@ -686,6 +700,13 @@ def _ask_plan(job: dict, usable: list[F.Fact], base: str, keywords: dict,
             break
         log.info("tailor_v2 attempt %d plan problems=%d", attempts, len(problems))
     return plan, problems, attempts, error
+
+
+def _model_problem(problem: str) -> str:
+    """A plan problem as told to the model on a retry: quoted model text that
+    isn't a plain fact-id slug is replaced, so a retry never echoes it."""
+    return re.sub(r"'[^']*'", lambda m: m.group(0) if re.fullmatch(r"'[a-z0-9_.-]{1,60}'", m.group(0))
+                  else "'(redacted)'", problem)
 
 
 # --------------------------------------------------------------------------- slug / files
@@ -747,7 +768,8 @@ def tailor(job_key: str, *, base: Optional[str] = None, db_path: Any = None,
 
     base_obj = bases[base]
     lines = revert_ungrounded_rephrases(plan, usable, base_obj, attested)
-    kept = [f"{k['fact_id']}: kept original: {k['reason']}" for k in plan.get("kept_original") or []]
+    kept = [f"{k['fact_id']}: kept original{' metric' if k.get('normalised') else ''}: {k['reason']}"
+            for k in plan.get("kept_original") or []]
     before = apply_plan(usable, base_obj, EMPTY_PLAN)
     diff = diff_lines(before, lines)
     printed = {s.lower() for ln in lines for s in SK.find_skills(ln["text"])}

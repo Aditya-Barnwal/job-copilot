@@ -1,12 +1,21 @@
-# Personal data + secrets: never baked into an image
+# Personal data + secrets: never baked into an image (also re-checked by tests/test_demo.py)
 .env
 .env.*
 !.env.example
 profile/
+profile
 data/
 jobs.jsonl
 discovered_companies.yaml
 .browser-profile/
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+**/*.pdf
+**/*.doc
+**/*.docx
+**/*.log
 
 # Dev noise
 .git/
@@ -16,6 +25,9 @@ discovered_companies.yaml
 **/*.pyc
 .pytest_cache/
 .DS_Store
-tests/
 docs/
 web/node_modules/
+
+# Tests are left out, except the committed fixtures the demo / fixture mode read.
+tests/*
+!tests/fixtures/

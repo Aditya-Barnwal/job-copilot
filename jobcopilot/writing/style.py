@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import re
+import unicodedata
 from typing import Any
 
 DEFAULTS: dict[str, Any] = {
@@ -149,11 +150,38 @@ def is_first_person(sentence: str) -> bool:
                      sentence or "", re.I) is not None
 
 
+# Fence tag words, however spelled: "</untrusted_job_description\n>", "< /untrusted
+# _job_description>", "＜/…＞" (NFKC maps fullwidth brackets to < >).
+_TAG_WORD_RE = re.compile(
+    r"(?i)(?:end[\W_]*)?(?:untrusted[\W_]*(?:job[\W_]*description|company[\W_]*record|question)"
+    r"|applicant[\W_]*facts)")
+_ANGLE_RE = re.compile("[<>\u2039\u203a\u00ab\u00bb\u2329\u232a\u3008\u3009\u27e8\u27e9"
+                       "\uff1c\uff1e\ufe64\ufe65]+")
+
+
+def sanitize_untrusted(text: str) -> str:
+    """NFKC, drop format (zero-width) characters, remove every fence tag word
+    (any case, any separators) and every run of angle brackets / backticks."""
+    t = unicodedata.normalize("NFKC", text or "")
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+    t = _TAG_WORD_RE.sub(" ", t)
+    t = _ANGLE_RE.sub(" ", t)
+    return t.replace("```", " ")
+
+
+def clean_field(value: Any, limit: int = 120) -> str:
+    """A short untrusted field shown outside a fence (job title, company):
+    sanitised like fenced text, whitespace collapsed, capped at `limit` chars."""
+    t = re.sub(r"\s+", " ", sanitize_untrusted(str(value or ""))).strip()
+    return t[:limit].strip()
+
+
 def fence(text: str, tag: str) -> str:
-    """Wrap untrusted text in <tag>…</tag>, removing any tag-like markers from
-    inside it so the text can't close the fence or open a new one."""
-    clean = re.sub(r"</?\s*[A-Za-z_][A-Za-z0-9_\- ]{0,40}>", " ", text or "")
-    clean = clean.replace("```", " ")
+    """Wrap untrusted text in <tag>…</tag>. Inside it: NFKC first, then every
+    fence tag word (incl. `tag`, with any spaces / slashes / newlines in it) and
+    every < > run are removed, so the text can't close the fence or open a new one."""
+    clean = sanitize_untrusted(text)
+    clean = re.sub(r"[\W_]*".join(map(re.escape, re.split(r"_+", tag))), " ", clean, flags=re.I)
     return f"<{tag}>\n{clean.strip()}\n</{tag}>"
 
 

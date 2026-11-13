@@ -4,7 +4,7 @@ PORT    ?= 8000
 TORCH_CPU = --extra-index-url https://download.pytorch.org/whl/cpu
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review answers-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status
+.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review answers-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status demo-local deploy-demo stop-demo demo-url
 
 help:  ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
@@ -73,4 +73,20 @@ schedule-uninstall:  ## remove the LaunchAgent
 schedule-status:  ## LaunchAgent installed/loaded, next run, last run
 	$(PY) scripts/schedule.py status
 
-# Coming in later phases (see PLAN.md): deploy-demo / stop-demo (Phase 3b).
+# Public demo (Phase 3b, docs/DEPLOY.md): fixture data + the fake profile.example only.
+# PROJECT=<gcp project id> (or export GOOGLE_CLOUD_PROJECT); REGION=us-central1 by default.
+PROJECT ?=
+# gcloud: $$GCLOUD, else on PATH, else ~/google-cloud-sdk/bin/gcloud (resolved by the script)
+export GCLOUD REGION SERVICE
+
+demo-local:  ## the public demo on http://127.0.0.1:8000 (fixtures, fake profile, no network/LLM)
+	JOBCOPILOT_DEMO=1 $(PY) -m uvicorn server.app:app --host 127.0.0.1 --port $(PORT)
+
+deploy-demo:  ## build + deploy the demo to Cloud Run (PROJECT=…; asks first)
+	scripts/deploy_cloudrun.sh deploy $(PROJECT)
+
+stop-demo:  ## delete the Cloud Run demo service (+ optionally its images; asks first)
+	scripts/deploy_cloudrun.sh stop $(PROJECT)
+
+demo-url:  ## print the Cloud Run demo URL
+	@scripts/deploy_cloudrun.sh url $(PROJECT)

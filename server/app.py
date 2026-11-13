@@ -9,19 +9,22 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from jobcopilot import demo  # noqa: E402 — light (stdlib only); needed before .env
+
 # Load .env before importing jobcopilot.llm (it reads the provider at import).
 # Tests set JOBCOPILOT_NO_DOTENV so real API keys never enter the test process.
-if not os.environ.get("JOBCOPILOT_NO_DOTENV"):
+# Demo mode (JOBCOPILOT_DEMO=1, the public Cloud Run instance) never reads .env.
+if not os.environ.get("JOBCOPILOT_NO_DOTENV") and not demo.enabled():
     try:
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env")
@@ -39,12 +42,17 @@ STATIC_DIR = deps.STATIC_DIR
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Logs go beside the DB, so a redirected store (tests, Docker volume)
-    # never writes into the repo's data/ directory.
-    setup_logging(store.data_dir())
-    store.init_db()
-    deps.load_company_meta(config.companies_path())
-    yield
+    with ExitStack() as stack:
+        # Demo mode: temp DB built from fixtures, fake profile, no network/LLM
+        # (jobcopilot/demo.py). Entered first so everything below uses it.
+        if demo.enabled():
+            stack.enter_context(demo.session())
+        # Logs go beside the DB, so a redirected store (tests, Docker volume)
+        # never writes into the repo's data/ directory.
+        setup_logging(store.data_dir())
+        store.init_db()
+        deps.load_company_meta(config.companies_path())
+        yield
 
 
 app = FastAPI(title="job-copilot", lifespan=lifespan)
@@ -66,6 +74,17 @@ _SECURITY_HEADERS = {
 _CSP_EXEMPT_PREFIXES = ("/docs", "/redoc")
 
 
+@app.middleware("http")
+async def demo_policy(request: Request, call_next):
+    """Demo mode only: 403 for tailoring/LLM/upload/pipeline endpoints (demo.refusal)."""
+    if demo.enabled():
+        why = demo.refusal(request.method, request.url.path)
+        if why:
+            return JSONResponse(status_code=403, content={"detail": why, "demo": True})
+    return await call_next(request)
+
+
+# Registered after demo_policy so it wraps it: refusals get the headers too.
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -96,5 +115,7 @@ if STATIC_DIR.exists():
 def root():
     index = STATIC_DIR / "index.html"
     if index.exists():
+        if demo.enabled():
+            return HTMLResponse(demo.inject_banner(index.read_text(encoding="utf-8")))
         return FileResponse(str(index))
     return {"ok": True, "message": "UI not built yet"}

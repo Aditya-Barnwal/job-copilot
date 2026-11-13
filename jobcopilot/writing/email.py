@@ -3,7 +3,8 @@
     generate_email(job, *, kind="application"|"follow_up", facts=None, answers=None,
                    company=None, today=None) -> Draft
 
-Short (≤ 120 / ≤ 90 words), a subject line that names the role, a signature
+Short (≤ 120 / ≤ 90 words), a subject line built in code from the role and
+company (the model's subject is ignored), a signature
 built from answers.yaml, the same fact-citation grounding as cover letters.
 A follow-up opens with the submitted date from the tracker (`submitted_at`)
 and warns when it is earlier than the guide's one-week wait. Never sends.
@@ -30,12 +31,13 @@ SYSTEM = (
     "You draft short job-application emails from a fixed list of applicant facts. "
     "Rules: every statement about the applicant comes from <applicant_facts> and "
     "cites its fact ids; never add a skill, number, employer, title or result the "
-    "cited facts don't state. Company statements may only use the JD or company "
-    "record. Plain and direct; no clichés ('I am writing to express', 'passionate "
+    "cited facts don't state; never write a quantity in words or add a scope claim. Each "
+    "paragraph is about exactly ONE employer or project and cites only its facts; never write "
+    "the target company or role title as the applicant's past employer or title. Company "
+    "statements may only use the JD or company record. Plain text, no markdown or links. Plain and direct; no clichés ('I am writing to express', 'passionate "
     "about', 'perfect fit'); no greeting, no sign-off, no placeholders. "
     + style.UNTRUSTED_RULE + common.ID_RULE +
-    " Return ONLY JSON: {\"paragraphs\": [{\"text\": str, \"fact_ids\": [str]}], "
-    "\"subject\": str}"
+    " Return ONLY JSON: {\"paragraphs\": [{\"text\": str, \"fact_ids\": [str]}]}"
 )
 
 TASKS = {
@@ -43,12 +45,12 @@ TASKS = {
         "TASK: an application email body of 3-5 sentences, at most {max_words} words, "
         "in 2 paragraphs: (1) the role you are applying for and the single most "
         "relevant fact; (2) one more fact tied to a JD must-have, then a one-line "
-        "close saying the résumé is attached. \"subject\" names the role."),
+        "close saying the résumé is attached."),
     "follow_up": (
         "TASK: the body of a polite follow-up on an application, at most {max_words} "
         "words, ONE paragraph of 2-3 sentences: restate interest with one relevant "
         "fact, then ask whether there is an update or anything else they need. Do "
-        "not mention the application date (it is added for you). \"subject\" may be empty."),
+        "not mention the application date (it is added for you)."),
 }
 
 
@@ -91,8 +93,8 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
     ecfg = cfg["email"][kind]
     max_words = int(ecfg["max_words"])
     rec = common.company_record(job, company)
-    title = job.get("title") or "the role"
-    company_name = job.get("company") or rec.get("name") or ""
+    title, company_name = common.role_names(job, rec)
+    title = title or "the role"
     pre_warnings: list[str] = []
     opener = ""
     if kind == "follow_up":
@@ -110,17 +112,15 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
                                     f"waiting {wait}-14 days before a follow-up.")
     user = (common.facts_block(usable, job, limit=12) + "\n\n" + common.job_block(job, rec)
             + "\n\n" + TASKS[kind].format(max_words=max_words))
-    extra = opener
 
     def build(parsed):
-        paras, subject, problems = common.parse_paragraphs(parsed)
+        paras, _subject, problems = common.parse_paragraphs(parsed)
         if problems:
             return None, problems
-        if opener:
-            paras = [{"text": opener, "fact_ids": []}] + paras
+        if opener:     # built in code from the tracker: not the model's text, not grounded
+            paras = [{"text": opener, "fact_ids": [], "fixed": True}] + paras
         built, issues = common.assemble(paras, usable, job=job, rec=rec, data=data,
-                                        max_words=max_words, extra_allowed=extra)
-        built["subject"] = subject
+                                        max_words=max_words)
         return built, issues
 
     built, issues, n = common.best_attempt(SYSTEM, user, build,
@@ -128,12 +128,12 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
     warnings = pre_warnings + list(issues)
     if built["removed"]:
         warnings.append("removed cliché sentence(s): " + ", ".join(dict.fromkeys(built["removed"])))
+    if built.get("normalised"):
+        warnings.append("normalised metric(s) to the facts' wording: " + ", ".join(built["normalised"]))
     sig = signature(data, cfg, warnings)
     name = common.sign_values(data)["name"]
-    if kind == "application":
-        subject = built["subject"]
-        if not subject or len(subject) > 80 or style.find_leaks(subject):
-            subject = f"Application: {title}" + (f" at {company_name}" if company_name else "")
+    if kind == "application":                     # subjects are built in code, never by the model
+        subject = common.application_subject(job, rec)
     else:
         subject = f"Following up: {title} application"
     if name and name not in subject:

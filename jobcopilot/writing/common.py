@@ -2,22 +2,30 @@
 fresh-conversation retries and the Draft result.
 
 Grounding (fail closed): the model returns paragraphs that cite fact ids. Each
-sentence is checked with grounding v3 `check_lines` against
-  * its paragraph's cited facts (a cited bullet brings its role/project header),
-  * `_role`: the target company name, role title and a few function words,
-  * `_jd`:   the job description + company record — ONLY for sentences that
-             aren't about the applicant (no I / my / me, and no name of one of
-             the applicant's employers / projects). A company claim may come
-             from the JD; a claim about the applicant may not.
-Applicant sentences also get the capability-claim check
-(`grounding.capability_claims`): "experience with X", "scaled … to
-production", "ownership", "showcasing Y", "this demonstrates …" need the
-claimed thing in the CITED facts (never the JD), and "At <project> … showcasing
-Y" needs Y in that project's own facts.
-A skill, number, ownership/title claim or proper noun that none of those
-supports flags the sentence; a cited id that isn't a usable (confirmed) fact
-flags it too. Any flag → status `needs_review`. Nothing is sent anywhere: the
-draft is shown to the user before use.
+sentence is checked with grounding v3 `check_lines`:
+  * A sentence may use the job description + company record (`_jd`) ONLY when
+    it names the target company or clearly refers to it (the role / the team /
+    you; it / its / they / their right after such a sentence) AND carries no
+    applicant marker: first person, the applicant's name, "the applicant /
+    candidate", an applicant employer / project name or distinctive word, an
+    agentless passive past tense ("was led end to end"), or a skill /
+    ownership claim that the paragraph's cited facts make.
+  * Every other sentence is checked against its paragraph's cited facts only
+    (a cited bullet brings its header), with the capability-claim check on.
+    When it names exactly one of the applicant's employers / projects, the
+    evidence narrows to that header and its own cited bullets (a detail can't
+    move between experiences); naming none while the cited facts span several
+    experiences flags `mixed_attribution`; naming two flags `mixed_experiences`.
+  * The target company and role title are never evidence. In an applicant
+    sentence they are allowed only as names in forward-looking spots ("the
+    <title> role at <company>", "join <company>"); "at <company>" or "as a
+    <title>" before a past-tense verb flags `role_misuse`.
+Drafts are also rejected (→ retry → needs_review) for markdown, a URL / e-mail
+address that isn't the applicant's own (answers.yaml links / signature or the
+facts), non-Latin / confusable / zero-width characters, and an evidence
+paragraph that mixes experiences. Retry prompts name only paragraph / sentence
+numbers and the kind of problem, never the rejected text. Nothing is sent
+anywhere: the draft is shown to the user before use.
 """
 from __future__ import annotations
 
@@ -45,6 +53,34 @@ _JD_LIMIT = 6000
 
 class WritingError(RuntimeError):
     """The model could not produce a usable draft (all attempts failed)."""
+
+
+class Issue(str):
+    """A problem with a draft. The string is user-facing (it may quote the
+    draft); `.model` is what a retry prompt says — paragraph / sentence numbers
+    and the kind of problem only, never the rejected text."""
+    model: str
+
+    def __new__(cls, user: str, model: Optional[str] = None) -> "Issue":
+        obj = super().__new__(cls, user)
+        obj.model = user if model is None else model
+        return obj
+
+
+# Flag key → how a retry prompt names it (no tokens from the rejected draft).
+FLAG_CLASSES = {
+    "unsupported_skills": "a skill or tool the cited facts don't state",
+    "new_numbers": "a number or quantity (digits or words) not in the cited facts",
+    "inflated_claims": "an ownership, seniority, title or scope claim the cited facts don't make",
+    "new_proper_nouns": "a name the cited facts don't contain",
+    "unsupported_claims": "an experience / capability claim or interpretation the cited facts don't state",
+    "low_similarity": "wording too far from the cited facts",
+    "unknown_facts": "a fact id that is not a confirmed fact",
+    "mixed_attribution": "facts from more than one employer/project without naming which one",
+    "mixed_experiences": "two employers/projects in one sentence",
+    "role_misuse": "the target company or role title used as the applicant's past employer or title",
+}
+EXTRA_FLAG_KEYS = ("mixed_attribution", "mixed_experiences", "role_misuse")
 
 
 @dataclass
@@ -184,9 +220,14 @@ def facts_block(usable: list, job: dict, *, limit: int = 24) -> str:
     return "<applicant_facts>\n" + "\n".join(rows) + "\n</applicant_facts>"
 
 
+def role_names(job: dict, rec: dict) -> tuple[str, str]:
+    """(title, company), sanitised like fenced text: these come from the web."""
+    return (style.clean_field(job.get("title") or ""),
+            style.clean_field(job.get("company") or rec.get("name") or ""))
+
+
 def job_block(job: dict, rec: dict) -> str:
-    title = job.get("title") or ""
-    company = job.get("company") or rec.get("name") or ""
+    title, company = role_names(job, rec)
     jd = (job.get("description_text") or "")[:_JD_LIMIT]
     must = [k for k in (job.get("required_keywords") or []) if isinstance(k, str)][:15]
     out = [f"ROLE: {title}", f"COMPANY: {company}"]
@@ -235,6 +276,7 @@ def fold(text: str) -> str:
     """ASCII-fold for checking only ("résumé" → "resume"): the checker splits
     words on non-ASCII letters, so "résumé" would otherwise read as the skill R."""
     text = re.sub(r"[\u2010-\u2015\u2212\u00ad]", "-", text or "")     # hyphens / dashes
+    text = grounding.fold_confusables(text)                    # NFKC, zero-width out, look-alikes
     text = re.sub(r"[\u2018\u2019]", "'", text).replace("\u00a0", " ")
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
@@ -251,16 +293,71 @@ def clean_ids(raw: Any) -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------------- applicant headers
+
+# Words in employer / project names that say nothing about WHICH one it is.
+_GENERIC_NAME_WORDS = frozenset("""
+inc ltd llc llp plc corp corporation co company companies pvt private limited labs lab
+technologies technology tech systems solutions software services service group holdings
+global international university college institute school academy the and of for at in
+project projects app apps platform team hackathon
+""".split())
+
+
+def _root(fid: str, by_id: dict) -> Optional[str]:
+    """The employer / project / education header a fact belongs to (None for skills)."""
+    f = by_id.get(fid)
+    if f is None or getattr(f, "kind", "") == "skill" or getattr(f, "section", "") == "skills":
+        return None
+    parent = getattr(f, "parent", "") or ""
+    return parent if parent in by_id else (None if parent else fid)
+
+
+def header_info(usable: list, *, exclude_words: str = "") -> dict[str, dict]:
+    """{header id: {"names": [full names], "words": [distinctive words]}} for the
+    applicant's employers / projects / schools. A distinctive word is a
+    capitalised name word that isn't generic ("Acme" in "Acme Widgets Inc.")
+    and isn't a word of `exclude_words` (the target company / title)."""
+    excl = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", fold(exclude_words))}
+    out: dict[str, dict] = {}
+    for f in usable:
+        if getattr(f, "kind", "") in ("bullet", "skill") or getattr(f, "section", "") == "skills":
+            continue
+        names = []
+        for a in ("name", "company", "institution"):
+            n = str(getattr(f, a, "") or "").strip()
+            if len(n) >= 3 and n not in names:
+                names.append(n)
+        if not names:
+            continue
+        words = []
+        for n in names:
+            for w in re.findall(r"[A-Za-z][A-Za-z0-9+#]*", fold(n)):
+                if (len(w) >= 3 and w[0].isupper() and w.lower() not in _GENERIC_NAME_WORDS
+                        and w.lower() not in excl and w not in words):
+                    words.append(w)
+        out[f.id] = {"names": names, "words": words}
+    return out
+
+
 def _applicant_names(usable: list) -> list[str]:
     """Names of the applicant's employers / projects / hackathons (header facts)."""
-    out: list[str] = []
-    for f in usable:
-        if getattr(f, "kind", "") == "bullet":
-            continue
-        for a in ("name", "company"):
-            n = str(getattr(f, a, "") or "").strip()
-            if len(n) >= 3 and n not in out:
-                out.append(n)
+    return [n for h in header_info(usable).values() for n in h["names"]]
+
+
+def _name_re(name: str) -> re.Pattern:
+    return re.compile(r"(?<![A-Za-z0-9])" + r"\s+".join(map(re.escape, fold(name).split()))
+                      + r"(?![A-Za-z0-9])", re.I)
+
+
+def named_headers(sentence: str, hinfo: dict[str, dict]) -> list[str]:
+    """Header ids whose full name (any case) or distinctive word (as written) the sentence uses."""
+    s = fold(sentence)
+    out = []
+    for hid, h in hinfo.items():
+        if any(_name_re(n).search(s) for n in h["names"]) or any(
+                re.search(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", s) for w in h["words"]):
+            out.append(hid)
     return out
 
 
@@ -269,47 +366,185 @@ def about_applicant(sentence: str, names: list[str]) -> bool:
     if style.is_first_person(sentence):
         return True
     s = fold(sentence)
-    return any(re.search(r"(?<![A-Za-z0-9])" + re.escape(fold(n)) + r"(?![A-Za-z0-9])", s, re.I)
-               for n in names)
+    return any(_name_re(n).search(s) for n in names)
+
+
+# --------------------------------------------------------------------------- sentence roles
+
+_APPLICANT_WORDS_RE = re.compile(r"\b(?:the|this|our|an?)\s+(?:applicant|candidate)s?\b", re.I)
+_PARTICIPLE = (r"(?:[a-z]{2,}ed|built|rebuilt|led|run|made|written|rewritten|grown|driven|taken|set|"
+               r"cut|shipped|won|done|sold|brought|begun|held|kept|sent|spent|taught|known|shown|"
+               r"given|seen|chosen|drawn|undertaken|overseen|put|split|met|won|beaten|thrown)")
+_PASSIVE_RE = re.compile(r"\b(?:was|were|had\s+been|has\s+been|have\s+been|got)\s+"
+                         r"(?:(?:also|then|later|first|successfully|fully|largely|[a-z]+ly)\s+)*"
+                         + _PARTICIPLE + r"\b(?P<rest>[^.;!?]*)", re.I)
+_EXPLICIT_REF_RE = re.compile(r"\b(?:(?:the|this|your)\s+(?:team|role|company|position|opening|product|"
+                              r"platform|job|mission|business)|you|your)\b", re.I)
+_PRONOUN_REF_RE = re.compile(r"\b(?:it|its|they|their|them)\b", re.I)
+_FORWARD_CUE_RE = re.compile(
+    r"\b(?:apply|applying|applied|application|role|position|opening|team|join|joining|contribute|"
+    r"contributing|help|helping|bring|bringing|discuss|discussing|would|could|will|can|hope|"
+    r"look\s+forward|welcome|interested|keen|eager|excited)\b|['’](?:d|ll)\b", re.I)
+_PAST_VERB_RE = re.compile(
+    r"\b(?!(?:interested|excited|based|focused|motivated|inspired|related|skilled|dedicated|"
+    r"detailed|advanced|distributed|automated|experienced|qualified|located|headquartered|"
+    r"funded|backed|listed|used|needed|required|preferred)\b)"
+    r"(?:[a-z]{3,}ed|built|rebuilt|led|ran|made|wrote|rewrote|grew|drove|took|began|cut|shipped|"
+    r"won|did|sold|brought|held|kept|sent|spent|taught|got|gave|chose|drew|oversaw|was|were|had)\b",
+    re.I)
+
+
+def _title_variants(title: str) -> list[str]:
+    out = []
+    for t in (title, re.split(r"\s*[(\[]", title)[0], re.split(r"\s+[-–|/,]\s*|,\s*", title)[0]):
+        t = t.strip(" -,|/")
+        if len(t) >= 3 and t not in out:
+            out.append(t)
+    return out
+
+
+def role_mask(sentence: str, company: str, title: str, evidence: str = "") -> tuple[str, list[str]]:
+    """(sentence for checking, role misuse found). The target title / company are
+    masked out where they are forward-looking ("the <title> role", "applying for
+    the <title>", "<company>" after apply / role / team / join / would …), so
+    they're never read as a skill, number or claim; anywhere else they stay and
+    must be grounded like any other word. "at <company>" or "as a <title>"
+    followed by a past-tense verb is role misuse — unless `evidence` (the cited
+    facts) names that company / title itself."""
+    s = fold(sentence)
+    company, title = fold(company), fold(title)
+    misuse: list[str] = []
+    for t in _title_variants(title):
+        tr = r"\s+".join(map(re.escape, t.split()))
+        m_as = re.search(r"\bas\s+(?:a|an|the)\s+" + tr + r"(?![A-Za-z0-9])", s, re.I)
+        if m_as and _PAST_VERB_RE.search(s[m_as.end():]) and not grounding._has_term(evidence, t):
+            misuse.append(f"as a {t}")
+        s = re.sub(r"(\b(?:the|this|your|a|an|for|to)\s+)" + tr
+                   + r"(?=\s+(?:role|position|opening|job|opportunity|team)\b)", r"\1", s, flags=re.I)
+        s = re.sub(r"(\b(?:apply|applying|applied|application|interest)\s+(?:for|to|in)\s+"
+                   r"(?:the\s+|this\s+|your\s+)?)" + tr + r"(?![A-Za-z0-9])", r"\1role", s, flags=re.I)
+    if company:
+        cr = r"\s+".join(map(re.escape, company.split()))
+        for m in reversed(list(re.finditer(r"(?<![A-Za-z0-9])" + cr + r"(?:['’]s)?(?![A-Za-z0-9])", s, re.I))):
+            before = s[:m.start()]
+            if _FORWARD_CUE_RE.search(before):
+                s = s[:m.start()] + "the company" + s[m.end():]
+            elif re.search(r"\b(?:at|for|with|in)\s+$", before, re.I) and \
+                    _PAST_VERB_RE.search(s[m.end():]) and not grounding._has_term(evidence, company):
+                misuse.append(f"at {company}")
+    return s, list(dict.fromkeys(misuse))
+
+
+def _applicant_marker(sentence: str, *, person: list[str], named: list[str], cited_ev: str,
+                      company: str) -> bool:
+    if style.is_first_person(sentence) or named or _APPLICANT_WORDS_RE.search(sentence):
+        return True
+    s = fold(sentence)
+    if any(re.search(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", s) for w in person):
+        return True
+    for m in _PASSIVE_RE.finditer(s):
+        agent = re.match(r"\s*(?:[^,;]*?\s)?by\s+(.*)$", m.group("rest") or "", re.I)
+        if not (agent and company and _name_re(company).match(agent.group(1).strip())):
+            return True                                        # agentless (or not the company's)
+    if cited_ev:
+        ev_sk = {c.lower() for _, _, c in grounding._skill_spans(cited_ev)}
+        if any(c.lower() in ev_sk for _, _, c in grounding._skill_spans(s)):
+            return True
+        if grounding._ownership_families(s) & grounding._ownership_families(cited_ev):
+            return True
+    return False
+
+
+def _fact_text(f) -> str:
+    return grounding._fact_evidence(f)
 
 
 def ground_paragraphs(paragraphs: list[dict], usable: list, *, job: dict, rec: dict,
-                      extra_allowed: str = "") -> dict:
+                      extra_allowed: str = "", applicant_names: Any = ()) -> dict:
+    """Grounding verdicts per sentence (see the module doc). Paragraphs marked
+    `fixed` (text built in code, e.g. a follow-up's date line) aren't checked."""
     by_id = {f.id: f for f in usable}
-    names = _applicant_names(usable)
-    company = job.get("company") or rec.get("name") or ""
-    role = " ".join([company, job.get("title") or "", _FUNCTION_WORDS, extra_allowed])
+    title, company = role_names(job, rec)
+    hinfo = header_info(usable, exclude_words=f"{company} {title}")
+    person = [w for n in (applicant_names or ()) for w in re.findall(r"[A-Za-z][A-Za-z'-]+", fold(str(n)))
+              if len(w) >= 2]
+    names = [_FUNCTION_WORDS, extra_allowed]
     fmap: dict[str, Any] = dict(by_id)
-    fmap = {k: v for k, v in fmap.items()}
-    fmap["_role"] = fold(role)
+    fmap["_role"] = ""        # no evidence: lets an uncited sentence be checked, never supports it
     fmap["_jd"] = fold("\n".join([(job.get("description_text") or "")[:_JD_LIMIT],
-                                  company_text(rec), role]))
+                                  company_text(rec), company, title]))
     lines: list[dict] = []
+    extra: list[dict] = []                       # per line: {flag key: [tokens]}
     for pi, p in enumerate(paragraphs):
+        if p.get("fixed"):
+            continue
         ids = clean_ids(p.get("fact_ids"))
         for x in list(ids):                     # a bullet brings its header
             parent = getattr(by_id.get(x), "parent", "")
             if parent and parent in by_id and parent not in ids:
                 ids.append(parent)
-        for s in style.split_sentences(p.get("text", "")):
-            mine = about_applicant(s, names)
-            ctx = ["_role"] if mine else ["_role", "_jd"]
-            lines.append({"text": fold(s), "fact_ids": ids + ctx, "paragraph": pi, "shown": s,
-                          "check_claims": mine})
+        roots = list(dict.fromkeys(r for r in (_root(x, by_id) for x in ids) if r))
+        cited_ev = fold("\n".join(_fact_text(by_id[x]) for x in ids if x in by_id))
+        prev_company = False
+        for si, s in enumerate(style.split_sentences(p.get("text", ""))):
+            # links are judged by assemble (own links only); their words aren't claims
+            fs = grounding.URL_RE.sub(" link ", fold(s))
+            named = named_headers(s, hinfo)
+            marker = _applicant_marker(s, person=person, named=named, cited_ev=cited_ev, company=company)
+            refers = bool((company and _name_re(company).search(fs)) or _EXPLICIT_REF_RE.search(fs)
+                          or (prev_company and _PRONOUN_REF_RE.search(fs)))
+            company_sentence = refers and not marker
+            prev_company = company_sentence
+            flags: dict[str, list[str]] = {}
+            if company_sentence:
+                line_ids, checked = ids + ["_role", "_jd"], fs
+            else:
+                checked, misuse = role_mask(fs, company, title, cited_ev)
+                if misuse:
+                    flags["role_misuse"] = misuse
+                line_ids = list(ids)
+                if len(named) == 1:
+                    hid = named[0]
+                    line_ids = [hid] + [x for x in ids if x != hid and _root(x, by_id) == hid]
+                elif len(named) > 1:
+                    flags["mixed_experiences"] = [" + ".join(hinfo[h]["names"][0] for h in named)]
+                elif len(roots) > 1:
+                    flags["mixed_attribution"] = [" + ".join(hinfo.get(r, {"names": [r]})["names"][0]
+                                                             for r in roots)]
+                line_ids = line_ids + ["_role"]
+            lines.append({"text": checked, "fact_ids": line_ids, "paragraph": pi, "sentence": si,
+                          "shown": s, "check_claims": not company_sentence, "names": names})
+            extra.append(flags)
     check = getattr(grounding, "check_lines", None)
     result = check(lines, fmap) if check else _fallback_check_lines(lines, fmap)
-    for v, ln in zip(result.get("lines", []), lines):
-        v["paragraph"] = ln["paragraph"]
+    result.setdefault("flags", {})
+    for k in EXTRA_FLAG_KEYS:
+        result["flags"].setdefault(k, [])
+    for v, ln, fl in zip(result.get("lines", []), lines, extra):
+        v["paragraph"], v["sentence"] = ln["paragraph"], ln["sentence"]
         v["text"] = ln["shown"]
         v["fact_ids"] = [x for x in v.get("fact_ids", []) if x not in PSEUDO_IDS]
-    result["cited_fact_ids"] = sorted({x for ln in lines for x in ln["fact_ids"]
-                                       if x in by_id})
+        for k in EXTRA_FLAG_KEYS:
+            v[k] = fl.get(k, [])
+            for t in v[k]:
+                if t not in result["flags"][k]:
+                    result["flags"][k].append(t)
+                v.setdefault("offending", [])
+                v["offending"].append(t)
+        if any(fl.values()):
+            v["supported"] = False
+    result["unsupported_lines"] = [v["index"] for v in result.get("lines", []) if not v.get("supported")]
+    result["clean"] = not result["unsupported_lines"]
+    result["cited_fact_ids"] = sorted({x for ln in lines for x in ln["fact_ids"] if x in by_id})
     result["engine"] = "v3" if check else "v2-fallback"
     return result
 
 
 def parse_paragraphs(parsed: Any) -> tuple[list[dict], str, list[str]]:
-    """(paragraphs, subject, problems) from {paragraphs: [{text, fact_ids}], subject}."""
+    """(paragraphs, subject, problems) from {paragraphs: [{text, fact_ids}]}.
+    Text is NFKC-normalised (fullwidth digits → ASCII); format characters are
+    kept so `assemble` can reject them. The model's subject is returned for
+    compatibility only — subjects are built in code."""
     if not isinstance(parsed, dict):
         return [], "", ["model reply is not a JSON object"]
     raw = parsed.get("paragraphs")
@@ -321,21 +556,31 @@ def parse_paragraphs(parsed: Any) -> tuple[list[dict], str, list[str]]:
             p = {"text": p, "fact_ids": []}
         if not isinstance(p, dict):
             continue
-        text = re.sub(r"\s+", " ", ascii_hyphens(str(p.get("text") or ""))).strip()
+        text = unicodedata.normalize("NFKC", str(p.get("text") or ""))
+        text = re.sub(r"\s+", " ", ascii_hyphens(text)).strip()
         if text:
             paras.append({"text": text, "fact_ids": clean_ids(p.get("fact_ids"))})
     subject = re.sub(r"\s+", " ", str(parsed.get("subject") or "")).strip()
     return paras, subject, ([] if paras else ["model reply has no paragraph text"])
 
 
+def application_subject(job: dict, rec: dict) -> str:
+    """The subject line, built in code from the (sanitised) title and company."""
+    title, company = role_names(job, rec)
+    title = title or "the role"
+    return f"Application: {title} — {company}" if company else f"Application: {title}"
+
+
 # --------------------------------------------------------------------------- attempts
 
 def retry_note(issues: list[str]) -> str:
     """What a retry is told about the previous draft: its problems only, never
-    its text (each attempt is still a fresh single-turn conversation)."""
+    its text (each attempt is still a fresh single-turn conversation). An Issue
+    contributes its model-facing form (numbers + kind of problem)."""
     if not issues:
         return ""
-    return ("\n\nA previous draft was rejected for: " + "; ".join(i[:300] for i in issues[:6])
+    told = list(dict.fromkeys(str(getattr(i, "model", i))[:300] for i in issues))
+    return ("\n\nA previous draft was rejected for: " + "; ".join(told[:8])
             + ". Write a new draft that fixes every one of these and follows every rule.")
 
 
@@ -373,15 +618,65 @@ def best_attempt(system: str, user: str, build: Callable[[Any], tuple[Any, list[
     return best[0], best[1], n
 
 
+def _own_links(data: dict, usable: list) -> set[str]:
+    """URLs / e-mail addresses the applicant's own data contains (answers.yaml
+    personal links + e-mail + sign-off, and the confirmed facts)."""
+    vals = sign_values(data)
+    src = [vals.get(k, "") for k in ("email", "linkedin", "github", "portfolio")]
+    src.append(str(((data.get("writing") or {}).get("signoff")) or ""))
+    src += [_fact_text(f) for f in usable]
+    own = set()
+    for t in src:
+        own |= {x.lower().rstrip("/") for x in grounding.links_in(t)}
+        if t and "@" not in t and re.match(r"https?://", t.strip()):
+            own.add(t.strip().lower().rstrip("/"))
+    return own
+
+
+def _sentence_issues(g: dict) -> list[Issue]:
+    out: list[Issue] = []
+    bad = [v for v in g.get("lines", []) if not v.get("supported")]
+    if not bad:
+        return out
+    tokens = [t for v in bad for t in v.get("offending", [])]
+    classes = []
+    for v in bad:
+        kinds = [FLAG_CLASSES.get(k, k) for k in list(grounding.LINE_FLAG_KEYS) + list(EXTRA_FLAG_KEYS)
+                 if v.get(k)]
+        classes.append(f"paragraph {v.get('paragraph', 0) + 1} sentence {v.get('sentence', 0) + 1}: "
+                       + ", ".join(kinds or ["not supported by its cited facts"]))
+    out.append(Issue("ungrounded: " + ", ".join(dict.fromkeys(tokens)),
+                     model="ungrounded sentences (remove or rewrite each one strictly from its "
+                           "paragraph's cited facts)"))
+    for v, cls in zip(bad, classes):
+        out.append(Issue(f'unsupported sentence: "{v.get("text")}" '
+                         f'({", ".join(dict.fromkeys(v.get("offending", [])))})', model=cls))
+    return out
+
+
 def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data: dict,
              max_words: int, extra_allowed: str = "") -> tuple[dict, list[str]]:
-    """Clichés out, then length / leak / grounding / never_mention checks.
-    Returns ({paragraphs, grounding, words, removed}, issues)."""
-    paras, removed = style.remove_cliche_sentences(paragraphs)
+    """Clichés out, metrics normalised, then length / leak / markup / link /
+    character / mixed-experience / grounding / never_mention checks.
+    Returns ({paragraphs, grounding, words, removed, normalised}, issues)."""
+    fixed = [p for p in paragraphs if p.get("fixed")]
+    paras, removed = style.remove_cliche_sentences([p for p in paragraphs if not p.get("fixed")])
+    paras = fixed + paras if fixed and paragraphs and paragraphs[0].get("fixed") else paras + fixed
     issues: list[str] = []
-    if not paras:
-        return {"paragraphs": [], "grounding": {"clean": False}, "words": 0, "removed": removed}, \
-            ["nothing left after removing clichés"]
+    empty = {"paragraphs": [], "grounding": {"clean": False}, "words": 0, "removed": removed,
+             "normalised": []}
+    if not [p for p in paras if not p.get("fixed")]:
+        return empty, ["nothing left after removing clichés"]
+    by_id = {f.id: f for f in usable}
+    normalised: list[str] = []
+    for p in paras:
+        if p.get("fixed"):
+            continue
+        ids = [x for x in p.get("fact_ids") or [] if x in by_id]
+        metrics = [m for x in ids for m in (getattr(by_id[x], "metrics", None) or [])]
+        if metrics:
+            p["text"], changes = grounding.normalize_metrics(p["text"], metrics)
+            normalised += [f"'{c['from']}' -> '{c['to']}'" for c in changes]
     body = "\n\n".join(p["text"] for p in paras)
     words = style.word_count(body)
     if words > max_words:
@@ -389,47 +684,94 @@ def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data
                       f"limit: cut at least {words - max_words} words")
     leaks = style.find_leaks(body)
     if leaks:
-        issues.append("leaked/template text: " + ", ".join(sorted(set(leaks))[:5]))
+        issues.append(Issue("leaked/template text: " + ", ".join(sorted(set(leaks))[:5]),
+                            model="leaked or template text (an assistant phrase, placeholder, "
+                                  "bracketed text or a fact id)"))
+    own = _own_links(data, usable)
+    for pi, p in enumerate(paras):
+        if p.get("fixed"):
+            continue
+        n = pi + 1
+        if grounding.MARKUP_RE.search(p["text"]):
+            issues.append(Issue(f"paragraph {n} contains markdown or markup",
+                                model=f"paragraph {n} contains markdown or markup (plain text only)"))
+        links = [x for x in grounding.links_in(p["text"]) if x.lower().rstrip("/") not in own]
+        if links:
+            issues.append(Issue(f"paragraph {n} contains a URL or e-mail address: " + ", ".join(links[:3]),
+                                model=f"paragraph {n} contains a URL or e-mail address (never include one)"))
+        ev = "\n".join(_fact_text(by_id[x]) for x in p.get("fact_ids") or [] if x in by_id)
+        if grounding.confusable_problem(p["text"], ev + "\n" + " ".join(role_names(job, rec))):
+            issues.append(Issue(f"paragraph {n} contains non-Latin or confusable characters",
+                                model=f"paragraph {n} contains non-Latin, look-alike or invisible "
+                                      "characters (plain ASCII only)"))
+        roots = list(dict.fromkeys(r for r in (_root(x, by_id) for x in p.get("fact_ids") or [])
+                                   if r))
+        if len(roots) > 1:
+            hinfo = header_info(usable)
+            issues.append(Issue(f"paragraph {n} mixes experiences: "
+                                + " + ".join(hinfo.get(r, {"names": [r]})["names"][0] for r in roots),
+                                model=f"paragraph {n} mixes experiences: each evidence paragraph must be "
+                                      "about exactly ONE employer or project and cite only its facts"))
     never = [t for t in ((data.get("writing") or {}).get("never_mention") or [])
              if isinstance(t, str) and t.strip() and grounding._has_term(body, t)]
     if never:
-        issues.append("mentions a never_mention item: " + ", ".join(never))
-    g = ground_paragraphs(paras, usable, job=job, rec=rec, extra_allowed=extra_allowed)
+        issues.append(Issue("mentions a never_mention item: " + ", ".join(never),
+                            model="mentions an item from the applicant's never-mention list"))
+    vals = sign_values(data)
+    person = [vals["name"], vals["first_name"],
+              str(((data.get("personal") or {}).get("last_name")) or "")]
+    g = ground_paragraphs(paras, usable, job=job, rec=rec, extra_allowed=extra_allowed,
+                          applicant_names=[x for x in person if x])
     if not g.get("clean"):
-        bad = [t for v in g.get("lines", []) if not v.get("supported") for t in v.get("offending", [])]
-        issues.append("ungrounded: " + ", ".join(dict.fromkeys(bad)))
-        for v in g.get("lines", []):
-            if not v.get("supported"):
-                issues.append(f'unsupported sentence: "{v.get("text")}" '
-                              f'({", ".join(dict.fromkeys(v.get("offending", [])))})')
-    return {"paragraphs": paras, "grounding": g, "words": words, "removed": removed}, issues
+        issues += _sentence_issues(g)
+    return {"paragraphs": paras, "grounding": g, "words": words, "removed": removed,
+            "normalised": normalised}, issues
 
 
 # --------------------------------------------------------------------------- length
+
+_ANAPHOR_RE = re.compile(r"^[\"'(]?\s*(?:it|this|that|these|those|they|there|also|then|the\s+same|both|which)\b",
+                         re.I)
+
+
+def _leans_back(sentence: str) -> bool:
+    """Starts with a word that points at the sentence before it ("It handled …")."""
+    return bool(_ANAPHOR_RE.search(sentence)) or "also" in [
+        w.lower() for w in re.findall(r"[A-Za-z']+", sentence)[:3]]
+
 
 def trim_to_limit(paragraphs: list[dict], grounding_result: dict, usable: list,
                   max_words: int) -> tuple[list[dict], list[str]]:
     """Deterministic last resort for an over-long body: delete WHOLE sentences,
     least-evidenced first, until the body fits. Order: sentences grounding
-    flagged; then extra (non-first) sentences of the opening / closing; then
-    evidence sentences with the lowest overlap with their cited facts. The
-    letter's first sentence and a paragraph's last remaining sentence are never
-    removed, and no sentence is ever cut mid-way. Returns (paragraphs, removed
-    sentences); the caller re-checks the result."""
+    flagged; then extra sentences of the opening / closing; then evidence
+    sentences with the lowest overlap with their cited facts. Never removed:
+    a paragraph's first sentence; a sentence whose next kept sentence leans on
+    it ("It …", "This …", "also" in its first 3 words, …); the only sentence
+    naming the paragraph's employer / project. No sentence is ever cut mid-way.
+    Returns (paragraphs, removed sentences); the body may still be over the
+    limit — the caller re-checks it (→ needs_review)."""
     by_id = {f.id: f for f in usable}
+    hinfo = header_info(usable)
     verdict = {(v.get("paragraph"), v.get("text")): v for v in grounding_result.get("lines", [])}
-    sents = [[s for s in style.split_sentences(p.get("text", ""))] for p in paragraphs]
+    sents = [style.split_sentences(p.get("text", "")) for p in paragraphs]
     n = len(paragraphs)
     cands = []
+    naming: dict[tuple[int, int], set[str]] = {}
     for pi, ss in enumerate(sents):
-        ev = "\n".join(getattr(by_id.get(x), "text", "") for x in paragraphs[pi].get("fact_ids") or [])
+        if paragraphs[pi].get("fixed"):
+            continue
+        ids = paragraphs[pi].get("fact_ids") or []
+        roots = {r for r in (_root(x, by_id) for x in ids) if r}
+        ev = "\n".join(getattr(by_id.get(x), "text", "") for x in ids)
         edge = pi == 0 or (pi == n - 1 and n >= 3)
         for si, s in enumerate(ss):
-            if pi == 0 and si == 0:
+            naming[(pi, si)] = set(named_headers(s, {h: hinfo[h] for h in roots if h in hinfo}))
+            if si == 0:
                 continue
             v = verdict.get((pi, s)) or {}
             flagged = v.get("supported") is False
-            tier = 0 if flagged else (1 if edge and si > 0 else (2 if not edge else 3))
+            tier = 0 if flagged else (1 if edge else 2)
             overlap = grounding.token_overlap(s, ev) if ev else 0.0
             cands.append((tier, overlap, -style.word_count(s), pi, si))
     cands.sort()
@@ -440,14 +782,29 @@ def trim_to_limit(paragraphs: list[dict], grounding_result: dict, usable: list,
         return sum(style.word_count(s) for pi, ss in enumerate(sents)
                    for si, s in enumerate(ss) if (pi, si) not in gone)
 
-    for tier, _ov, _w, pi, si in cands:
-        if body_words() <= max_words:
-            break
-        left = [j for j in range(len(sents[pi])) if (pi, j) not in gone]
-        if left == [si]:
-            continue                                   # keep every paragraph
-        gone.add((pi, si))
-        removed.append(sents[pi][si])
+    def removable(pi: int, si: int) -> bool:
+        nxt = next((j for j in range(si + 1, len(sents[pi])) if (pi, j) not in gone), None)
+        if nxt is not None and _leans_back(sents[pi][nxt]):
+            return False
+        for h in naming.get((pi, si), ()):
+            others = [j for j in range(len(sents[pi])) if j != si and (pi, j) not in gone
+                      and h in naming.get((pi, j), ())]
+            if not others:
+                return False
+        return True
+
+    progress = True
+    while progress and body_words() > max_words:
+        progress = False
+        for _tier, _ov, _w, pi, si in cands:
+            if body_words() <= max_words:
+                break
+            if (pi, si) in gone or not removable(pi, si):
+                continue
+            gone.add((pi, si))
+            removed.append(sents[pi][si])
+            progress = True
+            break                                  # re-check every rule after each removal
     out = []
     for pi, ss in enumerate(sents):
         kept = [s for si, s in enumerate(ss) if (pi, si) not in gone]

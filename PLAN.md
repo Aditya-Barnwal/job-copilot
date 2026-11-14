@@ -65,7 +65,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - **Cost:** a `web/` build step, kept out of the Python path.
 - **D2. Scheduler: launchd, not APScheduler.**
   - A `StartCalendarInterval` LaunchAgent runs `python -m jobcopilot.daily` even when the server isn't open. If the Mac slept through the slot, it fires on wake.
-  - **Default start is 19:00 IST**, so tailoring and fill-planning (20–40 min on a local model) are done when you open the app at 20:00. Configurable in `config/schedule.yaml`.
+  - **It runs in the evening**, early enough that tailoring and fill-planning are finished before the owner sits down to review. The time is set in `config/schedule.yaml`.
   - The app shows the run log and has a "Run now" button.
   - A second 2-hourly interval polls only short RSS feeds (Jobspresso).
 - **D3. "Pre-filled" means a fill plan at night and the live fill on click.**
@@ -104,7 +104,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - Himalayas jobs are applied to through its `applicationLink`, and expired jobs are purged.
   - RSS sources store minimal fields plus the link.
   - The employer's own ATS URL is preferred only when we found the job there independently.
-- **D12. Bangalore Startup Map: refreshed once a day in the 19:00 run** (robots.txt allows it and the site has no terms page).
+- **D12. Bangalore Startup Map: refreshed once a day in the nightly run** (robots.txt allows it and the site has no terms page).
   - One conditional GET of the homepage payload: companies, stage, sector, website, hiring map.
   - Company pages are fetched **only for new or changed hiring companies**, at ≤ 1 request per 5 s, with an ETag cache.
   - `/api/` is never called, and their role feed is never mirrored; jobs come from the ATS APIs.
@@ -120,7 +120,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 
 ## 4. Phases
 
-☐ todo · ◐ in progress · ☑ done. Every phase ends the same way: tests green → app runs → commit on `v2` → this file updated → a ≤10-line summary to you.
+☐ todo · ◐ in progress · ☑ done. Every phase ends the same way: tests green → app runs → commit on `v2` → this file updated → a short summary.
 
 ### Phase 0: Foundations & fixes ☑
 - ☐ Branch `v2`.

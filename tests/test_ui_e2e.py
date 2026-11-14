@@ -249,3 +249,36 @@ def test_keyboard_only_navigation(served, page):
     assert page.evaluate("document.activeElement.textContent").strip() == "Save to answers bank"
     page.keyboard.press("Enter")
     page.get_by_text(re.compile(r"Saved in your answers bank")).wait_for()
+
+
+def test_hide_then_unhide_from_hidden_by_you(served, page):
+    base = served["base"]
+    page.goto(base + "/today")
+    page.get_by_role("heading", name="Today's shortlist").wait_for()
+    cards = page.locator("article[id^='job-']")
+    cards.nth(3).wait_for()
+    # Not interested + Undo in the toast
+    undo_key = cards.nth(3).get_attribute("id")[4:]
+    cards.nth(3).get_by_role("button", name=re.compile("^Not interested")).click()
+    page.get_by_role("button", name="Undo").click()
+    page.get_by_text("Undone.").wait_for()
+    assert store.get_job(undo_key)["status"] == "new"
+    # hide one for real
+    card = cards.nth(1)
+    key = card.get_attribute("id")[4:]
+    title = card.locator("h3").inner_text()
+    card.get_by_role("button", name=re.compile("^Not interested")).click()
+    page.get_by_text(re.compile("Find it under Hidden roles")).wait_for()
+    page.locator(f'article[id="job-{key}"]').wait_for(state="detached")     # off today's list
+    assert store.get_job(key)["status"] == "not_interested"
+
+    page.get_by_role("link", name="Hidden roles").first.click()
+    page.get_by_role("heading", name="Hidden roles", level=1).wait_for()
+    page.get_by_role("tab", name=re.compile("^Hidden by you")).click()
+    row = page.locator(f'li[id="hidden-{key}"]')
+    row.wait_for()
+    assert title in row.inner_text() and "Hidden" in row.inner_text()
+    row.get_by_role("button", name=re.compile("^Unhide")).click()
+    row.wait_for(state="detached")
+    page.get_by_text(re.compile("is back")).wait_for()
+    assert store.canonical_status(store.get_job(key)["status"]) == "found"

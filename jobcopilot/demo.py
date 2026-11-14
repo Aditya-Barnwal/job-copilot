@@ -396,6 +396,7 @@ def session(*, build: bool = True, day: Optional[str] = None) -> Iterator[DemoSt
 # Writes the demo allows (all land in the ephemeral demo DB).
 _WRITE_ALLOW = (
     re.compile(r"^/api/jobs/[^/]+/status$"),   # tracker status changes
+    re.compile(r"^/api/jobs/[^/]+/unhide$"),   # undo "not interested" (a status change too)
     re.compile(r"^/api/meta-kv$"),             # UI preferences
     re.compile(r"^/api/user-yoe$"),
 )

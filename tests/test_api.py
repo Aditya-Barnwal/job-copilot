@@ -854,6 +854,7 @@ EXPECTED_ROUTES.update({
     ("POST", "/api/answers/save"), ("GET", "/api/facts"), ("POST", "/api/facts/{fact_id}/confirm"),
     ("GET", "/api/resumes"), ("GET", "/api/resumes/bases/{name}/source"),
     ("GET", "/api/tracker/export.csv"), ("GET", "/api/portals"), ("POST", "/api/portals/open"),
+    ("GET", "/api/hidden"), ("POST", "/api/jobs/{key}/unhide"),
 })
 EXPECTED_ROUTES.update({
     ("POST", "/api/jobs/{key}/autofill"), ("GET", "/api/autofill/sessions/{session_id}"),

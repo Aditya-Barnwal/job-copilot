@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BellRing, CalendarClock, Columns3, Download, Hourglass, Send } from "lucide-react";
 import { api } from "../lib/api";
 import { STATUS_LABEL, fmtDate, plural } from "../lib/format";
-import { useTitle } from "../lib/router";
+import { Link, useTitle } from "../lib/router";
 import type { JobCard, TrackerResponse } from "../lib/types";
 import { openReview, useStatusChange } from "../components/JobCard";
 import { Badge, Button, EmptyState, ErrorState, LinkButton, PageHeader, Skeleton, cx } from "../components/ui";
@@ -158,7 +158,12 @@ export function Tracker() {
               );
             })}
           </div>
-          {hidden > 0 && <p className="mt-2 text-[13px] text-muted">{plural(hidden, "role")} marked not interested (hidden from the board).</p>}
+          {hidden > 0 && (
+            <p className="mt-2 text-[13px] text-muted">
+              {plural(hidden, "role")} marked not interested —{" "}
+              <Link to="/hidden?view=mine" className="text-accent underline underline-offset-2">see or unhide them</Link>.
+            </p>
+          )}
         </>
       )}
     </div>

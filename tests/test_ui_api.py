@@ -424,3 +424,34 @@ def test_v1_status_names_are_migrated(tmp_path):
                    "new": "new", "rejected": "rejected"}
     hist = {h["status"] for k in keys.values() for h in store.status_history(k, db)}
     assert not hist & {"interested", "ready", "applied"}
+
+
+# --------------------------------------------------------------------------- hidden by you
+
+def test_hidden_by_you_lists_and_unhide_restores_the_previous_status(client):
+    k1 = seed(ext="1")
+    now = time.time()
+    store.set_status(k1, "submitted", at=now - 5 * 86400)
+    store.set_status(k1, "not_interested", at=now - 86400)
+    k2 = seed(ext="2")
+    store.set_status(k2, "not_interested", at=now - 3600)       # hidden straight from the queue
+    seed(ext="3")
+    d = client.get("/api/hidden").json()
+    assert [i["key"] for i in d["items"]] == [k2, k1] and d["total"] == 2
+    one = next(i for i in d["items"] if i["key"] == k1)
+    assert one["previous_status"] == "submitted" and abs(one["hidden_at"] - (now - 86400)) < 1
+    assert next(i for i in d["items"] if i["key"] == k2)["previous_status"] == "found"   # fallback
+    r = client.post(f"/api/jobs/{k1}/unhide")
+    assert r.json() == {"ok": True, "status": "submitted"} and store.get_job(k1)["status"] == "submitted"
+    assert client.post(f"/api/jobs/{k2}/unhide").json()["status"] == "found"
+    assert client.get("/api/hidden").json()["items"] == []
+    assert client.post(f"/api/jobs/{k1}/unhide").status_code == 409
+    assert client.post("/api/jobs/nope/unhide").status_code == 404
+    hist = store.status_history(k1)
+    assert hist[-1]["status"] == "submitted" and hist[-1]["note"] == "unhidden"
+
+
+def test_unhide_is_allowed_in_demo_like_other_status_changes():
+    from jobcopilot import demo
+    assert demo.refusal("POST", "/api/jobs/abc/unhide") is None
+    assert demo.refusal("POST", "/api/jobs/abc/unhide/x") is not None

@@ -1,14 +1,14 @@
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, X } from "lucide-react";
-import { api, enc } from "../../lib/api";
-import { pushOverlay } from "../../lib/app";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronUp, EyeOff, Undo2, X } from "lucide-react";
+import { api, enc, post } from "../../lib/api";
+import { pushOverlay, useToast } from "../../lib/app";
 import { STATUS_LABEL, workplace } from "../../lib/format";
 import { setParams, useLocation } from "../../lib/router";
 import type { ArtifactSummary, JobCard, JobDetail } from "../../lib/types";
-import { currentListKeys, PostingLink, TierBadge, Via } from "../../components/JobCard";
+import { currentListKeys, hide, PostingLink, TierBadge, useStatusChange, Via } from "../../components/JobCard";
 import { trapTab } from "../../components/Shell";
-import { Badge, ErrorState, IconButton, Kbd, ScoreRing, Segmented, Skeleton } from "../../components/ui";
+import { Badge, Button, ErrorState, IconButton, Kbd, ScoreRing, Segmented, Skeleton } from "../../components/ui";
 import { ResumeTab } from "./ResumeTab";
 import { CoverLetterTab } from "./CoverLetterTab";
 import { AnswersTab } from "./AnswersTab";
@@ -44,6 +44,9 @@ function Drawer({ jobKey, tab }: { jobKey: string; tab: Tab }) {
   const panel = useRef<HTMLDivElement>(null);
   const job = useJob(jobKey);
   const fit = useQuery({ queryKey: ["fit", jobKey], queryFn: () => api<FitInfo>(`/api/jobs/${enc(jobKey)}/fit`), retry: false });
+  const qc = useQueryClient();
+  const toast = useToast();
+  const change = useStatusChange();
   const close = () => setParams({ job: null, tab: null });
   const go = (d: number) => {
     const keys = currentListKeys();
@@ -120,6 +123,16 @@ function Drawer({ jobKey, tab }: { jobKey: string; tab: Tab }) {
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {j && (j.status === "not_interested" ? (
+                <Button size="sm" variant="ghost" icon={<Undo2 className="size-3.5" />}
+                  onClick={() => post(`/api/jobs/${enc(j.key)}/unhide`).then(() => { qc.invalidateQueries(); toast.notify("Back on your list."); }, toast.error)}>
+                  Unhide
+                </Button>
+              ) : (
+                <Button size="sm" variant="ghost" icon={<EyeOff className="size-3.5" />} onClick={() => hide(j, change)}>
+                  Not interested
+                </Button>
+              ))}
               {j && <PostingLink job={{ apply_url: j.apply_url, url: j.url }} label="Open posting" />}
               <IconButton label="Previous job (k)" disabled={idx <= 0} onClick={() => go(-1)}><ChevronUp className="size-4" /></IconButton>
               <IconButton label="Next job (j)" disabled={idx < 0 || idx >= keys.length - 1} onClick={() => go(1)}><ChevronDown className="size-4" /></IconButton>

@@ -6,7 +6,7 @@ import { useDemo, useHotkeys, useOverlayOpen, useToast } from "../lib/app";
 import { STATUS_LABEL, TIER_LABEL, ageText, sourceName, tzText, workplace, yoeText } from "../lib/format";
 import { setParams } from "../lib/router";
 import type { JobCard as Job } from "../lib/types";
-import { Badge, Button, IconButton, ScoreRing, cx } from "./ui";
+import { Badge, Button, ScoreRing, cx } from "./ui";
 
 // The ordered keys of the list on screen, so the review drawer's j/k can step through it.
 let listKeys: string[] = [];
@@ -41,6 +41,12 @@ export function useStatusChange() {
     },
     onError: (e) => toast.error(e),
   });
+}
+
+/** "Not interested": hide a job, with Undo in the toast. */
+export function hide(job: { key: string; title: string | null; status: string }, change: ReturnType<typeof useStatusChange>) {
+  change.mutate({ key: job.key, status: "not_interested", prev: job.status,
+    label: `Hidden “${job.title || "this role"}”. Find it under Hidden roles › Hidden by you.` });
 }
 
 export function PostingLink({ job, size = "sm", label = "Posting" }: { job: Pick<Job, "apply_url" | "url">; size?: "sm" | "md"; label?: string }) {
@@ -130,6 +136,8 @@ export function Skills({ matched, missing, max = 8 }: { matched: string[]; missi
 export function JobCard({ job, selected, onSelect, index, excluded = false, compact = false }:
   { job: Job; selected?: boolean; onSelect?: () => void; index?: number; excluded?: boolean; compact?: boolean }) {
   const change = useStatusChange();
+  const qc = useQueryClient();
+  const toast = useToast();
   const ref = useRef<HTMLElement>(null);
   const hidden = job.tracker_status === "not_interested";
   const open = () => openReview(job.key);
@@ -183,19 +191,19 @@ export function JobCard({ job, selected, onSelect, index, excluded = false, comp
             </ul>
           )}
         </div>
-        <div className="flex shrink-0 flex-col items-end justify-between gap-3">
-          <div className="flex items-center gap-1">
-            {!excluded && (hidden ? (
-              <IconButton label="Show again" onClick={() => change.mutate({ key: job.key, status: "found", prev: job.status })}>
-                <Undo2 className="size-4" />
-              </IconButton>
-            ) : (
-              <IconButton label="Hide this role" onClick={() => change.mutate({ key: job.key, status: "not_interested", prev: job.status, label: `Hidden ${job.title}.` })}>
-                <EyeOff className="size-4" />
-              </IconButton>
-            ))}
-          </div>
+        <div className="flex shrink-0 flex-col items-end justify-end gap-3">
           <div className="flex items-center gap-2">
+            {!excluded && (hidden ? (
+              <Button size="sm" variant="ghost" icon={<Undo2 className="size-3.5" />}
+                onClick={() => post(`/api/jobs/${enc(job.key)}/unhide`).then(() => qc.invalidateQueries(), toast.error)}>
+                Unhide
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" icon={<EyeOff className="size-3.5" />} aria-label={`Not interested: hide ${job.title}`}
+                title="Not interested — hide this role (x)" onClick={() => hide(job, change)}>
+                <span className="hidden sm:inline">Not interested</span>
+              </Button>
+            ))}
             <PostingLink job={job} />
             {!excluded && <Button size="sm" variant="primary" onClick={open}>Review</Button>}
           </div>
@@ -236,7 +244,7 @@ export function useJobListNav(jobs: Job[]) {
     },
     x: () => {
       const j = jobs[sel];
-      if (j && j.tracker_status !== "not_interested") change.mutate({ key: j.key, status: "not_interested", prev: j.status, label: `Hidden ${j.title}.` });
+      if (j && j.tracker_status !== "not_interested") hide(j, change);
     },
   }, !overlay && jobs.length > 0);
   return { sel, setSel };

@@ -303,6 +303,51 @@ def base_source(name: str):
     raise HTTPException(status_code=404, detail="no template for this base")
 
 
+# --------------------------------------------------------------------------- hidden by you
+
+def _hidden_info(key: str) -> tuple[Optional[float], str]:
+    """(when you hid it, the status it had before) from status_history; the
+    status falls back to 'found' when the history has nothing earlier."""
+    hist = store.status_history(key)
+    idx = max((i for i, h in enumerate(hist) if store.canonical_status(h["status"]) == "not_interested"),
+              default=None)
+    if idx is None:
+        return None, "found"
+    prev = next((h["status"] for h in reversed(hist[:idx])
+                 if store.canonical_status(h["status"]) != "not_interested"), None)
+    return hist[idx]["at"], prev or "found"
+
+
+@router.get("/api/hidden")
+def hidden_by_you(limit: int = 500):
+    """Jobs you marked not interested, newest first, with when and what to restore."""
+    with store.connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            jq._SELECT + " WHERE j.status = 'not_interested' "
+            "ORDER BY COALESCE(j.status_changed_at, j.last_seen) DESC LIMIT ?",
+            (max(1, min(int(limit), 2000)),)).fetchall()]
+    items = []
+    for r in rows:
+        card = jq.summarize_job(r)
+        at, prev = _hidden_info(r["key"])
+        card.update(hidden_at=at or r.get("status_changed_at"), previous_status=prev)
+        items.append(card)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/api/jobs/{key}/unhide")
+def unhide(key: str):
+    """Put a job you hid back to the status it had before (history), else 'found'."""
+    job = store.get_job(key)
+    if not job:
+        raise HTTPException(status_code=404, detail="not found")
+    if store.canonical_status(job.get("status")) != "not_interested":
+        raise HTTPException(status_code=409, detail="this job isn't hidden")
+    _at, prev = _hidden_info(key)
+    store.set_status(key, prev, source="user", note="unhidden")
+    return {"ok": True, "status": prev}
+
+
 # --------------------------------------------------------------------------- tracker CSV
 
 TRACKER_CSV_COLUMNS = ["company", "title", "status", "status_changed", "submitted", "days_in_status",

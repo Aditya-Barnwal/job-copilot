@@ -1,4 +1,4 @@
-"""Polite HTTP client shared by every connector (plan decision D7).
+"""Polite HTTP client shared by every connector (docs/DESIGN.md §3).
 
 Politeness only holds if it can't be skipped, so every network call a
 connector makes goes through `PoliteClient`, which:
@@ -84,7 +84,7 @@ log = logging.getLogger("jobcopilot.http")
 RECORD_ENV = "JOBCOPILOT_RECORD_DIR"
 DEFAULT_USER_AGENT: str = DEFAULTS["sources"]["http"]["user_agent"]
 # Always refused, whatever config says: config can add hosts, never remove these
-# (non-negotiable 3, D10; docs/SOURCES.md). Pinned here as well as in config
+# (docs/DESIGN.md §3 and §17; docs/SOURCES.md). Pinned here as well as in config
 # DEFAULTS so the floor can't disappear with a config edit.
 BUILTIN_DENIED_HOSTS: tuple[str, ...] = tuple(dict.fromkeys((
     "workatastartup.com", "ycombinator.com", "linkedin.com", "naukri.com",
@@ -1263,7 +1263,7 @@ class PoliteClient:
     def _bucket(self, host: str) -> _BucketChain:
         """The host's own bucket (one per host name, whatever the scheme or port)
         chained to its platform bucket, so every tenant of a platform shares one
-        aggregate limit (D7)."""
+        aggregate limit (docs/DESIGN.md §3)."""
         plat = self.platform_for(host)
         with self._lock:
             bucket = self._buckets.get(host)

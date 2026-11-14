@@ -561,7 +561,7 @@ def check_grounding(original_resume: str,
 
 
 # =========================================================================== v3
-# Grounding v3 (Phase 3, PLAN D4): structural, per line. Every output line of a
+# Grounding v3 (Phase 3, docs/DESIGN.md §9): structural, per line. Every output line of a
 # tailored résumé cites the fact ids it came from, and each line is checked
 # against the text of THOSE facts only (plus keywords the user attested), not
 # against the whole résumé. A line is supported only when every tech term,

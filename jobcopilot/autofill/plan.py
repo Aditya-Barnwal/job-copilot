@@ -13,6 +13,7 @@ UI can show it; the executor only ever types values with needs_user False
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Optional
 
@@ -116,4 +117,27 @@ class Outcome:
         return cls(**_known(cls, d))
 
 
-__all__ = ["FieldAction", "FillPlan", "Outcome", "KINDS", "STATUSES"]
+# A pasted cover letter: the only free-text field autofill may type into, and
+# only with the letter you approved (jobcopilot/cover_letters.py). The field
+# must BE the cover-letter box: its label starts with "cover letter" (or "paste
+# your cover letter"), or its name / id is cover_letter(_text). An open question
+# that merely mentions a cover letter ("Anything else, e.g. a cover letter?")
+# or asks "Why do you want to work here?" on its own is not one.
+COVER_TEXT_SOURCE = "approved_cover_letter"
+_COVER_LABEL_RE = re.compile(
+    r"^(?:(?:please\s+)?(?:paste|enter|add|write|type|include)\s+)?(?:your\s+|a\s+)?cover[\s_-]*letter"
+    r"(?:\s*(?:text|body|here|\((?:text|paste|optional)\)))?(?:\s*[:?.\-\u2013\u2014]\s*.*)?$", re.I | re.S)
+_COVER_NAME_RE = re.compile(r"^(?:job_application\[)?cover[_-]?letter(?:[_-]?text)?\]?$", re.I)
+
+
+def is_cover_letter_text_field(label: str, name: str = "", field_type: str = "textarea") -> bool:
+    """True when this free-text field is the form's cover-letter box."""
+    if field_type != "textarea":
+        return False
+    lab = re.sub(r"\(\s*(?:required|optional|mandatory)\s*\)|\*", " ", str(label or ""), flags=re.I)
+    lab = re.sub(r"\s+", " ", lab).strip()
+    return bool(_COVER_LABEL_RE.match(lab)) or bool(_COVER_NAME_RE.match(str(name or "").strip()))
+
+
+__all__ = ["FieldAction", "FillPlan", "Outcome", "KINDS", "STATUSES", "COVER_TEXT_SOURCE",
+           "is_cover_letter_text_field"]

@@ -1,4 +1,4 @@
-"""Offline tests for jobcopilot/http.py (D7) and the connectors that use it.
+"""Offline tests for jobcopilot/http.py (docs/DESIGN.md §3) and the connectors that use it.
 
 Network: only a stdlib http.server on 127.0.0.1 or a fake requests adapter.
 An autouse guard fails any test that tries to open a socket elsewhere.

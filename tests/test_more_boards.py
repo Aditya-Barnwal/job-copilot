@@ -143,7 +143,7 @@ def test_rwfa_parse_worldwide_minimal_and_repairs_bare_ampersand():
     assert first.title == "Junior Market Specialist / Analyst (Remote)"
     assert first.region_restrictions == ["Worldwide"] and first.workplace_type == REMOTE
     assert first.posted_at.startswith("2026-11-11T08:13:20")
-    assert all(j.description_text == "" for j in jobs)           # store: minimal (D11)
+    assert all(j.description_text == "" for j in jobs)           # store: minimal (board terms)
     assert set(first.raw) == {"title", "link", "author", "pubDate"}
 
 

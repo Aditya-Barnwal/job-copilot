@@ -587,7 +587,7 @@ def retry_note(issues: list[str]) -> str:
 def best_attempt(system: str, user: str, build: Callable[[Any], tuple[Any, list[str]]], *,
                  attempts: int, max_tokens: int = 1200,
                  feedback: bool = True) -> tuple[Any, list[str], int]:
-    """Call the model up to `attempts` times, each a FRESH conversation (L#2).
+    """Call the model up to `attempts` times, each a FRESH conversation (docs/DESIGN.md §9).
     `build(parsed)` → (candidate, issues). The first candidate with no issues
     wins; otherwise the one with the fewest. With `feedback`, a retry's prompt
     gets the previous attempt's issues appended (retry_note), never its reply.
@@ -655,12 +655,21 @@ def _sentence_issues(g: dict) -> list[Issue]:
 
 
 def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data: dict,
-             max_words: int, extra_allowed: str = "") -> tuple[dict, list[str]]:
+             max_words: int, extra_allowed: str = "", rewrite: bool = True) -> tuple[dict, list[str]]:
     """Clichés out, metrics normalised, then length / leak / markup / link /
     character / mixed-experience / grounding / never_mention checks.
-    Returns ({paragraphs, grounding, words, removed, normalised}, issues)."""
+    Returns ({paragraphs, grounding, words, removed, normalised}, issues).
+
+    rewrite=False checks text the person wrote (a saved cover letter) without
+    changing it: cliché sentences stay in (and are still grounded), metric
+    wording is left as written, and `removed` / `normalised` list what the
+    draft path would have deleted or reworded, for the caller to flag."""
     fixed = [p for p in paragraphs if p.get("fixed")]
-    paras, removed = style.remove_cliche_sentences([p for p in paragraphs if not p.get("fixed")])
+    if rewrite:
+        paras, removed = style.remove_cliche_sentences([p for p in paragraphs if not p.get("fixed")])
+    else:
+        paras = [dict(p) for p in paragraphs if not p.get("fixed")]
+        removed = [c for p in paras for c in style.find_cliches(p.get("text", ""))]
     paras = fixed + paras if fixed and paragraphs and paragraphs[0].get("fixed") else paras + fixed
     issues: list[str] = []
     empty = {"paragraphs": [], "grounding": {"clean": False}, "words": 0, "removed": removed,
@@ -675,7 +684,9 @@ def assemble(paragraphs: list[dict], usable: list, *, job: dict, rec: dict, data
         ids = [x for x in p.get("fact_ids") or [] if x in by_id]
         metrics = [m for x in ids for m in (getattr(by_id[x], "metrics", None) or [])]
         if metrics:
-            p["text"], changes = grounding.normalize_metrics(p["text"], metrics)
+            text, changes = grounding.normalize_metrics(p["text"], metrics)
+            if rewrite:
+                p["text"] = text
             normalised += [f"'{c['from']}' -> '{c['to']}'" for c in changes]
     body = "\n\n".join(p["text"] for p in paras)
     words = style.word_count(body)

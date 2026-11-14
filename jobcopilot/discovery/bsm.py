@@ -1,4 +1,4 @@
-"""Bangalore Startup Map: daily company refresh (D12).
+"""Bangalore Startup Map: daily company refresh (docs/DESIGN.md §4).
 
 Per run: ONE conditional GET of the homepage. Its Next.js RSC payload
 (`self.__next_f.push([1, "..."])` chunks) holds every startup (name, slug,

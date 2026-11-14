@@ -3,7 +3,7 @@
   GET https://hasjob.co/feed
 
 robots.txt (re-checked 2026-11-12) only disallows /edit, /confirm, /withdraw
-and /admin. Atom -> `store: minimal` by default (D11): title, location, link.
+and /admin. Atom -> `store: minimal` by default (board terms, docs/DESIGN.md §5): title, location, link.
 
 Listing URLs are https://hasjob.co/<employer-domain>/<hashid>, so the company
 is the employer's domain (e.g. "hookstech.in"). The post body's display name

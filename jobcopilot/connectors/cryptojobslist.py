@@ -4,7 +4,7 @@
 
 robots.txt on api.cryptojobslist.com (re-checked 2026-11-12) disallows /api/
 and /*/apply but not /jobs.rss. The terms page is unverified, so this RSS
-source is `store: minimal` by default (D11): title, company (dc:creator),
+source is `store: minimal` by default (board terms, docs/DESIGN.md §5): title, company (dc:creator),
 location (media:location) and the cryptojobslist.com job link; no description.
 Items carry no pubDate. Workplace is REMOTE only when the location says so.
 """

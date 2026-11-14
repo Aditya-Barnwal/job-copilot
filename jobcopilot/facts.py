@@ -1,7 +1,7 @@
 """Résumé facts: the only material tailoring is allowed to use.
 
 `profile/resume_facts.yaml` holds every line of the user's base résumés as an
-addressable *fact* with a stable id. Tailoring (Phase 3, PLAN D4) selects,
+addressable *fact* with a stable id. Tailoring (Phase 3, docs/DESIGN.md §9) selects,
 reorders and rephrases facts by id instead of rewriting free text, so every
 output line can cite the facts it came from and grounding becomes structural.
 Nothing is trusted until the user confirms it: the file is pre-filled from the

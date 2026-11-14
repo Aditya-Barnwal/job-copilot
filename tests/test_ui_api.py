@@ -417,8 +417,8 @@ def test_v1_status_names_are_migrated(tmp_path):
         store.set_status(job.key, st, db_path=db)
         keys[st] = job.key
     with store.connect(db) as conn:          # pretend the DB predates v8
-        conn.execute("DELETE FROM schema_version WHERE version = 8")
-    assert migrations.migrate(db) == 8
+        conn.execute("DELETE FROM schema_version WHERE version >= 8")
+    assert migrations.migrate(db) == migrations.latest_version()
     got = {st: store.get_job(k, db)["status"] for st, k in keys.items()}
     assert got == {"interested": "found", "ready": "ready_to_submit", "applied": "submitted",
                    "new": "new", "rejected": "rejected"}

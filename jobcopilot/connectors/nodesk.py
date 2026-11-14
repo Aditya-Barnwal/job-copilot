@@ -4,7 +4,7 @@
 
 robots.txt (re-checked 2026-11-12) allows all, but carries Cloudflare
 Content-Signals "search=yes, ai-train=no, use=reference" that the site makes a
-condition of access. So this board is `store: minimal` by default (D11 and
+condition of access. So this board is `store: minimal` by default (docs/DESIGN.md §5 and
 use=reference): title / company / link only, nothing fed to training, no
 description kept. Titles are "Role at Company"; items carry no location.
 """

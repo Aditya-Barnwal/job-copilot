@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 from . import detect
 from .adapters.base import Adapter, PlanContext, register
 from .guard import is_consent_label, is_denied
-from .plan import FieldAction, FillPlan
+from .plan import COVER_TEXT_SOURCE, FieldAction, FillPlan, is_cover_letter_text_field
 
 log = logging.getLogger("jobcopilot.autofill.generic")
 
@@ -50,6 +50,12 @@ def _ctx_parts(ctx: Any) -> tuple[Callable[..., Any], dict, float, str, str]:
     return (fn, dict(ctx.get("files") or {}), float(ctx.get("min_confidence") or DEFAULT_MIN_CONFIDENCE),
             str(ctx.get("job_key") or job.get("key") or job.get("job_key") or ""),
             str(ctx.get("url") or job.get("apply_url") or job.get("url") or ""))
+
+
+def _ctx_cover(ctx: Any) -> Optional[str]:
+    """The approved cover letter's text from a PlanContext or dict ctx (or None)."""
+    v = ctx.get("cover_letter_text") if isinstance(ctx, dict) else getattr(ctx, "cover_letter_text", None)
+    return v if isinstance(v, str) and v.strip() else None
 
 
 def _css_str(v: str) -> str:
@@ -179,6 +185,14 @@ class GenericAdapter(Adapter):
                                                False, "", it["required"]))
                 else:
                     leave(it, "no approved file" if key else "file upload: attach it yourself", "upload")
+                continue
+            if t == "textarea" and is_cover_letter_text_field(label or it["question"], it["name"]):
+                cover = _ctx_cover(ctx)
+                if cover:
+                    actions.append(FieldAction(it["locator"], label, "fill", cover, COVER_TEXT_SOURCE, 1.0,
+                                               False, "", it["required"]))
+                else:
+                    leave(it, "no approved cover letter", "fill")
                 continue
             question = it["question"] or label
             if not question.strip():

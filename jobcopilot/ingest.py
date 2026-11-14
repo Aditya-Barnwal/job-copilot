@@ -6,7 +6,7 @@ One pipeline for the CLI, `make smoke-live` and POST /api/ingest:
   + enabled job boards  ->  per-source fetch (failure-isolated, health recorded)
   ->  drop expired listings  ->  dedupe.merge()  ->  apply_filters()  ->  store.
 
-A failing source logs an error and never aborts the run (D7); robots.txt
+A failing source logs an error and never aborts the run (docs/DESIGN.md §3); robots.txt
 refusals, do-not-automate hosts and missing connectors are reported apart from
 real errors so the summary says *why* nothing came back.
 """
@@ -192,7 +192,7 @@ def _run_source(label: str, name: str, connector_name: str, source_key: str,
 
     try:
         return_jobs = call()
-    # Nothing was sent in any of the next three cases; the run carries on (D7).
+    # Nothing was sent in any of the next three cases; the run carries on (docs/DESIGN.md §3).
     except HostDenied as exc:
         # Config points at a DO-NOT-AUTOMATE host: link out to it instead.
         print(f"  · denied {name:<16} (do-not-automate host; {exc})", file=sys.stderr)
@@ -405,7 +405,7 @@ class IngestRun:
     outcomes: list[SourceOutcome] = field(default_factory=list)
     expired_dropped: int = 0
     # Phase 2: every target-role job with its eligibility decision attached as
-    # `.evaluation` (excluded ones included, D8). None = evaluation not run.
+    # `.evaluation` (excluded ones included, docs/DESIGN.md §6). None = evaluation not run.
     evaluated: Optional[list[FilterResult]] = None
     evaluation: dict[str, Any] = field(default_factory=dict)   # counts, mode
     filter_cfg: Optional[FilterConfig] = None
@@ -553,7 +553,7 @@ def _engineering_signal(title: Optional[str]) -> bool:
 
 def _role_excluded_row(job: Job, cfg_hash: Optional[str]) -> dict[str, Any]:
     """Decision columns for an off-target title that still looks like engineering:
-    stored as excluded with rule 'role' (D8) so a wrongly rejected title is visible."""
+    stored as excluded with rule 'role' (docs/DESIGN.md §6) so a wrongly rejected title is visible."""
     return {"lane": "excluded", "excluded": 1,
             "exclusion_reasons": [{"rule": "role", "detail": "title is not one of the target roles",
                                    "excerpt": (job.title or "")[:200] or None}],
@@ -733,7 +733,7 @@ def persist(run: IngestRun, *, enrich_workday: bool = True, rescore: bool = True
     """Workday detail fill, upsert, expired purge, rescoring, v2 fit scoring.
 
     With an evaluated run, EVERY target-role job is stored — excluded ones with
-    excluded=1 and their reasons (D8) — and the non-excluded ones are scored.
+    excluded=1 and their reasons (docs/DESIGN.md §6) — and the non-excluded ones are scored.
     User state (status, notes, applied version) is never touched.
     """
     from . import store as _store

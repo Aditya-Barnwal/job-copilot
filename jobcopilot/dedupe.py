@@ -1,7 +1,7 @@
 """Cross-source dedupe: one role seen on Himalayas and on the employer's Ashby
 board is ONE job with two sources.
 
-Two keys, applied in order (PLAN.md L#6):
+Two keys, applied in order (docs/DESIGN.md §5):
 
   * url_key       - the same normalised URL (posting URL or apply link) is the
                     same job, whatever the sources say about it;
@@ -275,7 +275,7 @@ def _merge_group(group: list[Job]) -> Job:
     if not is_ats(primary.source) and not primary.expires_at:
         primary.expires_at = next((o.expires_at for o in others if o.expires_at), None)
 
-    # D11 apply rule: the employer's ATS when we found it there independently,
+    # Apply rule (docs/DESIGN.md §5): the employer's ATS when we found it there independently,
     # else the best board's own apply link (Himalayas: its applicationLink).
     if is_ats(primary.source):
         primary.apply_url = primary.url or primary.apply_url

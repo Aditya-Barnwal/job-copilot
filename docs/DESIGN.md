@@ -340,6 +340,34 @@ with the same idea, on demand from the review card. The rules are in
 - No confirmed facts means `refused` and no model call. Any flag means
   `needs_review`. Nothing is ever sent: drafts are shown to the person.
 
+**Saved and approved letters** (`jobcopilot/cover_letters.py`). A draft lives
+in the browser until the person saves it. Saving stores the letter with the
+job's current résumé version, under that version's directory in
+`data/applications/`, as plain text plus a PDF from the same pdfLaTeX pipeline
+as the résumé (every character escaped; text only if TeX isn't installed).
+
+- **The person's text gets the draft checks, unchanged.** An edited letter has
+  no fact citations, so each paragraph is checked against the facts of the one
+  employer or project it names (or shares the most words with); naming two
+  flags it. Clichés, metrics worded differently from the facts, length,
+  markup, links and look-alike characters are all reported. Nothing is deleted
+  or reworded: what was saved is what gets used.
+- **Approval is its own step.** Saving never approves, and saving new text
+  clears an earlier approval. Approving re-runs the checks on the stored text
+  against the current facts, requires the fingerprint of the text the person
+  was shown (so an old click can't approve newer text), and needs any flag
+  confirmed explicitly. A separate flag was chosen over dropping the résumé
+  back to review: a new letter shouldn't take away an approved résumé, and the
+  review card shows the two approvals side by side.
+- **Autofill uses a letter only when all of this holds:** the résumé version
+  it belongs to is the job's approved one, the letter is approved, and the
+  files on disk still match the fingerprints taken when it was saved and
+  approved. The file goes to cover-letter upload fields. Its text goes only
+  into a field that *is* the cover-letter box (labelled as one, or declared in
+  the ATS spec, such as Lever's "add a cover letter" box), with source
+  `approved_cover_letter`. Every other open question, including "why do you
+  want to work here?", stays with the person.
+
 ## 11. The answers matcher
 
 Application forms ask the same questions in many words. `jobcopilot/answers.py`
@@ -383,8 +411,10 @@ lose their session. So "pre-filled" is split in two (`jobcopilot/autofill/`):
   which every non-GET request is aborted. A policy pass keeps a value only when
   the answers matcher said it doesn't need the person and its confidence clears
   `min_confidence` (`config/autofill.yaml`). Uploads must be the job's approved
-  résumé and cover letter. The stored plan keeps no values, only whether each
-  field had an approved one; values are resolved again when a fill starts.
+  résumé and cover letter, and the only free text typed is the approved cover
+  letter, into the form's cover-letter box (§10). The stored plan keeps no
+  values, only whether each field had an approved one; values (and the
+  approvals behind them) are resolved again when a fill starts.
 - **On click**, the person's own headed Chrome (persistent profile outside the
   repo, no stealth flags, honest automation) executes the plan in seconds and
   stops on the final page. A stored plan is reused only while both it and the

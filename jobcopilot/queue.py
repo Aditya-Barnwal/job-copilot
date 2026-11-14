@@ -8,7 +8,7 @@ and answers the questions the UI asks:
     apart; the extended (watchlist) lane gets its own top-N. Persisted per day
     in queue_items, idempotently.
   * list_matches(): every eligible job, paginated (the queue is just the top).
-  * list_excluded(): excluded jobs with their reasons (D8).
+  * list_excluded(): excluded jobs with their reasons (docs/DESIGN.md §6).
   * tracker(): status columns with dates, the ready-to-submit list with
     reminders and expiry warnings, and follow-ups due after submission.
 
@@ -41,7 +41,7 @@ QUEUE_DEFAULTS: dict[str, Any] = {
     "ready_reminder_days": 2,
     "followup_days": 7,
     "gone_after_days": 3,          # not seen by ingest for this long -> posting probably gone
-    "reapply_cooldown_days": 90,   # after a rejection, wait this long before applying there again (L#6)
+    "reapply_cooldown_days": 90,   # after a rejection, wait this long before applying there again (docs/DESIGN.md §8)
 }
 
 # Hidden from Today's best and All matches: submitted or later, or dismissed.
@@ -483,7 +483,7 @@ def list_matches(*, lane: Optional[str] = "main", sort: str = "fit", q: Optional
 
 def list_excluded(rule: Optional[str] = None, limit: int = 100, offset: int = 0,
                   db_path: Any = None) -> dict[str, Any]:
-    """Excluded jobs with every reason (D8), newest first, plus counts per rule."""
+    """Excluded jobs with every reason (docs/DESIGN.md §6), newest first, plus counts per rule."""
     limit = max(1, min(int(limit), 1000))
     counts: dict[str, int] = {}
     items: list[dict] = []

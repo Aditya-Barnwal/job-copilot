@@ -1,4 +1,4 @@
-"""eligibility.evaluate: every hard rule both ways, lanes per tier, D8 reasons."""
+"""eligibility.evaluate: every hard rule both ways, lanes per tier, exclusion reasons."""
 from __future__ import annotations
 
 import copy
@@ -309,7 +309,7 @@ def test_stale_flag_never_excludes():
     assert "flag:stale" not in rules(ev(job(posted_age_days=10)))
 
 
-# --- D8 + apply_filters --------------------------------------------------------------
+# --- exclusion reasons + apply_filters --------------------------------------------------------------
 def test_every_exclusion_carries_reason_and_flags_do_not_exclude():
     d = ev(remote(title="Senior Product Designer", region_restrictions=["USA Only"],
                   description_text="7+ years of experience.",

@@ -1,4 +1,4 @@
-"""YC companies from the community yc-oss dataset (D10).
+"""YC companies from the community yc-oss dataset (docs/DESIGN.md §4).
 
 YC's own sites (ycombinator.com, workatastartup.com) are never automated — the
 HTTP client refuses them outright. yc-oss republishes YC's directory as static

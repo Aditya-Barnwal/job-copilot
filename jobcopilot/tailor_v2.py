@@ -1,4 +1,4 @@
-"""Tailoring v2 (Phase 3, PLAN D4): edit plans over confirmed facts.
+"""Tailoring v2 (Phase 3, docs/DESIGN.md §9): edit plans over confirmed facts.
 
 Flow for one job:
 

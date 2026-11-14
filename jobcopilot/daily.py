@@ -1,10 +1,13 @@
-"""The nightly run: `python -m jobcopilot.daily` (launchd fires it at 19:00, D2).
+"""The nightly run: `python -m jobcopilot.daily` (launchd fires it at 19:00; docs/DESIGN.md §14).
 
   discovery (config sync, yc-oss, Bangalore Startup Map, seeds, tiers, ATS
   detection, India probe capped per run)  ->  ingest (boards + company ATS;
   eligibility on every job, excluded ones stored with reasons; fit scores)
   ->  evaluate (catch-up for rows without a decision)  ->  score (catch-up)
-  ->  queue (today's best)  ->  tailor / fill-plan (Phase 3 / 4 hooks, no-ops).
+  ->  queue (today's best)  ->  tailor (a tailored résumé, for review, for
+  today's main-queue jobs without one, once facts are confirmed)  ->  fill plan
+  (read-only, for jobs with an APPROVED résumé; nothing is typed or submitted).
+  Fixture mode (--no-network) skips the last two: no LLM, no browser.
 
 Every step is failure-isolated and recorded in the `runs` table as it
 finishes, so the app can show progress. Exit code is non-zero only when every
@@ -209,7 +212,7 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
         step("tailor", None, noop="fixture mode: no LLM calls")
     else:
         step("tailor", _tailor_today)
-    # Fill plans (D3): read-only, for today's main-queue jobs with an APPROVED résumé.
+    # Fill plans (docs/DESIGN.md §12): read-only, for today's main-queue jobs with an APPROVED résumé.
     # Nothing is typed or submitted; the fill itself only runs when you click.
     # Limit: config/autofill.yaml nightly_limit. Each job is failure-isolated.
     def _fill_plans_today() -> dict:

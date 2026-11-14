@@ -1,4 +1,4 @@
-"""ATS detection step: find + verify the ATS of brand/funded companies (D10).
+"""ATS detection step: find + verify the ATS of brand/funded companies (docs/DESIGN.md §4).
 
 `python -m jobcopilot.discovery detect` (also part of `all`). Per run, at most
 `limit` companies (default 40) are checked, oldest-checked first, skipping any

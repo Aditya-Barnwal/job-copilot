@@ -527,7 +527,7 @@ def test_eligibility_error_falls_back_per_job(monkeypatch, fake_eligibility):
 
 def test_same_listing_id_at_two_employers_stays_two_rows():
     """job_sources is UNIQUE(source, external_id): a per-tenant id reused by another
-    company must not merge the two jobs (that silently lost excluded rows, D8)."""
+    company must not merge the two jobs (that silently lost excluded rows, docs/DESIGN.md §6)."""
     a = seed("777", company="Okta", lane="excluded", fit=None, reasons=[{"rule": "geo"}])
     b = seed("777", company="Stripe", lane="main")
     assert a != b and store.get_job(a)["lane"] == "excluded" and store.get_job(b)["lane"] == "main"

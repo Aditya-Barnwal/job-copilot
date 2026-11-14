@@ -34,13 +34,16 @@ sent or invented for you.
   prose. Every output line cites its facts and is checked against them, then
   rendered to a one-page pdfLaTeX résumé with a diff against your base.
 - **Grounded cover letters and emails**, checked sentence by sentence, with a
-  cliché filter and a length limit.
+  cliché filter and a length limit. Edit a letter, save it (your text gets the
+  same checks and is flagged, never rewritten), and approve it: only an approved
+  letter is ever attached as a PDF or pasted into a form's cover-letter box.
 - **Answers bank and matcher.** Screening questions are matched to your
   approved answers. Anything negated, ambiguous, consent-related or uncertain
   is left for you.
 - **Autofill that stops before Submit.** Headed Chrome on your own profile
-  fills the approved values, highlights what it couldn't fill, pauses on
-  CAPTCHAs and login walls, and hands the browser back to you.
+  fills the approved values and files (your approved résumé and cover letter),
+  highlights what it couldn't fill, pauses on CAPTCHAs and login walls, and
+  hands the browser back to you.
 - **Tracker** from found to offer, with follow-up reminders and re-apply
   cooldowns.
 - **Nightly run** via a macOS LaunchAgent, with per-step health and a "Run

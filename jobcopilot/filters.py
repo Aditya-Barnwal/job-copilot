@@ -13,7 +13,7 @@ These encode the scope you defined:
     boundaries.
   * Age: never drops on age. `--max-age-days` is opt-in.
 
-Phase 2: the per-job rules live in `eligibility.evaluate()` (lanes + D8 reasons).
+Phase 2: the per-job rules live in `eligibility.evaluate()` (lanes + exclusion reasons, docs/DESIGN.md §6).
 `apply_filters` attaches that Decision to every FilterResult; FilterConfig.mode
 "eligibility" makes it keep/drop by the Decision, "legacy" (default) keeps v1 rules.
 """

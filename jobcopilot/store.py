@@ -378,8 +378,8 @@ def upsert_jobs(results: Iterable[FilterResult], db_path: Path | str | None = No
 
 
 def purge_expired(today: Optional[str] = None, db_path: Path | str | None = None) -> int:
-    """Delete untouched ('new') rows whose source listing has expired (D11:
-    Himalayas jobs past expiryDate are purged). Rows the user acted on stay."""
+    """Delete untouched ('new') rows whose source listing has expired (e.g.
+    Himalayas jobs past expiryDate; docs/DESIGN.md §5). Rows the user acted on stay."""
     today = today or time.strftime("%Y-%m-%d")
     with connect(db_path) as conn:
         keys = [r["key"] for r in conn.execute(
@@ -896,9 +896,10 @@ def link_job_version(key: str, version_id: int,
 
 # --- application artifacts (Phase 3, tailoring v2) ------------------------
 
-ARTIFACT_JSON_FIELDS = ("edit_plan", "grounding", "answers_json")
+ARTIFACT_JSON_FIELDS = ("edit_plan", "grounding", "answers_json", "cover_letter_json")
 ARTIFACT_FIELDS = ("base", "edit_plan", "tex_path", "pdf_path", "cover_letter_path",
-                   "answers_json", "grounding", "status", "facts_hash", "pages", "approved_at")
+                   "answers_json", "grounding", "status", "facts_hash", "pages", "approved_at",
+                   "cover_letter_json", "cover_letter_approved_at", "cover_letter_approved_sha")
 
 
 def applications_dir(db_path: Path | str | None = None) -> Path:

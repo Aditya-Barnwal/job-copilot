@@ -1,5 +1,5 @@
 """Greenhouse adapter, plus SpecAdapter: the shared declarative engine every
-per-ATS adapter (greenhouse, lever, ashby, workday) is built on (L#3).
+per-ATS adapter (greenhouse, lever, ashby, workday) is built on (docs/DESIGN.md §12).
 
 An adapter is a YAML spec (specs/<ats>.yaml: hosts, field selectors, uploads,
 honeypots, never-touch selectors, submit selectors, final-submit network
@@ -25,7 +25,7 @@ import yaml
 
 from .. import detect
 from ..guard import SafePageError, SubmitGuardViolation, Halted, is_consent_label
-from ..plan import FieldAction, FillPlan, Outcome
+from ..plan import COVER_TEXT_SOURCE, FieldAction, FillPlan, Outcome, is_cover_letter_text_field
 from .base import Adapter, register
 
 log = logging.getLogger("jobcopilot.autofill.adapters")
@@ -33,7 +33,7 @@ log = logging.getLogger("jobcopilot.autofill.adapters")
 SPEC_DIR = Path(__file__).resolve().parent / "specs"
 DEFAULT_MIN_CONFIDENCE = 0.8
 _SPEC_KEYS = {"ats", "hosts", "url_patterns", "form", "fields", "custom_questions", "comboboxes",
-              "uploads", "never", "honeypots", "invisible_captcha", "submit", "errors",
+              "uploads", "cover_letter_text", "never", "honeypots", "invisible_captcha", "submit", "errors",
               "submit_patterns", "allow_post", "confirmation", "steps", "login_wall"}
 _TEXTLIKE = {"text", "textarea", "email", "tel", "url", "number", "date", "search", ""}
 _ANS_TYPE = {"textarea": "textarea", "number": "number", "date": "date", "select": "select",
@@ -363,6 +363,14 @@ class SpecAdapter(Adapter):
             if key == "cover_letter":
                 return empty("no approved cover letter")
             return empty("file upload: attach it yourself")
+        # the form's cover-letter box: the spec's own selectors win over `never`
+        spec_cover = typ == "textarea" and self._matches_any(f, self.spec.get("cover_letter_text") or [])
+        if spec_cover or (typ == "textarea" and not self._matches_any(f, self.spec.get("never") or [])
+                          and is_cover_letter_text_field(label, str(f.get("name") or ""))):
+            cover = _ctx(ctx, "cover_letter_text")
+            if isinstance(cover, str) and cover.strip():
+                return FieldAction(loc, label, "fill", cover, COVER_TEXT_SOURCE, 1.0, False, "", req)
+            return empty("no approved cover letter")
         if self._matches_any(f, self.spec.get("never") or []):
             return empty("left for you (never filled automatically)", "never")
         if (entry or {}).get("skip"):

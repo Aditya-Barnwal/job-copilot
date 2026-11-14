@@ -191,7 +191,7 @@ def test_plan_from_greenhouse_questions_api(gh_api, monkeypatch, caplog):
 
     row = store.get_fill_plan(key)
     assert row["ats"] == "greenhouse" and row["unresolved_count"] == len(plan.unresolved)
-    # stored: field metadata + approval state only, never a value or a file path (L#4)
+    # stored: field metadata + approval state only, never a value or a file path (docs/DESIGN.md §12)
     stored = FillPlan.from_dict(row["plan"])
     assert stored.files == {} and row["plan"]["file_kinds"] == ["resume"]
     assert all(a.value is None for a in stored.actions() if a.kind != "upload")

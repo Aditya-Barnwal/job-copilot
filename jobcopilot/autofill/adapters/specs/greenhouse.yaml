@@ -1,4 +1,4 @@
-# Greenhouse job-boards application form (declarative adapter spec, L#3).
+# Greenhouse job-boards application form (declarative adapter spec, docs/DESIGN.md §12).
 # Read by jobcopilot/autofill/adapters/greenhouse.py. Structure verified against a
 # public posting's server-rendered form on 2026-11-13 (job-boards.greenhouse.io, Remix UI).
 # Values never live here: every value comes from answers.answer_question or the
@@ -37,8 +37,9 @@ uploads:
   resume: {locator: '#resume', button: 'Attach', label: 'Resume/CV'}
   cover_letter: {locator: '#cover_letter', button: 'Attach', label: 'Cover Letter'}
 
-# Never touched by automation (paste-text alternatives to the files, the
-# "Locate me" geolocation button, Dropbox pickers).
+# Never touched by automation (paste-text alternatives to the files: the
+# approved cover letter goes in as the file, the "Locate me" geolocation
+# button, Dropbox pickers).
 never: ['#resume_text', '#cover_letter_text', '[data-testid$="-dropbox"]']
 honeypots: []
 

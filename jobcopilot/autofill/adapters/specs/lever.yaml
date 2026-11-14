@@ -1,4 +1,4 @@
-# Lever hosted application form (declarative adapter spec, L#3).
+# Lever hosted application form (declarative adapter spec, docs/DESIGN.md §12).
 # Read by jobcopilot/autofill/adapters/lever.py. Structure verified against a
 # public jobs.lever.co/<site>/<id>/apply page on 2026-11-13.
 ats: lever
@@ -28,10 +28,13 @@ comboboxes: []
 uploads:
   resume: {locator: '[data-qa="input-resume"]', label: 'Resume/CV'}
 
-# "Additional information" is free text (a pasted cover letter): yours to write.
+# "Additional information" is Lever's cover-letter box ("Add a cover letter or
+# anything else"): it gets the cover letter you APPROVED for this job, and is
+# left for you when there is none (docs/DESIGN.md §10). Nothing else is typed there.
+cover_letter_text: ['#additional-information', '[name="comments"]']
+
 # selectedLocation / baseTemplate / tracking fields are hidden plumbing.
-never: ['#additional-information', '[name="comments"]', '#selected-location',
-        '[name$="[baseTemplate]"]', '[name="h-captcha-response"]']
+never: ['#selected-location', '[name$="[baseTemplate]"]', '[name="h-captcha-response"]']
 honeypots: []
 
 # Lever runs hCaptcha INVISIBLY when the user presses Submit; an empty

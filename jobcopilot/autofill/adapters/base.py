@@ -40,6 +40,9 @@ class PlanContext:
     today: Optional[dt.date] = None
     company: Any = None
     min_confidence: float = 0.8                      # config/autofill.yaml min_confidence
+    # The APPROVED cover letter's text (cover_letters.approved_letter), for the
+    # form's cover-letter box only; None = leave that box for you. Kept out of repr.
+    cover_letter_text: Optional[str] = field(default=None, repr=False)
 
     def answer(self, question: str, *, field_type: str = "text", options: Optional[list] = None,
                required: Optional[bool] = None) -> Any:

@@ -1,4 +1,4 @@
-# Ashby hosted application form (declarative adapter spec, L#3).
+# Ashby hosted application form (declarative adapter spec, docs/DESIGN.md §12).
 # Read by jobcopilot/autofill/adapters/ashby.py. The real page is a client-rendered
 # SPA; structure follows its rendered DOM (system fields "_systemfield_*",
 # custom fields keyed by UUID, .ashby-application-form-* class hooks).

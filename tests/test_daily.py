@@ -228,7 +228,7 @@ def test_fixture_run_produces_a_ranked_queue(monkeypatch):
     assert [i["key"] for i in stored] == [c["key"] for c in q["main"]]
     assert [i["rank"] for i in stored] == list(range(1, len(stored) + 1))
     excluded = jq.list_excluded(limit=5)
-    # every excluded job is stored with its reasons (D8) — fixtures reuse one board file
+    # every excluded job is stored with its reasons (docs/DESIGN.md §6) — fixtures reuse one board file
     # per ATS, so several companies share listing ids; those must not collapse into one row
     assert excluded["total"] == ing["excluded"] > 0 and excluded["items"][0]["reasons"]
     assert ing["inserted"] == ing["eligible"] + ing["excluded"]

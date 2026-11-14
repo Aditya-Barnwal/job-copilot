@@ -1,5 +1,5 @@
 """Autofill orchestration: nightly fill plans, the on-click headed fill, and
-passive submission detection (Phase 4, D3).
+passive submission detection (Phase 4, docs/DESIGN.md §12).
 
     plan_for_job(job_key, *, db_path=None) -> FillPlan     # read-only; never types
     launch_fill(job_key, *, db_path=None) -> int            # session id; runs in a thread
@@ -14,7 +14,10 @@ What this module guarantees, whatever an adapter returns:
     it hands them has been through `enforce_policy`: a value is kept only when
     answers.answer_question said needs_user=False with confidence >=
     `min_confidence`; consent/attestation checkboxes are always left alone;
-    uploads must be the job's APPROVED résumé / cover-letter files.
+    uploads must be the job's APPROVED résumé / cover-letter files, and the
+    only free text typed is the APPROVED cover letter, into the form's
+    cover-letter box (source "approved_cover_letter"); every other open
+    question is left for the person.
   * denylisted hosts (http.py's built-in list + config) are never opened: the
     caller gets a link-out instead (AutofillRefused code 'denylisted').
   * planning is read-only: the Greenhouse public questions API where possible,
@@ -40,7 +43,7 @@ from .. import store
 
 log = logging.getLogger("jobcopilot.autofill.service")
 
-from .plan import FieldAction, FillPlan, Outcome  # workstream K's types
+from .plan import COVER_TEXT_SOURCE, FieldAction, FillPlan, Outcome, is_cover_letter_text_field
 
 
 def _outcome_dict(o: Any) -> dict:
@@ -163,19 +166,32 @@ def adapter_for(url: str, ats: str) -> Any:
 # --------------------------------------------------------------------------- files
 
 def approved_files(job: dict, db_path: Any = None) -> tuple[dict[str, str], list[dict]]:
-    """({'resume': pdf, 'cover_letter'?: file}, unresolved) from the job's APPROVED artifact only."""
+    """({'resume': pdf, 'cover_letter'?: file}, unresolved) from the job's APPROVED artifact only.
+    The cover letter is included only when it was approved too and the file on
+    disk still matches what was approved (cover_letters.approved_letter)."""
+    from .. import cover_letters
     art = store.get_artifact(int(job["artifact_id"]), db_path) if job.get("artifact_id") else None
     if not art or art.get("status") != "approved" or art.get("job_key") != job.get("key"):
         return {}, [{"label": "Résumé", "reason": "needs approved résumé", "required": True}]
     root = store.applications_dir(db_path).resolve()
     files: dict[str, str] = {}
-    for kind, col in (("resume", "pdf_path"), ("cover_letter", "cover_letter_path")):
-        p = art.get(col)
-        if p and Path(p).is_file() and Path(p).resolve().is_relative_to(root):
-            files[kind] = str(Path(p).resolve())
+    p = art.get("pdf_path")
+    if p and Path(p).is_file() and Path(p).resolve().is_relative_to(root):
+        files["resume"] = str(Path(p).resolve())
+    letter = cover_letters.approved_letter(job, db_path)
+    if letter is not None:
+        files["cover_letter"] = letter["path"]
     if "resume" not in files:
         return files, [{"label": "Résumé", "reason": "needs approved résumé (PDF missing)", "required": True}]
     return files, []
+
+
+def approved_cover_text(job: dict, db_path: Any = None) -> Optional[str]:
+    """The approved cover letter's text for a cover-letter box, or None. Same
+    gate as the file: approved artifact, approved letter, unchanged on disk."""
+    from .. import cover_letters
+    letter = cover_letters.approved_letter(job, db_path)
+    return letter["text"] if letter else None
 
 
 # --------------------------------------------------------------------------- snapshots
@@ -311,7 +327,7 @@ def _value_str(v: Any) -> Optional[str]:
 
 
 def resolve_field(f: dict, job: dict, files: dict[str, str], cfg: dict, *, bank: Any = None,
-                  facts: Any = None) -> Optional[FieldAction]:
+                  facts: Any = None, cover_text: Optional[str] = None) -> Optional[FieldAction]:
     """One snapshot field -> a FieldAction (value None = left empty + highlighted).
     Returns None for a field that needs no action (a single checkbox answered 'no')."""
     from .. import answers as A
@@ -332,6 +348,10 @@ def resolve_field(f: dict, job: dict, files: dict[str, str], cfg: dict, *, bank:
         return empty("file upload: attach it yourself")
     if kind in ("check", "radio", "select") and is_consent_label(label, kind):
         return empty("consent / attestation: only you can tick this", "consent")
+    if is_cover_letter_text_field(label, str(f.get("name") or ""), typ):
+        if cover_text:
+            return FieldAction(loc, label, "fill", cover_text, COVER_TEXT_SOURCE, 1.0, False, "", req)
+        return empty("no approved cover letter")
     if A.match_rule(label) == "open":   # free-text "why us?": yours to write, never auto-typed
         return empty("open question: write this yourself")
     a = A.answer_question(label, field_type=_ANS_TYPE.get(typ, typ), options=f.get("options") or None,
@@ -345,10 +365,12 @@ def resolve_field(f: dict, job: dict, files: dict[str, str], cfg: dict, *, bank:
     return FieldAction(loc, label, kind, value, a.source, float(a.confidence), False, "", req)
 
 
-def enforce_policy(plan: FillPlan, cfg: dict) -> FillPlan:
+def enforce_policy(plan: FillPlan, cfg: dict, cover_text: Optional[str] = None) -> FillPlan:
     """The service's safety net over ANY adapter's plan: blank every value that is
     uncertain, unapproved, consent-like, or an upload that isn't an approved file.
-    `plan.files` must already be the job's approved files (plan_for_job sets it)."""
+    `plan.files` must already be the job's approved files (plan_for_job sets it).
+    A pasted cover letter survives only when it is exactly `cover_text`, the
+    job's approved letter now (None = there is none, so it is blanked)."""
     floor = float(cfg["min_confidence"])
     for step in plan.steps:
         for a in step:
@@ -362,6 +384,9 @@ def enforce_policy(plan: FillPlan, cfg: dict) -> FillPlan:
             elif a.kind == "upload" and (a.value not in ("resume", "cover_letter")
                                          or not (plan.files or {}).get(a.value)):
                 reason = "upload is not an approved file"
+            elif a.source == COVER_TEXT_SOURCE and (a.kind != "fill" or not cover_text
+                                                     or a.value != cover_text):
+                reason = "no approved cover letter"
             if reason:
                 a.value, a.needs_user, a.note = None, True, reason
     return plan
@@ -380,7 +405,8 @@ def _unresolved(plan: FillPlan, extra: list[dict]) -> list[dict]:
 
 
 def build_plan(job: dict, url: str, ats: str, snapshot: dict, files: dict[str, str],
-               file_unresolved: list[dict], cfg: dict, *, bank: Any = None) -> FillPlan:
+               file_unresolved: list[dict], cfg: dict, *, bank: Any = None,
+               cover_text: Optional[str] = None) -> FillPlan:
     """Snapshot -> FillPlan with values only from answers.answer_question / approved files."""
     from .. import answers as A
     if bank is None:
@@ -391,7 +417,7 @@ def build_plan(job: dict, url: str, ats: str, snapshot: dict, files: dict[str, s
         for f in raw_step:
             if f.get("hidden"):
                 continue      # hidden / off-screen inputs (honeypots) are never planned
-            act = resolve_field(f, job, files, cfg, bank=bank)
+            act = resolve_field(f, job, files, cfg, bank=bank, cover_text=cover_text)
             if act is not None:
                 step.append(act)
         steps.append(step)
@@ -668,30 +694,33 @@ def answer_no_llm(question: str, **kw: Any) -> Any:
 
 
 def plan_context(job: dict, url: str, files: dict[str, str], bank: Any = None,
-                 cfg: Optional[dict] = None) -> Any:
+                 cfg: Optional[dict] = None, cover_text: Optional[str] = None) -> Any:
     from .adapters.base import PlanContext
     floor = float((cfg or {}).get("min_confidence") or DEFAULTS["min_confidence"])
     return PlanContext(job_key=job["key"], job=job, url=url, files=dict(files), answers=bank,
-                       answer_fn=answer_no_llm, min_confidence=floor)
+                       answer_fn=answer_no_llm, min_confidence=floor, cover_letter_text=cover_text)
 
 
 def _plan_from_snapshot(job: dict, url: str, ats: str, adapter: Any, snapshot: dict,
                         files: dict[str, str], file_unresolved: list[dict], cfg: dict, *,
-                        bank: Any = None) -> FillPlan:
+                        bank: Any = None, cover_text: Optional[str] = None) -> FillPlan:
     """Snapshot (form structure only) -> FillPlan whose values come from the CURRENT
-    answers.yaml / facts (bank None = load them now) and the given approved files."""
+    answers.yaml / facts (bank None = load them now), the given approved files and
+    the approved cover letter's text (`cover_text`, None = none)."""
     plan = None
     if adapter is not None and snapshot.get("adapter_snapshot") is not None:
         try:
-            plan = adapter.build_plan(snapshot["adapter_snapshot"], plan_context(job, url, files, bank, cfg))
+            plan = adapter.build_plan(snapshot["adapter_snapshot"],
+                                      plan_context(job, url, files, bank, cfg, cover_text))
             plan.job_key, plan.ats, plan.url = job["key"], plan.ats or ats, plan.url or url
         except Exception as exc:  # noqa: BLE001 - fall back to the generic resolver
             log.warning("adapter build_plan failed job=%s ats=%s: %s", job["key"], ats, type(exc).__name__)
             plan = None
     if plan is None:
-        plan = build_plan(job, url, ats, snapshot, files, file_unresolved, cfg, bank=bank)
+        plan = build_plan(job, url, ats, snapshot, files, file_unresolved, cfg, bank=bank,
+                          cover_text=cover_text)
     plan.files = dict(files)
-    enforce_policy(plan, cfg)
+    enforce_policy(plan, cfg, cover_text)
     plan.unresolved = _unresolved(plan, file_unresolved)
     for note in snapshot.get("notes") or []:
         plan.unresolved.append({"label": note, "reason": "the form page shows a "
@@ -712,6 +741,7 @@ def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = Non
     ats = detect_ats(url, job)
     adapter = adapter_for(url, ats)
     files, file_unresolved = approved_files(job, db_path)
+    cover_text = approved_cover_text(job, db_path)
 
     snapshot = None
     gh = greenhouse_ids(job, url, db_path) if ats == "greenhouse" else None
@@ -725,8 +755,9 @@ def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = Non
         if snapshot is None:
             _gone(job_key, db_path)
 
-    plan = _plan_from_snapshot(job, url, ats, adapter, snapshot, files, file_unresolved, cfg, bank=bank)
-    _save(plan, cfg, db_path, snapshot=snapshot, target=url)
+    plan = _plan_from_snapshot(job, url, ats, adapter, snapshot, files, file_unresolved, cfg, bank=bank,
+                               cover_text=cover_text)
+    _save(plan, cfg, db_path, snapshot=snapshot, target=url)      # stored without any value
     store.set_fill_status(job_key, "planned" if not plan.unresolved else "planned_needs_you", db_path)
     n_vals = sum(1 for s in plan.steps for a in s if a.value is not None)
     log.info("fill plan job=%s ats=%s source=%s fields=%d valued=%d unresolved=%d", job_key, ats,
@@ -750,7 +781,7 @@ def _ts(created_at: Any) -> float:
         return time.time()
 
 
-# Stored plans hold field metadata only (L#4): label, locator, kind, source /
+# Stored plans hold field metadata only (docs/DESIGN.md §12): label, locator, kind, source /
 # rule, confidence, approval state, plus the read-only form snapshot they were
 # built from. Never a value: those are resolved from answers.yaml / facts /
 # the approved files when a fill starts.
@@ -798,7 +829,7 @@ def _save(plan: FillPlan, cfg: dict, db_path: Any, *, snapshot: Optional[dict] =
 
 def stored_plan(job_key: str, db_path: Any = None) -> Optional[dict]:
     """The stored plan row for the API / UI: metadata only. Any value a row from
-    before L#4 still carries is stripped; the form snapshot is left out."""
+    from before values were stripped still carries is stripped; the form snapshot is left out."""
     row = store.get_fill_plan(job_key, db_path)
     if row is None:
         return None
@@ -811,9 +842,9 @@ def stored_plan(job_key: str, db_path: Any = None) -> Optional[dict]:
 
 def _fresh_plan(job: dict, cfg: dict, db_path: Any) -> Optional[FillPlan]:
     """A plan to hand off without re-fetching the form: rebuilt from the stored
-    form snapshot when that is fresh enough (L#8), with every value re-resolved
+    form snapshot when that is fresh enough (docs/DESIGN.md §12), with every value re-resolved
     NOW from answers.yaml / facts and plan.files = the job's approved files now.
-    None = rebuild from the live form (also for rows from before L#4)."""
+    None = rebuild from the live form (also for rows from before values were stripped)."""
     row = store.get_fill_plan(job["key"], db_path)
     if not row or not isinstance(row.get("plan"), dict):
         return None
@@ -834,7 +865,7 @@ def _fresh_plan(job: dict, cfg: dict, db_path: Any) -> Optional[FillPlan]:
     files, file_unresolved = approved_files(job, db_path)
     try:
         plan = _plan_from_snapshot(job, d.get("url") or url, ats, adapter_for(url, ats), snap, files,
-                                   file_unresolved, cfg)
+                                   file_unresolved, cfg, cover_text=approved_cover_text(job, db_path))
     except Exception as exc:  # noqa: BLE001 - rebuild from the live form instead
         log.warning("re-resolving the stored plan failed job=%s: %s", job["key"], type(exc).__name__)
         return None
@@ -913,15 +944,17 @@ def _worker(live: LiveSession) -> None:
         plan = _fresh_plan(job, cfg, db)                     # values re-resolved from answers NOW
         if plan is None:
             plan = plan_for_job(key, db_path=db, cfg=cfg)   # also the live re-check (≤ 6 h)
-        plan.files, _ = approved_files(store.get_job(key, db) or job, db)   # the approved files NOW
-        enforce_policy(plan, cfg)                            # uploads not approved now are blanked
+        now_job = store.get_job(key, db) or job
+        plan.files, _ = approved_files(now_job, db)          # the approved files NOW
+        cover = approved_cover_text(now_job, db)             # the approved cover letter NOW
+        enforce_policy(plan, cfg, cover)                     # anything not approved now is blanked
         live.ats = plan.ats or live.ats
         if "resume" not in (plan.files or {}):
             log.info("fill job=%s: no approved résumé; the résumé field stays empty", key)
         live.handle = BACKEND.open_headed(cfg)
         shots = _shots_dir(key, db)
         outcome = BACKEND.execute(live.handle, adapter_for(plan.url, plan.ats), plan,
-                                  plan_context(job, plan.url, plan.files, cfg=cfg), cfg)
+                                  plan_context(job, plan.url, plan.files, cfg=cfg, cover_text=cover), cfg)
         od = _outcome_dict(outcome)
         status = _SESSION_FOR_OUTCOME.get(od.get("status") or "", "error")
         shot = od.get("screenshot") or BACKEND.screenshot(

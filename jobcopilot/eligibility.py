@@ -1,4 +1,4 @@
-"""Hard eligibility rules (Phase 2): one Decision per job, every exclusion explained (D8).
+"""Hard eligibility rules (Phase 2): one Decision per job, every exclusion explained (docs/DESIGN.md §6).
 
     evaluate(job, company=..., cfg=...) -> Decision(lane="main" | "extended" | "excluded", reasons=[...])
 

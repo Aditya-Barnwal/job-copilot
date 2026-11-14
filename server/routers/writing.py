@@ -1,11 +1,17 @@
 """Generated writing + answers bank (Phase 3, workstream C).
 
     POST /api/jobs/{key}/cover-letter   {base?}            -> Draft
+    GET  /api/jobs/{key}/cover-letter/saved                -> the saved letter + approval state
+    POST /api/jobs/{key}/cover-letter/save     {text}      -> checks run, stored, NOT approved
+    POST /api/jobs/{key}/cover-letter/approve  {sha256, confirm_flags?} -> approved
+    GET  /api/artifacts/{id}/cover-letter/pdf              -> the rendered PDF
     POST /api/jobs/{key}/email          {kind}             -> Draft (application | follow_up)
     POST /api/answers/preview           {question, field_type?, options?, job_key?, required?} -> Answer
     GET  /api/answers/review                               -> review_report()
 
 Drafts are shown to the user before use; nothing is sent or submitted here.
+A saved letter is used by autofill only after its own approval
+(jobcopilot/cover_letters.py, docs/DESIGN.md §10).
 No confirmed facts → 409 with a "confirm your facts first" message.
 """
 from __future__ import annotations
@@ -13,8 +19,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import FileResponse
 
 from jobcopilot import answers as answers_mod
+from jobcopilot import cover_letters
 from jobcopilot import facts as facts_mod
 from jobcopilot import store
 from jobcopilot.writing import WritingError, generate_cover_letter, generate_email
@@ -65,6 +73,57 @@ def cover_letter_endpoint(key: str, body: dict = Body(default={})):
     except WritingError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     return _respond(draft)
+
+
+def _letter_call(fn, *a, **kw) -> dict:
+    try:
+        return fn(*a, **kw)
+    except cover_letters.LetterError as exc:
+        raise HTTPException(status_code=exc.http, detail=exc.detail)
+
+
+@router.get("/api/jobs/{key}/cover-letter/saved")
+def cover_letter_saved(key: str):
+    return _letter_call(cover_letters.status, key)
+
+
+@router.post("/api/jobs/{key}/cover-letter/save")
+def cover_letter_save(key: str, body: dict = Body(...)):
+    text = (body or {}).get("text")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
+    if not store.get_job(key):
+        raise HTTPException(status_code=404, detail="not found")
+    facts = _facts()
+    if facts is None:
+        raise HTTPException(status_code=409, detail="no résumé facts file — confirm your facts first")
+    return _letter_call(cover_letters.save, key, text, facts=facts, answers=_bank())
+
+
+@router.post("/api/jobs/{key}/cover-letter/approve")
+def cover_letter_approve(key: str, body: dict = Body(...)):
+    body = body or {}
+    confirm = body.get("confirm_flags", False)
+    if not isinstance(confirm, bool):
+        raise HTTPException(status_code=400, detail="confirm_flags must be true or false")
+    if not store.get_job(key):
+        raise HTTPException(status_code=404, detail="not found")
+    facts = _facts()
+    if facts is None:
+        raise HTTPException(status_code=409, detail="no résumé facts file — confirm your facts first")
+    out = _letter_call(cover_letters.approve, key, sha=body.get("sha256"), confirm_flags=confirm,
+                       facts=facts, answers=_bank())
+    if out.get("needs_confirmation"):
+        raise HTTPException(status_code=409, detail=out)
+    return out
+
+
+@router.get("/api/artifacts/{artifact_id}/cover-letter/pdf")
+def cover_letter_pdf(artifact_id: int):
+    p = cover_letters.pdf_path(artifact_id)     # only a PDF under data/applications is served
+    if p is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(str(p), media_type="application/pdf", filename="cover_letter.pdf")
 
 
 @router.post("/api/jobs/{key}/email")

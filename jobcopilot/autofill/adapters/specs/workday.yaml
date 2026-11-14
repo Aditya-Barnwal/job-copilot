@@ -1,4 +1,4 @@
-# Workday candidate application (declarative adapter spec, L#3).
+# Workday candidate application (declarative adapter spec, docs/DESIGN.md §12).
 # Read by jobcopilot/autofill/adapters/workday.py. Hooks are Workday's public
 # data-automation-id attributes (stable across tenants); the flow sits behind a
 # candidate account, so the user signs in by hand in the persistent profile.

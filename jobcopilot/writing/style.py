@@ -13,7 +13,7 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "cover_letter": {
-        "max_words": 180,          # PLAN Phase 3: <= 180 words (body only)
+        "max_words": 180,          # body only (docs/DESIGN.md §10)
         "target_words": [130, 170],
         "salutation": "Dear Hiring Manager,",
         "min_facts_cited": 2,
@@ -25,7 +25,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "answers": {"max_words": 150},
     "resume": {"max_rephrases": 6},  # tailor_v2: bullet rephrases applied per résumé
-    "max_attempts": 2,             # each attempt is a fresh conversation (L#2)
+    "max_attempts": 2,             # each attempt is a fresh conversation (docs/DESIGN.md §9)
     "signoff_default": "Best regards",
 }
 

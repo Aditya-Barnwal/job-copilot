@@ -7,7 +7,7 @@ and "razorpay.com" from another become one record.
 
 Every tier comes with human-readable reasons naming their source
 ("yc-oss: W23", "bsm: Series B", "config: brand") so a tier filter can always
-explain an exclusion (D8). A tier set by hand in config is sticky: it is stored
+explain an exclusion (docs/DESIGN.md §6). A tier set by hand in config is sticky: it is stored
 as the reason "config: <tier>" and no computed signal overrides it.
 
 Identity rules (Phase 1 review):

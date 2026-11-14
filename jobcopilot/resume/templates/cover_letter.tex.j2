@@ -1,0 +1,28 @@
+((= Cover letter (pdfLaTeX). Rendered by jobcopilot/cover_letters.py with the
+    résumé renderer's Jinja2 environment (jobcopilot/resume/render.py): every
+    value is LaTeX-escaped automatically. `paragraphs` is a list of paragraphs,
+    each a list of lines (the sign-off keeps its line breaks). Nothing personal
+    lives here: the text is the letter you saved. =))
+\documentclass[letterpaper,11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{times}
+\usepackage{textcomp}
+\usepackage{microtype}
+\usepackage[letterpaper,margin=1in]{geometry}
+\pdfgentounicode=1
+\input{glyphtounicode}
+\pdfinterwordspaceon
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.9em}
+\raggedright
+\begin{document}
+((* for para in paragraphs *))
+((* for line in para *))
+((( line )))((* if not loop.last *))\\{}((* endif *))
+
+((* endfor *))
+
+((* endfor *))
+\end{document}

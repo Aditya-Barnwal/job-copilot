@@ -1,4 +1,4 @@
-"""Cross-source dedupe + multi-source storage (Phase 1, PLAN.md L#6 / D11)."""
+"""Cross-source dedupe + multi-source storage (Phase 1, docs/DESIGN.md §5)."""
 from __future__ import annotations
 
 import pytest
@@ -331,7 +331,7 @@ def test_new_ats_beats_himalayas_copy_and_supplies_the_apply_url(src):
     assert len(merged) == 1
     j = merged[0]
     assert j.source == src
-    assert j.apply_url == f"https://jobs.{src}.example/acme/x-1"      # D11: the employer's link
+    assert j.apply_url == f"https://jobs.{src}.example/acme/x-1"      # the employer's link (docs/DESIGN.md §5)
     assert {s["source"] for s in j.sources} == {src, "himalayas"}
     assert j.attribution_name == "Himalayas"
 

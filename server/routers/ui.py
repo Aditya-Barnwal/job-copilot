@@ -179,6 +179,8 @@ def unanswered(limit: int = 200):
             ftype = field.get("type") or {"select": "select", "radio": "radio", "check": "checkbox"}.get(kind, "text")
             if kind == "upload" or ftype in ("file", "hidden") or field.get("hidden"):
                 continue      # file uploads come from your approved résumé / cover letter
+            if (u.get("reason") or act.get("note")) == "no approved cover letter":
+                continue      # the cover-letter box: written and approved in the Cover letter tab
             if service.is_consent_label(label, "check" if ftype in ("checkbox", "multi") else "text"):
                 continue      # consent and attestations: only you tick those, in the form
             ftype = {"multi": "checkbox"}.get(ftype, ftype)

@@ -293,6 +293,34 @@ export interface Draft {
   grounding: { clean?: boolean; flags?: Record<string, string[]> };
 }
 
+export interface LetterChecks {
+  status: "ok" | "needs_review" | "refused";
+  warnings: string[];
+  word_count: number;
+  max_words: number;
+  grounding: { clean?: boolean; flags?: Record<string, string[]>; unsupported?: string[] };
+}
+
+// GET /api/jobs/{key}/cover-letter/saved (and the save / approve replies).
+export interface CoverLetterState {
+  saved: boolean;
+  artifact_id: number | null;
+  artifact_version?: number;
+  artifact_status?: string;
+  job_artifact_id?: number | null;
+  text?: string;
+  sha256?: string;
+  saved_at?: number;
+  checks?: LetterChecks;
+  notes?: string[];
+  pdf_url?: string | null;
+  approved?: boolean;
+  approved_at?: number | null;
+  usable?: boolean;
+  needs_confirmation?: boolean;
+  earlier?: { artifact_version: number; text: string };
+}
+
 export interface UiConfig {
   demo: boolean;
   banner: string | null;

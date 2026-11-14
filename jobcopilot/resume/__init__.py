@@ -1,4 +1,4 @@
-"""LaTeX résumés (Phase 3, PLAN D4/D5): content from usable facts -> Jinja -> pdflatex.
+"""LaTeX résumés (Phase 3, docs/DESIGN.md §9): content from usable facts -> Jinja -> pdflatex.
 
     from jobcopilot.resume import build_content, render, pick_base, available_bases
 

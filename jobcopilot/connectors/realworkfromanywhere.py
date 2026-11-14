@@ -7,7 +7,7 @@ job carries region_restrictions ["Worldwide"] — the board's own promise, which
 Phase 2 can still overrule from the text. robots.txt (re-checked 2026-11-12)
 disallows `/go/` (their outbound redirector): we never store or follow a /go/
 link, only the item's /jobs/ page. RSS source -> `store: minimal` by default
-(D11): description kept only when the board config says `store: full`.
+(docs/DESIGN.md §5): description kept only when the board config says `store: full`.
 
 This module also holds the small safe-feed helpers the other RSS / Atom board
 connectors (cryptojobslist, hasjob, nodesk) share.
@@ -144,7 +144,7 @@ def split_role_at_company(title: str, company: str = "") -> tuple[str, str]:
 
 
 def keep_description(board: dict[str, Any], default: str = "minimal") -> bool:
-    """D11: RSS sources store minimal fields unless the config opts in."""
+    """Board terms (docs/DESIGN.md §5): RSS sources store minimal fields unless the config opts in."""
     return str(board.get("store") or default).strip().lower() == "full"
 
 

@@ -1758,7 +1758,7 @@ MAX_QUESTION_CHARS = 500
 MAX_ANSWER_CHARS = 4000
 _CUSTOM_HEADER = ("# Answers you typed in the app (Needs you -> Save to answers bank). The app rewrites\n"
                   "# only this block; edit it by hand if you like, keeping the question/answer shape.\n")
-# Credentials and ID / card numbers are never stored (PLAN non-negotiable 4).
+# Credentials and ID / card numbers are never stored (docs/DESIGN.md §17).
 _SECRET_QUESTION_RE = re.compile(
     r"\b(pass ?(word|code|phrase)|otp|one time (code|password|pin)|pin( code| number)?|cvv|cvc|"
     r"security code|card (number|no)|credit card|debit card|ssn|social security|aadha+r|"

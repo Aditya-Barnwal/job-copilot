@@ -10,7 +10,7 @@ http:
   # (ashby, greenhouse, lever, workable, rippling, gem, smartrecruiters); override here.
   platform_rates: {}             # e.g. {recruitee.com: 0.5}  (requests/sec per platform)
   host_rates:                    # requests/sec for ONE exact host (not subdomains)
-    bangalorestartupmap.com: 0.2   # <= 1 request / 5 s, homepage included (D12)
+    bangalorestartupmap.com: 0.2   # <= 1 request / 5 s, homepage included
   # Documented public APIs only, each with a reason. These skip the robots.txt
   # check but are still rate-limited. Robots results checked 2026-11-11:
   #   boards-api.greenhouse.io  200, Disallow: /embed/ only  -> /v1/boards allowed, no exemption

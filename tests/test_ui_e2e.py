@@ -282,3 +282,34 @@ def test_hide_then_unhide_from_hidden_by_you(served, page):
     row.wait_for(state="detached")
     page.get_by_text(re.compile("is back")).wait_for()
     assert store.canonical_status(store.get_job(key)["status"]) == "found"
+
+
+def test_cover_letter_save_then_approve(served, page):
+    """Write a letter, save it (checks shown, not approved), approve it: only then
+    may autofill use it."""
+    from jobcopilot import cover_letters
+    key = served["showcase"]["ready"]                      # has an approved tailored résumé
+    page.goto(served["base"] + "/today")
+    card = page.locator(f'article[id="job-{key}"]')
+    card.wait_for()
+    card.get_by_role("button", name="Review").click()
+    dialog = page.get_by_role("dialog")
+    dialog.wait_for()
+    dialog.get_by_role("tab", name="Cover letter").click()
+    dialog.get_by_role("button", name="Write it yourself").click()
+    dialog.locator("textarea#letter").fill(
+        "Dear Hiring Manager,\n\nAt Acme Widgets Inc., I built a Go order service handling 200+ requests "
+        "per second behind a REST API.\n\nI would welcome the chance to discuss the role. Thank you for "
+        "your time.\n\nBest regards,\nAlex Example")
+    dialog.get_by_text("Unsaved changes").wait_for()
+    dialog.get_by_role("button", name="Save", exact=True).click()
+    dialog.get_by_text("Saved, needs your approval").wait_for(timeout=20000)
+    dialog.get_by_text("Checks on the saved letter").wait_for()
+    assert cover_letters.approved_letter(store.get_job(key)) is None       # saving never approves
+    box = dialog.get_by_role("checkbox", name=re.compile("reviewed every flag"))
+    if box.count():
+        box.check()
+    dialog.get_by_role("button", name="Approve cover letter").click()
+    dialog.get_by_text(re.compile(r"Autofill attaches this letter")).wait_for()
+    letter = cover_letters.approved_letter(store.get_job(key))
+    assert letter is not None and "200+ requests per second" in letter["text"]

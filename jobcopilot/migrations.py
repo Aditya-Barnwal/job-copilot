@@ -211,7 +211,7 @@ def _v3_eligibility_queue(conn: sqlite3.Connection) -> None:
 
     - jobs gains the eligibility Decision (lane, excluded + reasons, soft flags,
       YOE range/evidence, India eligibility, annual INR pay) so every exclusion
-      is stored and explainable (D8), and the v2 fit score with its components.
+      is stored and explainable (docs/DESIGN.md §6), and the v2 fit score with its components.
     - jobs gains tracker fields: when the status last changed and, for a
       submission, when / how it was detected and where the proof lives (P4).
     - companies gains the probe's columns (probe currently writes ats_evidence).
@@ -350,7 +350,7 @@ def _v5_application_artifacts(conn: sqlite3.Connection) -> None:
 
 
 def _v6_autofill(conn: sqlite3.Connection) -> None:
-    """Phase 4: fill plans (built nightly, D3) and browser-fill sessions.
+    """Phase 4: fill plans (built nightly, docs/DESIGN.md §12) and browser-fill sessions.
 
     - fill_plans: one current plan per job (field -> value, source, confidence,
       plus the unresolved fields); `stale_after` is when it must be rebuilt
@@ -427,6 +427,17 @@ def _v8_v1_status_names(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE status_history SET status = ? WHERE status = ?", (new, old))
 
 
+def _v9_cover_letter_approval(conn: sqlite3.Connection) -> None:
+    """Saved cover letters (docs/DESIGN.md §10): the letter you saved for an
+    artifact version, its check results and file fingerprints
+    (cover_letter_json), and its own approval (cover_letter_approved_at plus the
+    fingerprint of the exact text you approved). Saving new text clears it, and
+    autofill uses a letter only while the fingerprint still matches."""
+    add_column_if_missing(conn, "application_artifacts", "cover_letter_json", "TEXT")
+    add_column_if_missing(conn, "application_artifacts", "cover_letter_approved_at", "REAL")
+    add_column_if_missing(conn, "application_artifacts", "cover_letter_approved_sha", "TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
@@ -436,6 +447,7 @@ MIGRATIONS: list[Migration] = [
     (6, "autofill", _v6_autofill),
     (7, "fill_plans_no_values", _v7_fill_plans_no_values),
     (8, "v1_status_names", _v8_v1_status_names),
+    (9, "cover_letter_approval", _v9_cover_letter_approval),
 ]
 
 

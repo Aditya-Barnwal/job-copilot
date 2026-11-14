@@ -27,6 +27,9 @@ discovered_companies.yaml
 .DS_Store
 docs/
 web/node_modules/
+web/*.tsbuildinfo
+# built inside the image (Dockerfile stage 1), never copied from the host
+server/static/dist/
 
 # Tests are left out, except the committed fixtures the demo / fixture mode read.
 tests/*

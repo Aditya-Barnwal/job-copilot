@@ -99,6 +99,7 @@ export function ApplyTab({ job }: { job: JobDetail }) {
   const isUnlocked = s != null && unlocked === s.id;
   const o = s?.outcome || {};
   const filledDone = !!s && !["starting", "filling"].includes(s.status);
+  const shot = !!s && (s.has_screenshot ?? !!s.screenshot_path);
 
   const stepState = (i: number): "done" | "now" | "todo" => {
     if (submitted || s?.status === "submitted") return "done";
@@ -146,14 +147,14 @@ export function ApplyTab({ job }: { job: JobDetail }) {
               <p className="mt-2 text-[13px] text-muted">Answer them in the window. Save your answers on <Link to="/needs-you" className="text-accent underline underline-offset-2">Needs you</Link> so next time they fill themselves.</p>
             </div>
           )}
-          {s?.has_screenshot && (
+          {s && shot && (
             <figure className="border-t border-line bg-paper-2/50 p-4">
               <img src={`/api/autofill/sessions/${s.id}/screenshot?v=${s.finished_at || s.status}`} alt={s.status === "submitted" ? "Screenshot of the confirmation page" : "Screenshot of the filled form"}
                 className="max-h-[420px] w-full rounded-[10px] border border-line object-cover object-top" />
               <figcaption className="mt-2 text-[12px] text-muted">{s.status === "submitted" ? "Confirmation page, saved as proof." : "The form as it was left for you."}</figcaption>
             </figure>
           )}
-          {submitted && !s?.has_screenshot && job.submit_proof_path && (
+          {submitted && !shot && job.submit_proof_path && (
             <figure className="border-t border-line bg-paper-2/50 p-4">
               <img src={`/api/jobs/${enc(job.key)}/proof`} alt="Screenshot of the confirmation page" className="max-h-[420px] w-full rounded-[10px] border border-line object-cover object-top" />
             </figure>

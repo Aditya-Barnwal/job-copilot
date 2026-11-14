@@ -26,7 +26,7 @@ AR_REPO="cloud-run-source-deploy"     # the repository `gcloud run deploy --sour
 
 # Everything the demo image needs, and nothing else.
 ALLOW=(Dockerfile .dockerignore requirements.txt requirements-demo.txt run.py
-       jobcopilot server config tests/fixtures profile.example)
+       jobcopilot server config tests/fixtures profile.example web)
 
 die()  { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*" >&2; }

@@ -38,8 +38,9 @@ mb=$(( size / 1000000 ))
 leaks=$("$ENGINE" run --rm --entrypoint sh "$IMAGE" -c \
   'cd /app; for p in profile .env data/jobcopilot.db; do [ -e "$p" ] && echo "$p"; done;
    find / -xdev \( -name "*.db" -o -name "*.pdf" -o -name ".env" \) -not -path "/proc/*" 2>/dev/null | head -3;
+   find / -xdev -type d -name node_modules -not -path "/proc/*" 2>/dev/null | head -1;
    python -c "import importlib.util as u, sys; sys.stdout.write(\"torch\" if u.find_spec(\"torch\") else \"\")"' || true)
-[[ -z "$leaks" ]] && pass "no personal files, databases or torch in the image" || bad "image contains: $leaks"
+[[ -z "$leaks" ]] && pass "no personal files, databases, node_modules or torch in the image" || bad "image contains: $leaks"
 
 cleanup
 "$ENGINE" run -d --name "$NAME" -p "127.0.0.1:${HOST_PORT}:8080" -e PORT=8080 "$IMAGE" >/dev/null
@@ -53,6 +54,11 @@ expect() {  # expect <code> <label> <curl args...>
 }
 expect 200 "GET /" "$BASE/"
 curl -s "$BASE/" | grep -q 'Demo — sample data' && pass "demo banner shown" || bad "demo banner missing"
+home=$(curl -s "$BASE/")
+grep -q 'id="root"' <<<"$home" && pass "React UI served (built in the image)" || bad "React UI missing: dist/ not in the image"
+asset=$(grep -o '/assets/index-[A-Za-z0-9_-]*\.js' <<<"$home" | head -1 || true)
+if [[ -n "$asset" ]]; then expect 200 "GET $asset" "$BASE$asset"; else bad "no UI script in index.html"; fi
+grep -q '<script>' <<<"$home" && bad "inline <script> in the served page" || pass "no inline script (strict CSP)"
 expect 200 "GET /api/meta" "$BASE/api/meta"
 expect 200 "GET /api/queue" "$BASE/api/queue?lane=main"
 expect 200 "GET /api/matches" "$BASE/api/matches?limit=5"

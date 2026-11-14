@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 // Builds into server/static/dist, which FastAPI serves (Node is build-time only).
 // `npm run dev` proxies /api to the FastAPI port. changeOrigin stays false so the
 // Host header matches the page's Origin, which the app's CSRF guard requires.
+declare const process: { env: Record<string, string | undefined> }; // Node global (no @types/node needed)
 const apiPort = process.env.JOBCOPILOT_API_PORT || "8000";
 
 export default defineConfig({

@@ -9,6 +9,16 @@
 #                                    --build-arg DEMO=1 --build-arg TORCH_INDEX= .
 #   scripts/deploy_cloudrun.sh stages a copy of this file with the demo values as
 #   the ARG defaults, because `gcloud run deploy --source` takes no build args.
+# --- stage 1: build the React UI (web/ -> server/static/dist). Node exists only here;
+# the final image gets the static files and no node_modules.
+FROM node:22-alpine AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build && test -f /src/server/static/dist/index.html
+
+# --- stage 2: the Python app
 FROM python:3.13-slim
 
 # requirements file to install; requirements-demo.txt leaves out torch/sentence-transformers
@@ -34,6 +44,7 @@ RUN pip install ${TORCH_INDEX:+--extra-index-url "$TORCH_INDEX"} -r "$REQS"
 
 COPY jobcopilot/ jobcopilot/
 COPY server/ server/
+COPY --from=web /src/server/static/dist/ server/static/dist/
 COPY config/ config/
 COPY run.py .
 # Fake data for demo mode and `python -m jobcopilot.daily --no-network`:

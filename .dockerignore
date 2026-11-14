@@ -31,3 +31,4 @@ web/node_modules/
 # Tests are left out, except the committed fixtures the demo / fixture mode read.
 tests/*
 !tests/fixtures/
+private/

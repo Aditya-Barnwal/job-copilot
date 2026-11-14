@@ -30,3 +30,6 @@ profile/
 # Frontend build artefacts (Phase 5)
 web/node_modules/
 server/static/dist/
+
+# Private working notes (progress log, decisions): never committed
+private/

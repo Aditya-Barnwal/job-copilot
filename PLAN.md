@@ -1,9 +1,7 @@
-# Job-Copilot v2 — Plan
+# Job-Copilot v2: Plan
 
-Status: **Phase 0 in progress** (go-ahead + answers received 2026-11-11 — see §6).
-Baseline: `main @ cb54d88` (identical to GitHub `origin/main`), 27/27 tests green.
-Work happens on branch `v2`, one commit per phase. Nothing is pushed unless you say so.
-This file and `docs/` are committed to a **public** repo, so they hold no personal data. Personal data lives in the git-ignored `profile/`.
+Work happens on branch `v2`, one commit per phase. Phases 0-4 are done (Phase 4's supervised live dry run is pending); Phase 5 (React UI) and Phase 6 (docs) are next.
+This file and `docs/` are public, so they hold no personal data. Personal data lives in the git-ignored `profile/`.
 
 Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules per source, ATS map) · [`docs/LEARNINGS.md`](docs/LEARNINGS.md) (OSS study; `L#n` below = its ranked idea n).
 
@@ -56,7 +54,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 
 ## 3. Design decisions (recommendations; override any)
 
-- **D1. Frontend: Vite + React + TypeScript + Tailwind** (confirmed by you 2026-11-14: the point is a polished site). It builds into `server/static/dist` and FastAPI serves it, so Node isn't needed at runtime; `make dev` runs Vite with an API proxy. The Docker image builds the UI in a Node stage.
+- **D1. Frontend: Vite + React + TypeScript + Tailwind**. It builds into `server/static/dist` and FastAPI serves it, so Node isn't needed at runtime; `make dev` runs Vite with an API proxy. The Docker image builds the UI in a Node stage.
   - **Why not HTMX:** the review card is the product. It needs:
     - JD and resume side by side, with a diff
     - inline editing of bullets, cover letter and answers, with live grounding flags
@@ -106,15 +104,15 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - Himalayas jobs are applied to through its `applicationLink`, and expired jobs are purged.
   - RSS sources store minimal fields plus the link.
   - The employer's own ATS URL is preferred only when we found the job there independently.
-- **D12. Bangalore Startup Map: refreshed once a day in the 19:00 run** (your call, 2026-11-11; robots.txt allows it and the site has no terms page).
+- **D12. Bangalore Startup Map: refreshed once a day in the 19:00 run** (robots.txt allows it and the site has no terms page).
   - One conditional GET of the homepage payload: companies, stage, sector, website, hiring map.
   - Company pages are fetched **only for new or changed hiring companies**, at ≤ 1 request per 5 s, with an ETag cache.
   - `/api/` is never called, and their role feed is never mirrored; jobs come from the ATS APIs.
   - Attribution goes in the UI and README.
-- **D13. Docker + AWS ECS** (your call, 2026-11-11).
+- **D13. Docker + a cloud demo deploy** (done on Google Cloud Run; AWS ECS was the first plan).
   - `Dockerfile` + `compose.yaml` from Phase 0; CI builds the image.
   - Phase 3b deploys a **demo instance with fixture data only** to AWS ECS Fargate. Your profile, facts, DB and browser sessions never leave the Mac (non-negotiable 4), and autofill needs your local logged-in browser anyway.
-  - Cost ≈ US$9/month if left running, ~$0 when stopped. I confirm with you before the first deploy.
+  - Cost ≈ US$9/month if left running, ~$0 when stopped. The owner confirms before the first deploy.
   - Until the deployment exists, the matching résumé facts stay `pending` and tailoring won't use them.
 - **D14. LLM.**
   - Groq models in order: `openai/gpt-oss-120b` → `qwen/qwen3.8-27b` → `openai/gpt-oss-20b`, with automatic fallback to local Ollama.
@@ -148,7 +146,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - copy the two base PDFs into `profile/base_resumes/`
   - **pre-fill `resume_facts.yaml` from those two PDFs only**, with every line `status: unconfirmed` (or `pending` for claims that aren't true yet)
   - `python -m jobcopilot.facts check` validates the file
-  - I send you the lines to confirm while P1–P2 are built
+  - the owner confirms the lines while P1–P2 are built
 - **Accept when**:
   - the old tests plus new tests are green, locally and in CI
   - `make dev` serves the app
@@ -193,7 +191,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - a failing source doesn't abort the run (test)
   - `make smoke-live` prints per-source counts
 
-### Phase 1b: Many more sources (your request, 2026-11-11) ☑
+### Phase 1b: Many more sources ☑
 - ☐ Survey the top-starred job-automation / job-aggregation repos on GitHub (e.g. JobSpy, AIHawk, ApplyPilot, jobpilot, and the topic lists `job-scraper`, `job-search`, `job-board`, `job-application-automation`) and extract **every job source they use**.
 - ☐ For each candidate, apply the same gate as Phase 1 (official API / RSS / public JSON, robots.txt, terms) and record the verdict in `docs/SOURCES.md`. Sources that need scraping a ToS-protected site (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound...) stay link-out only, even when popular repos scrape them.
 - ☐ Candidates to check first:
@@ -233,7 +231,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - `make daily` on fixtures produces a ranked queue
   - the agent installs and runs via `launchctl kickstart`
 
-### Phase 3: Tailoring v2 ☑ (3b on Google Cloud Run; résumé-claim flip waits for your OK on the wording)
+### Phase 3: Tailoring v2 ☑ (3b on Google Cloud Run)
 - ☑ Base templates:
   - `profile/base_resumes/backend_sde.tex` from `AdityaBarnwal_.pdf`, `ml_ai.tex` from `AdityaBarnwal_DS.pdf`, both pdfLaTeX (D5) with the same layout, fonts and section order
   - base picked by role family
@@ -254,10 +252,9 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - a **Needs you** queue saves each new answer back to the bank (L#4): moved to Phase 5 (it is a UI flow)
 - ☑ Grounding v3: per-line fact citations + the 4 existing checks, enforced server-side. Tailoring refuses to run if any cited fact is unconfirmed.
 - ☑ Versioned artifacts: `data/applications/<job>/v<N>/{resume.tex,resume.pdf,cover_letter.*,answers.json,edit_plan.json}`.
-- ☑ **3b. Demo deploy (D13)**: done on **Google Cloud Run** (your call, 2026-11-12) instead of AWS ECS; `make deploy-demo` / `make stop-demo`, docs/DEPLOY.md. Original AWS plan kept below for reference:
+- ☑ **3b. Demo deploy (D13)**: done on **Google Cloud Run** instead of AWS ECS; `make deploy-demo` / `make stop-demo`, docs/DEPLOY.md. Original AWS plan kept below for reference:
   - ECR image + ECS Fargate service in demo mode (fixture DB, no profile)
   - `make deploy-demo` / `make stop-demo`, plus a README section
-  - needs your AWS account + `aws configure`; the first deploy happens only after your OK
   - then flip the matching résumé facts from `pending` to `confirmed`
 - **Accept when**:
   - golden renders of both bases are 1 page and pass the ATS round-trip
@@ -315,143 +312,3 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 3. **Never bypass CAPTCHAs or bot checks; never automate prohibited sites.** `needs_you` pause; domain denylist; `docs/SOURCES.md`; no stealth flags.
 4. **Never store passwords or card/ID numbers; data stays local.** Git-ignored `profile/` + `data/`; PII check in CI; manual logins only.
 5. **Respect rate limits and robots.txt; prefer official APIs.** `http.py` (P0) + per-source verdicts.
-
-## 6. Your decisions (2026-11-11)
-1. **Salary floors**: INR 15 LPA kept. You didn't give USD / EUR floors, so defaults are **USD 30,000 / EUR 28,000 per year**, editable in `config/filters.yaml`.
-2. **YC**: use `yc-oss` (verified, see D10).
-3. **Installs**: approved (TinyTeX, Node packages, Python deps).
-4. **LLM**: Groq key copied from the jarvis project into this repo's git-ignored `.env` (D14).
-5. **Nightly run**: 19:00 IST.
-6. **Bangalore Startup Map**: daily refresh in the 19:00 run (D12).
-7. **Docker / AWS ECS / "verifies every claim"**: make them real (D13, Phases 3 / 3b).
-
-Still open, not blocking until Phase 3b: is your AWS account ready?
-
-## 7. Progress log
-- 2026-11-11: Repo mapped; sources, ATS map, OSS repos and prior docs researched; plan written.
-- 2026-11-11: Answers received (§6); Phase 0 started on branch `v2`.
-- 2026-11-11: **Phase 0 built and committed (paused for usage limits).** 170 tests green, PII check clean, app runs on the real DB (migrated to schema v1, backup in `data/backups/`), live ingest through the polite client: 4,307 raw → 328 passed, 292 new.
-  - **Resume here (Phase 0 wrap-up):**
-    1. Re-run the 3-lens review (`jobcopilot-phase0-review` workflow; it was stopped before it finished) and fix whatever it confirms.
-    2. You confirm résumé facts: `.venv/bin/python -m jobcopilot.facts review`, then tell me "confirm all except …".
-    3. Run `sudo xcodebuild -license accept` once, so plain `make` works (until then use `/Library/Developer/CommandLineTools/usr/bin/make`).
-  - **Backlog found while building:**
-    - sort jobs by `fit_score`, not `match_score` (P2)
-    - `max_yoe` is applied after the row limit (P2)
-    - PDF filename can collide when two approvals land in the same second (P3)
-    - the email modal's copy button has only the browser-side grounding check (P5)
-    - Postman's Greenhouse board now returns 404 (P1, ATS detection)
-    - `funding.py` recency fix F12 (P1)
-  - Then start Phase 1.
-- 2026-11-11: **Phase 0 done.** A 3-lens review found 31 issues (4 high); every one was reproduced with a failing test, then fixed.
-  - **Highlights:**
-    - grounding now catches base-form verbs, title inflation and spelled-out numbers
-    - the reuse path is re-grounded server-side
-    - an RFC 9309 robots parser replaces the stdlib one (it failed open on BOM / duplicate groups)
-    - DO-NOT-AUTOMATE host denylist inside the HTTP client
-    - credential headers are dropped on cross-origin redirects
-    - `usable_facts()` fails closed
-    - strict CSP + http(s)-only links in the UI
-    - the PII guard covers documents, databases, name and links, bare mobiles and API keys
-    - per-model fallback within Groq
-  - **Verification:** 402 tests green, PII clean, live ingest OK (4,318 raw → 330 passed), real DB migrated to schema v2.
-  - **Backlog added:**
-    - `tailor.suggest` / `apply-pack` should re-ground stored versions too (P3)
-    - facts unknown-key check and `absent_in:` (P3)
-    - `/api/ingest` response should list robots-blocked companies (P5)
-- 2026-11-11: **Phase 1 built** (4 builders), integrated and run live.
-  - **Live ingest:** 37 company boards + 5 job boards → 770 jobs stored, 124 of them from boards; 47 with real salary numbers (F2 fixed: Ashby nests salary in `summaryComponents`).
-  - **Discovery:** 2,511 companies with tiers (brand 174 · funded 1,894 · unknown 431 · excluded 12).
-  - **Targets:** all 7 resolved; PromptQL via Gem (robots exemption, your call). Freshworks stays manual (SmartRecruiters robots disallow). Postman's board still 404s.
-  - **Himalayas:** robots.txt forbids paging, so page 1 per query only.
-  - **Tests:** 537 green, PII clean.
-  - **Next:** Phase 1 review → fixes → mark ☑ → Phase 1b (many more sources).
-- 2026-11-12: **Phase 1 done.** The 3-lens review found 24 issues (4 high), all fixed with regression tests.
-  - **Company matching:** shared hosts (Play Store etc.) are never identity domains; companies removed from config stop being ingested; common-word brands need a domain match; IT-services firms can't pass as brands.
-  - **Detector safety:** linear-time regexes; response size and deadline caps in the HTTP client; validated slugs; path-scoped robots exemptions.
-  - **Dedupe:** country-aware remote buckets (no US-only listing merged into an India role); purge never deletes a still-listed job.
-  - **Parsing:** Jobspresso salary parser fixed ("monthly" was read as "million"); region and time-zone parsing.
-  - **Discovery:** ATS detection is now a discovery step, so YC and Bangalore Startup Map companies become ingest targets.
-  - **Verification:** 633 tests green. Live ingest: 5,453 raw → 495 passed, 786 jobs stored. RemoteOK was briefly unreachable and handled as transient.
-  - **Backlog:**
-    - quote and validate config slugs in the Greenhouse / Lever / SmartRecruiters / Gem connectors (Ashby done) (P1b)
-    - add `max_response_bytes` / `request_deadline_sec` to config defaults (P1b)
-    - Postman board 404 (P1b)
-- 2026-11-12: **Phase 1b done.** 16 job boards (incl. Hacker News, speedyapply, SimplifyJobs), 8 more ATS connectors (Recruitee, Workable, Rippling, Teamtailor, Pinpoint, Personio, BambooHR, Keka), seed import of ~33k employer boards, rotating India probe. 2 reviewers found 17 issues (6 high), all fixed with tests.
-  - **Highlights:**
-    - shared 1 req/s limit and a per-run cap per hiring platform (probe was only throttled per tenant)
-    - link allowlist (web links only; no local/internal hosts) at the Job model
-    - hn_parse salary/funding/currency fixes
-    - Unicode email scrubbing
-    - India-vs-Indiana word matching
-    - transient failures no longer demote a probed board
-    - feed guards against entity tricks in every RSS reader
-  - **Extended watchlist (your call):** tier `watchlist` = not brand/funded but named by >= 2 curated early-career lists (~2,500 companies), fetched into a separate lane; `include_extended: false` turns it off.
-  - **Probe:** up to 4,000 boards/run, 7-day refresh, a board counts only with an India/remote role whose title matches target roles (not senior+).
-  - **Verification:** 1,039 tests green, PII clean.
-  - **Backlog:**
-    - the job-description text fed to the tailoring prompt must be marked untrusted (P3)
-    - add `probed_at` / `probe_job_count` / `probe_india_count` columns (P2)
-    - config files are the source of truth for `include_extended`; the Phase 5 UI needs a watchlist tab
-- 2026-11-12: **Deferred by you, for later:** free API keys (Findwork, Web3.career, Jooble, Careerjet); robots exemptions for Darwinbox and remotefirstjobs. Phase 2 started.
-- 2026-11-12: **Your UX decisions** (apply in Phases 2, 4 and 5):
-  - **Views:** "Today's best" (15–25) is only the top of the list. **All matches** shows every eligible job, sorted by fit and filterable. Plus an **Extended** (watchlist) tab and an **Excluded** tab with reasons.
-  - **Tracker:** Found → Tailored → **Ready to submit** → **Submitted** → OA → Interview → Offer / Rejected, with dates. Submitted jobs leave Today's best and All matches.
-  - **Submit detection:**
-    - your **✓ Submitted** button is the source of truth (undoable)
-    - the autofill browser *watches* for the ATS confirmation page and marks "Submitted (detected)" with a screenshot (never clicks)
-    - unsubmitted jobs stay in Ready to submit with an age counter, a reminder after 2 days, and a warning when the posting expires
-    - **Gmail confirmation detection: approved by you for later** (after Phase 5).
-      - Read-only: only the subject and sender of "we received your application" mail, matched to Ready-to-submit jobs → "Submitted (email)".
-      - No message bodies stored; can be switched off in config.
-- 2026-11-12: **Your working agreement:**
-  - **No deadline pressure; nothing compromised.** The target was 15 Nov, but quality wins over the date.
-  - **One input checklist.** Before Phase 3, autofill (Phase 4) and AWS (3b), I send you ONE list of every input needed (links, current and expected CTC, notice period, authorisation, relocation, start date, EEO answers you choose to give or decline, AWS account details, ...). You provide them.
-  - **No silent defaults.** Every value autofill can type lives in `profile/answers.yaml` + `profile/resume_facts.yaml` (git-ignored). You review and approve them (an "Answers & profile" screen plus `make answers-review`). Nothing autofills from a value you haven't approved; unknown fields are left empty and highlighted.
-  - **Generated by the app, grounded in confirmed facts, shown before use:** cover letters and application emails.
-- 2026-11-12: **Phase 2 review fixed.** 2 reviewers found 22 issues (1 critical, 6 high), all fixed with tests.
-  - **Your rules applied:**
-    - degree: only a REQUIRED master's/PhD excludes
-    - YOE: fresher / 0–2 / 1+ / 1.5+ pass
-    - titles need an engineering-role signal incl. acronyms (SDE, SWE, MLE, FDE, DS, DA, AMTS, GET)
-  - **Role taxonomy** (config `roles.families`):
-    - primary: SDE / backend / AI / GenAI / LLM / ML / CV / NLP / DE / DS / FDE
-    - secondary: Data Analyst, Analytics Eng, MLOps, Full-stack
-    - startup_only: Platform, Cloud, Integration, Research, SRE, Observability, DevOps, SDET, Solutions — at funded/watchlist only
-    - off: MTS (AMTS kept), rules-engine, ETL Developer, frontend-only, mobile
-  - **Other fixes:**
-    - unknown-country jobs no longer land in main; country/city coverage greatly expanded
-    - YOE parsing fixes
-    - empty-JD jobs no longer outrank real ones
-    - vanished postings retired
-    - atomic run lock + crash recovery
-    - DST-safe schedule
-  - **Verification:** 1,620 tests green.
-  - **Backlog:**
-    - main lane is small (~82 on the existing DB); grows as probes + new-grad sources accumulate
-    - jobs with no description still score on role/location/company (~75): consider a penalty or fetching full JDs
-- 2026-11-12: **Phase 2 done.**
-  - **Live run #2** (corrected rules): 232 sources ok, 23,348 raw → 440 eligible / 7,885 excluded with reasons; queue 25 main / 15 extended / 10 near-miss. Top: Prodigal FDE, Hevo SDE II, Skylark AI Eng, HackerRank FDE, Netomi Agentic Eng, Bureau Assoc. DS.
-  - **19:00 LaunchAgent** fired, saw the manual run and stepped aside (run lock works). Re-enabled for nightly runs.
-  - **Next:** your Phase 3/3b/4 input checklist, then Phase 3.
-- 2026-11-12: **Your inputs received** (stored privately in `profile/answers.yaml`).
-  - **Phase 3b:** host is **Google Cloud Run (always-free tier)** instead of AWS ECS. The résumé line becomes "containerised with Docker and deployed on Google Cloud Run" once it's live.
-  - **Expected CTC (tier-aware):** floor 15 LPA; defaults brand 25 / startup 18; upper-middle of a posted range.
-  - **TinyTeX:** install approved.
-- 2026-11-12: **Résumé facts confirmed by you:** 61 confirmed; 3 claims pending.
-  - **Changes:**
-    - AWS skill → "AWS (Lambda)" (EC2/ECS removed)
-    - Job-Copilot deploy → Google Cloud Run (pending until live)
-    - Job-Copilot bullet 1 → real numbers (14 ATS, 16 boards, 20,000+ roles/day)
-    - Docker confirmed (skills only)
-    - SecretPixel = published research project
-    - DUM-E kept exactly as in your résumés
-  - **Next task after this phase (yours): DUM-E/Jarvis facts.** Verify/add Amazon Bedrock and validate the 29% routing figure, then update the DUM-E facts.
-- 2026-11-14: **Phase 4 built and tested offline** (commit ee1e186).
-  - Safety core, four ATS adapters plus the generic one, fill plans and sessions, and the API. 2,149 tests pass.
-  - End-to-end test through the real service and browser on local Greenhouse, Lever, Ashby and Workday forms: fields filled, résumé attached, zero submit POSTs, and every non-GET on the adapter's allow-list.
-  - Submit unlocks only on an explicit handover (`POST /api/autofill/sessions/{id}/handover`). It is never automatic, because lifting it would also let a hostile page submit itself. The UI button comes in Phase 5.
-  - **Outcome "blocked"** = filled what it could, but required questions had no approved answer and were left highlighted. The window stays open and the session watches for your submission.
-  - **Answers gaps** seen on the fixtures, for the input checklist: country / city split fields, "How did you hear about us?", "Phone device type" (Workday), and custom open questions (always yours).
-  - **Robots slip (adapters builder):** one fetch of a `boards.greenhouse.io/embed/` page (disallowed for crawlers) while copying markup. It redirected to `job-boards.greenhouse.io`, which allows it. One request. No production code path does this, because fill-time page loads go through the user's own browser.
-  - **Next:** independent safety review → fixes → push → supervised live dry run per ATS with you watching.

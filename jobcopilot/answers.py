@@ -1152,8 +1152,19 @@ def _inr_number(ctx: _Ctx, lpa: float) -> tuple[Any, str]:
     return _fmt_num(lpa), "assumed lakhs per annum (the question gives no unit)"
 
 
+def _asks_current_ctc_too(q: str) -> bool:
+    """A separate current-salary ask beside the expectation ("expected vs current
+    salary"). "current salary expectation" is one ask: the expectation."""
+    for m in re.finditer(_CURRENT_CTC, q):
+        if not re.match(r"\s*(s\s+)?(expect\w*|desired)\b", q[m.end():]):
+            return True
+    return False
+
+
 def h_expected_ctc(ctx: _Ctx) -> Answer:
     base = "compensation.expected_ctc"
+    if _asks_current_ctc_too(ctx.q):
+        return _none("asks for both current and expected salary: please answer it yourself", "expected_ctc")
     found, ec = ctx.bank.get(base)
     if not found or not isinstance(ec, dict):
         return _none(f"{base} is missing", "expected_ctc")
@@ -1329,13 +1340,24 @@ def h_never(note: str, rule: str):
 
 _ADDR_CTX = r"(address|residence|reside|live|living|current|permanent|home|mailing|postal|zip|pin ?code|postcode|city|district|province|country of residence|^state$|^country$|^city$)"
 
+# Salary: "expected / desired / looking for" wins over "current" ("current salary
+# expectation" is an expectation); both asked separately = ambiguous (ask).
+_EXPECT_WORDS = r"\b(expect\w*|desired|looking for|ectc)\b"
+_CURRENT_CTC = (r"current (ctc|salary|compensation|package|pay|annual|base|fixed|cost to company|remuneration|"
+                r"variable)|present (ctc|salary|package)|\bcctc\b|last drawn|existing ctc")
+
 RULES: list[tuple[str, str, Any]] = [
-    ("consent", r"\b(i agree|i consent|i acknowledge|i certify|i confirm|i understand|consent|privacy (policy|notice)|"
-                r"terms (and|of)|acknowledge|attest|gdpr|data processing|subscribe|newsletter|marketing|"
+    # Any request to authorise, consent, agree, acknowledge, certify, attest or declare,
+    # or to take a drug test, is never answered, whatever the field type: a background
+    # check being OK is not consent to run one. "permission to work" is work_auth.
+    ("consent", r"\b(i agree|i consent|i acknowledge|i certify|i confirm|i understand|consent\w*|privacy (policy|notice)|"
+                r"(?<!in )terms (and|of)|acknowledg\w*|attest\w*|gdpr|data processing|subscribe|newsletter|marketing|"
                 r"signature|e signature|sign here|accurate and complete|true and complete|"
-                r"i authori[sz]e|i hereby|hereby|i declare|i accept|by (checking|clicking|ticking|selecting|"
+                r"authori[sz](e|es|ing)|agree|agrees|agreeing|certify|certifies|declare|declares|"
+                r"permission(?! to work)|give (us )?(your )?authori[sz]ation|drug (test|tests|testing|screen|screening)|"
+                r"i hereby|hereby|i accept|by (checking|clicking|ticking|selecting|"
                 r"submitting)|sign|signed|signing)\b",
-     h_never("consent / attestation / signature: only you can give this", "consent")),
+     h_never("consent / authorisation / attestation: only you can give this", "consent")),
     ("hispanic", r"hispanic|latin[oax]\b", h_eeo("voluntary_disclosures.hispanic_latino")),
     ("race", r"\b(race|racial|ethnicity|ethnic)\b", h_eeo("voluntary_disclosures.race_ethnicity")),
     ("orientation", r"sexual orientation|\blgbt", h_eeo("voluntary_disclosures.sexual_orientation")),
@@ -1398,8 +1420,7 @@ RULES: list[tuple[str, str, Any]] = [
     ("experience", r"(years|yrs|months) of (\w+ )?experience|total (work |professional )?experience|how (many|much) "
                    r"(years|experience)|work experience|\byoe\b|experience in years|relevant experience|"
                    r"years (of )?(professional|industry)|professional experience", h_experience),
-    ("current_ctc", r"current (ctc|salary|compensation|package|pay|annual|base|fixed|cost to company|remuneration|"
-                    r"variable)|present (ctc|salary|package)|\bcctc\b|last drawn|existing ctc", h_current_ctc),
+    ("current_ctc", r"^(?!.*" + _EXPECT_WORDS + r").*(?:" + _CURRENT_CTC + r")", h_current_ctc),
     ("expected_ctc", r"expected (ctc|salary|compensation|package|pay|remuneration|annual)|salary expectations?|"
                      r"compensation expectations?|desired (salary|compensation|pay|annual)|salary requirements?|"
                      r"\bectc\b|expectations? .*(salary|compensation|ctc|pay)|(salary|compensation|pay) "
@@ -1479,6 +1500,78 @@ def _is_attestation(ctx: _Ctx) -> bool:
                 continue                    # "I identify as (select all)": a multi-choice group
             return True
     return False
+
+
+# --------------------------------------------------------------------------- safety guards
+# A keyword rule can't read negation: "Can you work in the US *without* sponsorship?"
+# hits the sponsorship rule and would answer the opposite. So a yes/no (or legal)
+# answer is only given to a plainly positive question; anything negated, compared,
+# or asking two things at once is left for the user.
+
+_LEGAL_RULES = {"sponsorship", "work_auth", "citizenship", "over_18", "background"}
+_EEO_RULES = {"hispanic", "race", "orientation", "transgender", "veteran", "disability", "pronouns", "gender"}
+
+_NEGATION_RX = re.compile(
+    r"\b(not|no|nor|neither|never|none|nobody|nothing|without|unless|except|excluding|other than|no longer|"
+    r"cannot|cant|dont|doesnt|didnt|wont|isnt|arent|wasnt|werent|wouldnt|couldnt|shouldnt|havent|hasnt|"
+    r"hadnt|neednt|mustnt|aint|lack|lacking|refuse|decline|object|against|non|"
+    r"un(willing|able|authori[sz]ed|available|comfortable|prepared|likely|happy|qualified|employed|eligible|"
+    r"restricted|sponsored|lawful|lawfully|interested|open|ready)|"
+    r"in(eligible|capable)|il(legal|legally)|dis(qualified|agree))\b")
+# Comparisons the stored yes/no can't settle ("notice more than 30 days?", "under 18?").
+_DOWN_RX = re.compile(r"\b(less than|fewer|under|below|at most|up to|upto|shorter than|younger|minor|maximum)\b")
+_UP_RX = re.compile(r"\b(more than|over|above|exceed\w*|at least|greater than|longer than|beyond|minimum|"
+                    r"older than)\b")
+# Two subjects in one yes/no ("drug test and background check", "US and Canada").
+_COMPOUND_RX = re.compile(r"\b(and|as well as|along with|plus|including|which includes?|in addition)\b")
+_YESNO_HINT_RX = re.compile(r"\b(yes|y) (or )?(no|n)\b|\b(no|n) (or )?(yes|y)\b")
+_AUX_RX = re.compile(r"^(are|is|am|was|were|do|does|did|have|has|had|will|would|can|could|shall|should|may|"
+                     r"might|must)\b")
+# "Can you share your current CTC?" is a request for the value, not a yes/no.
+_REQUEST_RX = re.compile(r"^(can|could|would|will) you (please |kindly )?(share|tell|provide|give|list|"
+                         r"let us know|mention|specify|state|enter|write|type|fill in|indicate)\b|"
+                         r"^would you mind (sharing|telling|providing|giving|listing)\b")
+_QWORD_RX = re.compile(r"^(what|which|how|when|where|why|who|whom|whose|please)\b")
+
+
+def _inverting_word(ctx: _Ctx, rule: str) -> str:
+    q = _YESNO_HINT_RX.sub(" ", ctx.q)
+    m = _NEGATION_RX.search(q) or _DOWN_RX.search(q)
+    if not m and rule != "over_18":         # "over the age of 18" / "at least 18" is over_18's own form
+        m = _UP_RX.search(q)
+    return m.group(0) if m else ""
+
+
+def _asks_two_things(ctx: _Ctx) -> bool:
+    """More than one question in one label ("...? Also please share your CTC")."""
+    if re.search(r"\b(also|additionally)\b", ctx.q):
+        return True
+    parts = [norm(p) for p in re.split(r"[?;]", ctx.raw)]
+    return sum(1 for p in parts if p and (_AUX_RX.match(p) or _QWORD_RX.match(p))) >= 2
+
+
+def _safety_guard(a: Answer, ctx: _Ctx) -> Optional[Answer]:
+    """None = the answer may stand; else an empty needs_user answer saying why."""
+    if a.value == "" or a.value is None:
+        return None
+
+    def ask(why: str) -> Answer:
+        return Answer("", a.source, 0.0, True, why + ": please answer it yourself", a.rule, a.status)
+
+    if a.rule in _EEO_RULES:                # your own literal self-identification answers
+        return None
+    if _asks_two_things(ctx):
+        return ask("the question asks more than one thing")
+    if isinstance(a.value, bool) or a.rule in _LEGAL_RULES:
+        w = _inverting_word(ctx, a.rule)
+        if w:
+            return ask(f"the question is worded with '{w}', which can invert a yes/no")
+        if _COMPOUND_RX.search(_YESNO_HINT_RX.sub(" ", ctx.q)):
+            return ask("the question asks about two things at once")
+        return None
+    if _AUX_RX.match(ctx.q) and not _REQUEST_RX.match(ctx.q):
+        return ask("a yes/no question, and this rule only gives a value")
+    return None
 
 
 def _address_ok(ctx: _Ctx) -> bool:
@@ -1587,7 +1680,7 @@ def answer_question(question: str, *, field_type: str = "text", options: Optiona
             continue
         a = handler(ctx)
         a.rule = name
-        return _finalize(a, ctx)
+        return _safety_guard(a, ctx) or _finalize(a, ctx)
     if OPEN_RE.search(ctx.q):
         return answer_open(raw, ctx)
     return _none()

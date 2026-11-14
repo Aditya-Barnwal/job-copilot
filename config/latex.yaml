@@ -1,4 +1,4 @@
-# LaTeX résumé rendering (jobcopilot/resume/). PLAN D5: pdfLaTeX via TinyTeX.
+# LaTeX résumé rendering (jobcopilot/resume/). pdfLaTeX via TinyTeX (docs/DESIGN.md §9).
 #
 # pdflatex is resolved in this order: $JOBCOPILOT_PDFLATEX, `pdflatex` below,
 # the TinyTeX default (~/Library/TinyTeX/bin/universal-darwin/pdflatex), PATH.

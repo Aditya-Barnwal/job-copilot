@@ -16,7 +16,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 5. **Filter** (`filters.py`), in order:
    - title allowlist → seniority flag → YOE regex (strictest floor)
    - sector → geo (India: any work type; outside India: remote only; unknown country: kept)
-   - one INR floor: 15 LPA (USD converted at a flat 83; EUR unsupported)
+   - one INR salary floor (USD converted at a flat 83; EUR unsupported)
 6. **Store** (`store.py`): SQLite `jobs`, keyed `source:company:external_id`, so there's no cross-source dedupe. Also `resume_versions` and a `meta` KV (resume text, profile, answer pack). Migrations are ad-hoc `ALTER TABLE`.
 7. **Score** (`scoring.py`): MiniLM cosine (resume↔JD) plus keyword coverage from a curated vocabulary. `fit = 0.5·cos + 0.5·coverage`, computed at read time. No tier, location or YOE term, and no "why".
 8. **Tailor** (`tailor.py`, `llm.py`): one LLM call rewrites the whole plain-text resume. `grounding.py` then runs 4 deterministic checks against the original text, a human approves, and a **plain-text reportlab PDF** is generated (the LaTeX layout is lost).

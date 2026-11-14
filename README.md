@@ -2,7 +2,7 @@
 
 The ban-safe foundation of your job copilot: pull roles straight from companies'
 **official ATS feeds**, normalize them, and filter to your scope (India any
-work-type / outside-India remote-only, tech-or-fintech, ≥15 LPA where pay is
+work-type / outside-India remote-only, tech-or-fintech, above your salary floor where pay is
 disclosed). No scraping, no auto-submit — those are the parts that get accounts
 banned, so they're deliberately not here.
 
@@ -45,7 +45,7 @@ python -m pytest tests/ -q
 
 # 3) Go live against your real seed list (after verifying slugs — see below):
 python run.py
-python run.py --sectors tech,fintech --min-lpa 15
+python run.py --sectors tech,fintech --min-lpa <your floor>
 ```
 
 Output is a `jobs.jsonl` (one normalized role per line) plus a summary table.
@@ -77,7 +77,7 @@ discovery was never the bottleneck for those names; tailoring + tracking is.
 - **Geo:** India keeps remote/onsite/hybrid; outside India keeps **remote only**.
   Roles whose country can't be determined are **kept and flagged**
   (`country_uncertain`), never silently dropped.
-- **Salary ≥15 LPA:** roles with disclosed pay must clear the floor. Roles with
+- **Salary floor** (set in `config/filters.yaml`): roles with disclosed pay must clear it. Roles with
   **no disclosed pay are kept and flagged** `package_estimated: true` — because
   most postings don't disclose, and dropping them would throw away most good
   roles. Your confirm step (and the funding/Adzuna signal coming next) resolves

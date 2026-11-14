@@ -216,6 +216,9 @@ def tracked_files(root: Path) -> list[Path]:
     return [root / p for p in out.split("\0") if p]
 
 
+MD_SALARY_RE = re.compile(r"(?i)(\b\d+(\.\d+)?\s*(lpa|lakhs?|lacs?|cr|crores?)\b|₹\s*\d|\bctc\b[^.\n]{0,40}\d)")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=str(Path(__file__).resolve().parent.parent))
@@ -246,6 +249,11 @@ def main(argv: list[str] | None = None) -> int:
         for n, kind, masked in scan_text(text, mine):
             print(f"{rel}:{n}: {kind} {masked}")
             total += 1
+        if suffix == ".md":     # public docs never state a salary figure (CTC, floors, expectations)
+            for n, line in enumerate(text.splitlines(), 1):
+                if MD_SALARY_RE.search(line):
+                    print(f"{rel}:{n}: salary-figure-in-doc (keep numbers in config/ or profile/)")
+                    total += 1
     if total:
         print(f"\n{total} possible personal-data finding(s) in tracked files.", file=sys.stderr)
         return 1

@@ -203,3 +203,11 @@ def test_gitignore_covers_env_variants_databases_and_documents():
         assert _ignored(rel), rel
     for rel in (".env.example", "tests/fixtures/sample.pdf", "tests/fixtures/a/b.pdf"):
         assert not _ignored(rel), rel
+
+
+def test_markdown_never_states_a_salary_figure():
+    c = check_pii
+    for bad in ("Expected CTC 18 LPA", "₹ 25,00,000", "current CTC is 12", "floor of 15 lakh"):
+        assert c.MD_SALARY_RE.search(bad), bad
+    for ok in ("roles with no salary are kept", "Phase 15 done", "expected CTC lives in profile/"):
+        assert not c.MD_SALARY_RE.search(ok), ok

@@ -229,7 +229,9 @@ _PROBE = textwrap.dedent(r"""
     from fastapi.testclient import TestClient
     from server.app import app
     out = {}
-    with TestClient(app) as c:
+    # the Cloud Run demo's own host + page origin (server/app.py local_api_guard)
+    run = "https://job-copilot-demo-abc123-uc.a.run.app"
+    with TestClient(app, base_url=run, headers={"Origin": run, "X-JobCopilot": "1"}) as c:
         q = c.get("/api/queue").json()
         key = q["items"][0]["key"]
         gets = ["/", "/api/meta", "/api/jobs", "/api/matches", "/api/excluded",

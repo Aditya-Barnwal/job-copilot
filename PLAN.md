@@ -56,7 +56,7 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
 
 ## 3. Design decisions (recommendations; override any)
 
-- **D1. Frontend: Vite + React + TypeScript + Tailwind.** It builds into `server/static/dist` and FastAPI serves it, so Node isn't needed at runtime; `make dev` runs Vite with an API proxy.
+- **D1. Frontend: Vite + React + TypeScript + Tailwind** (confirmed by you 2026-11-14: the point is a polished site). It builds into `server/static/dist` and FastAPI serves it, so Node isn't needed at runtime; `make dev` runs Vite with an API proxy. The Docker image builds the UI in a Node stage.
   - **Why not HTMX:** the review card is the product. It needs:
     - JD and resume side by side, with a diff
     - inline editing of bullets, cover letter and answers, with live grounding flags
@@ -233,28 +233,28 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - `make daily` on fixtures produces a ranked queue
   - the agent installs and runs via `launchctl kickstart`
 
-### Phase 3: Tailoring v2 ☐
-- ☐ Base templates:
+### Phase 3: Tailoring v2 ☑ (3b on Google Cloud Run; résumé-claim flip waits for your OK on the wording)
+- ☑ Base templates:
   - `profile/base_resumes/backend_sde.tex` from `AdityaBarnwal_.pdf`, `ml_ai.tex` from `AdityaBarnwal_DS.pdf`, both pdfLaTeX (D5) with the same layout, fonts and section order
   - base picked by role family
   - a new base is added by dropping in a file whose header says `% roles: …`
-- ☐ Edit-plan tailoring (D4):
+- ☑ Edit-plan tailoring (D4):
   - show missing keywords *before* tailoring so you can strike them
   - a keyword goes in only if a fact backs it or you've **attested** it
   - novel-number check
   - LLM-leak phrases rejected; each retry starts a fresh conversation (L#2)
   - one-page guard using the real PDF page count
-- ☐ Cover letter only when the fill plan shows a cover-letter field or upload, or the role is email-apply:
+- ☑ Cover letter only when the fill plan shows a cover-letter field or upload, or the role is email-apply:
   - ≤ 180 words
   - cliché denylist
   - fact-drift check: no new numbers or proper nouns (L#2)
-- ☐ `profile/answers.yaml`, a typed answers bank: notice period, expected CTC, work authorisation, relocation, "why this company" template, …
+- ☑ `profile/answers.yaml`, a typed answers bank: notice period, expected CTC, work authorisation, relocation, "why this company" template, …
   - question matcher plus grounded LLM adaptation for open questions
   - numbers only ever come from the YAML
-  - a **Needs you** queue saves each new answer back to the bank (L#4)
-- ☐ Grounding v3: per-line fact citations + the 4 existing checks, enforced server-side. Tailoring refuses to run if any cited fact is unconfirmed.
-- ☐ Versioned artifacts: `data/applications/<job>/v<N>/{resume.tex,resume.pdf,cover_letter.*,answers.json,edit_plan.json}`.
-- ☐ **3b. AWS ECS demo deploy (D13)**:
+  - a **Needs you** queue saves each new answer back to the bank (L#4): moved to Phase 5 (it is a UI flow)
+- ☑ Grounding v3: per-line fact citations + the 4 existing checks, enforced server-side. Tailoring refuses to run if any cited fact is unconfirmed.
+- ☑ Versioned artifacts: `data/applications/<job>/v<N>/{resume.tex,resume.pdf,cover_letter.*,answers.json,edit_plan.json}`.
+- ☑ **3b. Demo deploy (D13)**: done on **Google Cloud Run** (your call, 2026-11-12) instead of AWS ECS; `make deploy-demo` / `make stop-demo`, docs/DEPLOY.md. Original AWS plan kept below for reference:
   - ECR image + ECS Fargate service in demo mode (fixture DB, no profile)
   - `make deploy-demo` / `make stop-demo`, plus a README section
   - needs your AWS account + `aws configure`; the first deploy happens only after your OK
@@ -266,24 +266,24 @@ Research behind this plan: [`docs/SOURCES.md`](docs/SOURCES.md) (access rules pe
   - answer-matcher tests pass
   - the demo is reachable on ECS and stops with one command
 
-### Phase 4: Form autofill (stops before Submit) ☐
-- ☐ Playwright, headed Chrome, persistent profile `~/.jobcopilot/browser-profile` (created this session).
-  - A "Sign in to portals" button opens it for you to log in manually.
+### Phase 4: Form autofill (stops before Submit) ◐ (built + tested offline; supervised live dry run pending)
+- ☑ Playwright, headed Chrome, persistent profile `~/.jobcopilot/browser-profile` (created this session).
+  - A "Sign in to portals" button opens it for you to log in manually. (button: Phase 5 UI)
   - No passwords stored or typed; no accounts created.
-- ☐ **Safety layer, shared by every adapter**:
+- ☑ **Safety layer, shared by every adapter**:
   - `SafePage` exposes only fill / select / upload / check / next-step.
   - Any click on a Submit / Apply / Send / Finish-like element raises.
   - A per-adapter network guard aborts known final-submit endpoints.
   - The run finishes with a `ready | blocked | needs_you` outcome and a submit selector that matches **exactly one** element; code highlights it and **never clicks it** (L#1).
   - CAPTCHA, Turnstile or a login wall → `needs_you` plus a UI notification; challenge frames are never touched.
   - Page text is treated as **untrusted** in any LLM prompt (prompt-injection defence).
-- ☐ Declarative adapter files per ATS (L#3):
+- ☑ Declarative adapter files per ATS (L#3):
   - **Greenhouse**, **Lever**, **Ashby**
   - **Workday**: My Information → Experience → Questions → Voluntary Disclosures → Review; the `beecatcher` honeypot is never filled; a sign-in or account wall pauses for you
   - **Generic**: label / aria / name / placeholder matching + LLM field mapping with confidence; low-confidence fields are left empty and highlighted
-- ☐ Before touching any form: check location eligibility and re-check the posting is still live (≤ 6 h) (L#8).
-- ☐ Fill plans built nightly (D3) and executed on click; status → "Ready for review".
-- ☐ Denylist, link-out only: LinkedIn, Naukri, Indeed, Wellfound, workatastartup.com, ycombinator.com, and every DO-NOT-AUTOMATE row in `docs/SOURCES.md`.
+- ☑ Before touching any form: check location eligibility and re-check the posting is still live (≤ 6 h) (L#8).
+- ☑ Fill plans built nightly (D3) and executed on click; status → "Ready for review".
+- ☑ Denylist, link-out only: LinkedIn, Naukri, Indeed, Wellfound, workatastartup.com, ycombinator.com, and every DO-NOT-AUTOMATE row in `docs/SOURCES.md`.
 - **Accept when**:
   - per-ATS tests against locally served fixture forms: known fields filled, uncertain ones empty and highlighted, file attached
   - **a test proving Submit is never clicked or POSTed even when the page invites it**
@@ -447,3 +447,11 @@ Still open, not blocking until Phase 3b: is your AWS account ready?
     - SecretPixel = published research project
     - DUM-E kept exactly as in your résumés
   - **Next task after this phase (yours): DUM-E/Jarvis facts.** Verify/add Amazon Bedrock and validate the 29% routing figure, then update the DUM-E facts.
+- 2026-11-14: **Phase 4 built and tested offline** (commit ee1e186).
+  - Safety core, four ATS adapters plus the generic one, fill plans and sessions, and the API. 2,149 tests pass.
+  - End-to-end test through the real service and browser on local Greenhouse, Lever, Ashby and Workday forms: fields filled, résumé attached, zero submit POSTs, and every non-GET on the adapter's allow-list.
+  - Submit unlocks only on an explicit handover (`POST /api/autofill/sessions/{id}/handover`). It is never automatic, because lifting it would also let a hostile page submit itself. The UI button comes in Phase 5.
+  - **Outcome "blocked"** = filled what it could, but required questions had no approved answer and were left highlighted. The window stays open and the session watches for your submission.
+  - **Answers gaps** seen on the fixtures, for the input checklist: country / city split fields, "How did you hear about us?", "Phone device type" (Workday), and custom open questions (always yours).
+  - **Robots slip (adapters builder):** one fetch of a `boards.greenhouse.io/embed/` page (disallowed for crawlers) while copying markup. It redirected to `job-boards.greenhouse.io`, which allows it. One request. No production code path does this, because fill-time page loads go through the user's own browser.
+  - **Next:** independent safety review → fixes → push → supervised live dry run per ATS with you watching.

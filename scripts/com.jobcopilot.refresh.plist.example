@@ -23,6 +23,9 @@ Uninstall:
     <string>-s</string>
     <string>-X</string><string>POST</string>
     <string>-H</string><string>Content-Type: application/json</string>
+    <!-- the local API refuses state changes without these (CSRF guard) -->
+    <string>-H</string><string>Origin: http://localhost:8000</string>
+    <string>-H</string><string>X-JobCopilot: 1</string>
     <string>-d</string><string>{}</string>
     <string>http://localhost:8000/api/ingest</string>
   </array>

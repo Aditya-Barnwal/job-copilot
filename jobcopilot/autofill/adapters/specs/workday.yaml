@@ -70,19 +70,29 @@ submit:
 errors: ['[data-automation-id="errorBanner"]:not([hidden])']
 
 # Final submit. Workday's candidate UI talks to /wday/cxs/<tenant>/<site>/... ;
-# step saves are allowed, anything named submit/finalize is aborted. Kept
-# conservative and path-based because the exact endpoint varies by release.
+# anything named submit/finalize is aborted, by URL or by request body (the
+# guard tests each pattern against both). Kept conservative because the exact
+# endpoint varies by release.
+# RE-VERIFY: these patterns and the allow_post shapes below are inferred, not
+# observed on a live tenant. They are re-checked in the supervised live dry run
+# (fill only, a human watching the network panel) before Workday is trusted.
 submit_patterns:
   - {method: POST, url_regex: '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/.*/(submit|finali[sz]e)\w*([/?]|$)'}
   - {method: PUT, url_regex: '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/.*/(submit|finali[sz]e)\w*([/?]|$)'}
-  - {method: POST, url_regex: '/wday/cxs/.*/(submit|finali[sz]e)\w*([/?]|$)'}   # local fixture / proxy
+  - {method: POST, url_regex: '/wday/cxs/.*/(submit|finali[sz]e)\w*([/?]|$)'}   # any host, incl. the local fixture
+  # bodies: JSON {"action": "submit"} / form-encoded action=finalize style commands
+  - {method: POST, body_regex: '"(action|operation|command|mode|type|event)"\s*:\s*"(submit|finali[sz]e)\w*"'}
+  - {method: POST, body_regex: '(^|&)(action|operation|command|mode|event)=(submit|finali[sz]e)\w*(&|$)'}
 
-# Step saves ("Save and Continue") and attachment uploads are ordinary POSTs to
-# the candidate API; the guard allows them, after checking submit_patterns first
-# (a submit-like URL is aborted even when it also matches here).
+# Only two non-GET shapes are allowed while filling, and only after
+# submit_patterns (a submit-like URL or body is aborted even when it also
+# matches here): a step save ("Save and Continue") and an attachment upload,
+# on a tenant's /wday/cxs/<tenant>/<site>/ candidate API. Every other POST is
+# denied by default.
 allow_post:
-  - '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/wday/cxs/'
-  - '/wday/cxs/[^?]*/apply/(step|save|upload)'                               # local fixture / proxy
+  - '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/wday/cxs/[\w-]+/[\w-]+/(job/[^/?#]+/)?apply/(step|save)(/[\w-]+)?/?(\?|$)'
+  - '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/wday/cxs/[\w-]+/[\w-]+/(job/[^/?#]+/)?apply/(upload|attachments?)(/[\w-]+)?/?(\?|$)'
+  - '^http://(127\.0\.0\.1|localhost)(:\d+)?/wday/cxs/[\w-]+/[\w-]+/job/[^/?#]+/apply/(step|save|upload)(\?|$)'   # local fixture
 
 confirmation:
   url_regex: ['jobTasks/completed/application', '/userHome\b']

@@ -160,7 +160,7 @@ def test_specs_load_and_patterns_compile(name):
     assert spec["hosts"] and spec["submit"] and spec["submit_patterns"] and spec["confirmation"]
     for p in spec["submit_patterns"]:
         assert p["method"] in ("POST", "PUT")
-        re.compile(p["url_regex"])
+        re.compile(p.get("url_regex") or p["body_regex"])   # body patterns: the guard checks bodies too
 
 
 def test_registry_and_matching():

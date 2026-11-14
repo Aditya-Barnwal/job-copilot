@@ -39,3 +39,23 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(versions, "RESUMES_DIR", resumes)
     store.init_db()
     return data
+
+
+@pytest.fixture(autouse=True)
+def same_origin_test_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app refuses unknown Host headers and cross-site writes (server/app.py
+    local_api_guard). TestClient talks to http://testserver, so allow that host
+    and give every TestClient our own UI's headers by default: the page's Origin
+    and X-JobCopilot: 1. A test of the guard itself overrides them per request."""
+    monkeypatch.setenv("JOBCOPILOT_ALLOWED_HOSTS", "testserver")
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:  # pragma: no cover - server extras not installed
+        return
+    orig = TestClient.__init__
+
+    def init(self, *args, headers=None, **kw):
+        merged = {"Origin": "http://testserver", "X-JobCopilot": "1"}
+        merged.update(dict(headers or {}))
+        orig(self, *args, headers=merged, **kw)
+    monkeypatch.setattr(TestClient, "__init__", init)

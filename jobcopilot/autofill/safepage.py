@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from . import detect
-from .guard import (ConsentRefused, DeniedHost, Guard, Halted, guard_for, HoneypotRefused, OffSite,
+from .guard import (ConsentRefused, DeniedHost, DeniedHostHalt, Guard, Halted, guard_for, HoneypotRefused, OffSite,
                     PasswordRefused, SafePageError, SubmitGuardViolation, host_matches, host_of,
                     is_consent_label, is_denied, is_next_like, is_submit_like, site_of, SUBMIT_RE,
                     norm_name)
@@ -92,7 +92,7 @@ const __meta = (el) => {
   const buttonish = tag === 'button' || tag === 'a' || ['submit','button','reset','image'].includes(typ) || el.getAttribute('role') === 'button';
   const label = __labelOf(el);
   const m = {
-    tag, type: tag === 'select' ? 'select' : (tag === 'textarea' ? 'textarea' : typ), type_attr: typeAttr,
+    tag, type: tag === 'select' ? 'select' : (tag === 'textarea' ? 'textarea' : typ), type_attr: typeAttr, el_type: typ,
     name: el.getAttribute('name') || '', id: el.id || '', label, group_label: __groupLabel(el),
     name_text: buttonish ? __accName(el) : label, aria_label: el.getAttribute('aria-label') || '',
     text: buttonish ? __txt(el).slice(0, 200) : '', title: el.title || '',
@@ -202,6 +202,35 @@ class SafePage:
     def _writable(self) -> None:
         if self._halted:
             raise Halted(self._halted)
+        self.check_site()
+
+    def denied_site(self) -> Optional[str]:
+        """Why this page may not be written to because of where it IS (not where
+        we asked to go): the guard saw a frame land on a do-not-automate host,
+        or the page / one of its frames is on one now (a redirect chain the
+        route handler never sees). None when the page is fine."""
+        if self.guard.tripped:
+            return self.guard.tripped
+        urls = [self.__page.url]
+        try:
+            urls += [f.url for f in self.__page.frames[1:]]
+        except Exception:  # noqa: BLE001
+            pass
+        for u in urls:
+            if u and u.startswith(("http:", "https:")):
+                entry = is_denied(u)
+                if entry:
+                    return f"do-not-automate site ({entry}): link out only"
+        return None
+
+    def check_site(self) -> None:
+        """Raise DeniedHostHalt (and stop writing for good) when the page is on
+        a do-not-automate host; nothing is typed there."""
+        why = self.denied_site()
+        if why:
+            self.halt(why)
+            log.warning("safepage: %s; writes stop", why)
+            raise DeniedHostHalt(why)
 
     # ------------------------------------------------------------------ resolution
     def _one(self, locator: str) -> Any:
@@ -243,6 +272,10 @@ class SafePage:
         m = loc.evaluate(_JS_META)
         if detect.honeypot(m):
             raise HoneypotRefused("honeypot select refused")
+        if m["tag"] == "select" and (m.get("hidden") or m.get("offscreen") or m.get("aria_hidden")):
+            raise SafePageError("hidden select: left for you (never set behind your back)")
+        if any(is_consent_label(t) for t in (m.get("label"), m.get("group_label"), m.get("aria_label"), label) if t):
+            raise ConsentRefused("consent / attestation question: only you can answer this")
         if m["tag"] == "select":
             labels = [o["label"] for o in m.get("options", [])]
             if value in labels:
@@ -275,15 +308,19 @@ class SafePage:
         if kind == "checkbox" and (any(is_consent_label(t) for t in texts if t)
                                    or (group and _STRONG_CONSENT_RE.search(group.lower()))):
             raise ConsentRefused("consent / attestation checkbox: only you can tick this")
-        if kind == "radio" and any(is_consent_label(t, kind="radio") for t in texts if t):
+        # A radio: its option text ("I agree") AND the question it answers (legend,
+        # aria-labelledby group, the label passed in) use the checkbox consent rule.
+        if kind == "radio" and (any(is_consent_label(t, kind="radio") for t in texts if t)
+                                or any(is_consent_label(t) for t in (group, label) if t)):
             raise ConsentRefused("consent radio: only you can choose this")
+        if detect.honeypot(m):
+            raise HoneypotRefused("honeypot control left alone")
+        if m["hidden"] or m.get("offscreen") or m.get("aria_hidden"):
+            raise SafePageError("hidden control: left for you (never force-ticked)")
         if m["disabled"]:
             raise SafePageError("control is disabled")
         if not m["checked"]:
-            if m["hidden"]:
-                loc.set_checked(True, force=True)
-            else:
-                loc.check()
+            loc.check()
         log.info("checked %r from %s", label or m.get("label") or m.get("name"), source or "?")
 
     def choose(self, group_locator: str, option: str, *, label: str = "", source: str = "") -> None:
@@ -304,10 +341,10 @@ class SafePage:
 
     def upload(self, locator: str, path: str, *, label: str = "", source: str = "") -> None:
         self._writable()
-        p = Path(path).expanduser()
+        p = Path(path).expanduser().resolve()      # check and upload the SAME resolved path
         if not p.is_file():
             raise SafePageError("upload file missing")
-        if self.allowed_uploads is not None and str(p.resolve()) not in self.allowed_uploads:
+        if self.allowed_uploads is not None and str(p) not in self.allowed_uploads:
             raise SafePageError("upload path is not one of the plan's files")
         loc = self._one(locator)
         m = loc.evaluate(_JS_META)
@@ -356,6 +393,7 @@ class SafePage:
             except Exception:  # noqa: BLE001 — SPA steps don't load anything
                 pass
         log.info("pressed %r", norm_name(m.get("name_text")))
+        self.check_site()                 # where did Continue land? (redirects skip the route)
 
     def goto(self, url: str) -> None:
         """Open a URL on the application's own site. Do-not-automate hosts
@@ -374,10 +412,7 @@ class SafePage:
             raise OffSite(f"refusing to leave the application site for {host}")
         with self.guard.allow_navigation():
             self.__page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-        final = host_of(self.__page.url)
-        if final and is_denied(final):
-            self.halt("redirected to a do-not-automate site")
-            raise DeniedHost("redirected to a do-not-automate site: link out only")
+        self.check_site()                 # the final URL of any redirect chain, frames included
 
     def highlight(self, locator: str, kind: str = "needs_you") -> bool:
         """Visible outline + a small badge. Styling only; returns False if the
@@ -469,6 +504,6 @@ class SafePage:
         return None
 
 
-__all__ = ["SafePage", "SubmitGuardViolation", "SafePageError", "DeniedHost", "OffSite",
+__all__ = ["SafePage", "SubmitGuardViolation", "SafePageError", "DeniedHost", "DeniedHostHalt", "OffSite",
            "ConsentRefused", "HoneypotRefused", "PasswordRefused", "Halted", "applications_root",
            "job_dir"]

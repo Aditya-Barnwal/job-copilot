@@ -884,3 +884,84 @@ def test_autofill_refused_in_demo_mode(client, monkeypatch):
     monkeypatch.setattr(demo, "enabled", lambda: True)
     assert client.post(f"/api/jobs/{key}/autofill").status_code == 403
     assert client.post(f"/api/jobs/{key}/fill-plan/rebuild").status_code == 403
+
+
+# --------------------------------------------------------------------------- CSRF + DNS rebinding
+
+def _live_session(monkeypatch, key: str) -> "autofill_service.LiveSession":
+    sid, _ = store.claim_autofill_session(key)
+    store.update_autofill_session(sid, status="ready_to_submit")
+    live = autofill_service.LiveSession(sid, key, "greenhouse", None, autofill_service.settings())
+    monkeypatch.setitem(autofill_service._LIVE, sid, live)
+    return live
+
+
+def test_cross_site_handover_and_fill_are_refused(client, monkeypatch):
+    """The review's CSRF repro: a page on another origin POSTs hand-over / start-fill."""
+    key = _seed_url("https://job-boards.greenhouse.io/foo/jobs/11", "c11")
+    live = _live_session(monkeypatch, key)
+    evil = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+    for path in (f"/api/autofill/sessions/{live.id}/handover", f"/api/jobs/{key}/autofill",
+                 f"/api/jobs/{key}/fill-plan/rebuild", f"/api/jobs/{key}/status"):
+        r = client.post(path, headers=evil, json={"status": "applied"})
+        assert r.status_code == 403 and "cross-origin" in r.json()["detail"], path
+    assert live.commands.qsize() == 0                                  # the submit guard stayed up
+    assert client.post(f"/api/autofill/sessions/{live.id}/handover",
+                       headers={"Origin": "null"}).status_code == 403   # sandboxed iframe / file:
+    # the app's own page (same Origin + X-JobCopilot) still works
+    r = client.post(f"/api/autofill/sessions/{live.id}/handover")
+    assert r.status_code == 200 and live.commands.qsize() == 1
+
+
+def test_state_changes_need_origin_or_referer_and_the_custom_header(client):
+    # a denylisted job: an accepted request ends in a quick 400 link-out, never a network call
+    key = _seed_url("https://www.linkedin.com/jobs/view/12", "c12")
+    path = f"/api/jobs/{key}/fill-plan/rebuild"
+    assert client.post(path).status_code == 400                        # accepted (then refused: link-out)
+    r = client.post(path, headers={"X-JobCopilot": "0"})
+    assert r.status_code == 403 and "X-JobCopilot" in r.json()["detail"]
+    client.headers.pop("Origin")
+    try:
+        r = client.post(path)                                          # no Origin, no Referer (curl-style)
+        assert r.status_code == 403 and "Origin" in r.json()["detail"]
+        r = client.post(path, headers={"Referer": "https://evil.example/x"})
+        assert r.status_code == 403
+        r = client.post(path, headers={"Referer": "http://testserver/"})
+        assert r.status_code == 400 and r.json()["code"] == "denylisted"   # Referer fallback: own origin
+        for method in ("put", "patch", "delete"):
+            assert getattr(client, method)(path).status_code == 403
+        assert client.get(f"/api/jobs/{key}").status_code == 200        # reads need neither
+    finally:
+        client.headers["Origin"] = "http://testserver"
+
+
+def test_dns_rebinding_host_is_refused_everywhere(client, monkeypatch):
+    """A rebound name (attacker.example -> 127.0.0.1) can't read plans or sessions."""
+    key = _seed_url("https://job-boards.greenhouse.io/foo/jobs/13", "c13")
+    bad = {"Host": "attacker.example", "Origin": "http://attacker.example"}
+    for path in ("/", "/api/meta", f"/api/jobs/{key}/fill-plan", "/api/autofill/needs-you"):
+        r = client.get(path, headers=bad)
+        assert r.status_code == 400 and r.json()["detail"] == "unknown Host header", path
+    assert client.post(f"/api/jobs/{key}/autofill", headers=bad).status_code == 400
+    assert r.headers.get("content-security-policy")                   # refusals keep the headers
+    for host in ("127.0.0.1:8000", "localhost:8000", "[::1]:8000", "localhost"):
+        assert client.get("/api/meta", headers={"Host": host}).status_code == 200, host
+    # *.run.app only in the public demo (the Cloud Run deployment, docs/DEPLOY.md)
+    run = {"Host": "job-copilot-demo-abc-uc.a.run.app"}
+    assert client.get("/api/meta", headers=run).status_code == 400
+    monkeypatch.setattr(demo, "enabled", lambda: True)
+    assert client.get("/api/meta", headers=run).status_code == 200
+    r = client.post(f"/api/jobs/{key}/status", json={"status": "applied"},
+                    headers={**run, "Origin": "https://job-copilot-demo-abc-uc.a.run.app"})
+    assert r.status_code != 403 or r.json().get("demo")                # the CSRF check passes on run.app
+
+
+def test_allowed_hosts_env_adds_names(client, monkeypatch):
+    monkeypatch.setenv("JOBCOPILOT_ALLOWED_HOSTS", "testserver, *.lan.example")
+    assert client.get("/api/meta", headers={"Host": "mac.lan.example:8000"}).status_code == 200
+    assert client.get("/api/meta", headers={"Host": "lan.example.evil.test"}).status_code == 400
+
+
+def test_ui_sends_the_csrf_header():
+    js = (Path(server_app.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+    assert js.count('"X-JobCopilot": "1"') >= 2                      # api() wrapper + the résumé upload

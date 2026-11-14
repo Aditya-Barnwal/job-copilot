@@ -39,6 +39,7 @@ class PlanContext:
     answer_fn: Optional[Callable[..., Any]] = None   # default answers.answer_question
     today: Optional[dt.date] = None
     company: Any = None
+    min_confidence: float = 0.8                      # config/autofill.yaml min_confidence
 
     def answer(self, question: str, *, field_type: str = "text", options: Optional[list] = None,
                required: Optional[bool] = None) -> Any:

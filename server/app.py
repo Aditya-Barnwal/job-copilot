@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import urllib.parse
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 
@@ -81,6 +82,92 @@ async def demo_policy(request: Request, call_next):
         why = demo.refusal(request.method, request.url.path)
         if why:
             return JSONResponse(status_code=403, content={"detail": why, "demo": True})
+    return await call_next(request)
+
+
+# --- local-API hardening (CSRF + DNS rebinding) ------------------------------
+# The API drives a browser in the user's own profile (autofill, hand-over), so
+# a web page the user happens to visit must not be able to reach it:
+#   1. Host allowlist: 127.0.0.1 / localhost / ::1, plus *.run.app in the public
+#      demo (JOBCOPILOT_DEMO=1 on Cloud Run) and anything listed in
+#      JOBCOPILOT_ALLOWED_HOSTS (comma separated; "*.example.org" = suffix).
+#      A rebound DNS name (evil.example -> 127.0.0.1) gets 400 on every route.
+#   2. State-changing methods need Origin (or, failing that, Referer) equal to
+#      this app's own origin, and
+#   3. the custom header X-JobCopilot: 1, which a cross-site page can't send
+#      without a CORS preflight (and the app answers no preflight).
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+CSRF_HEADER = "X-JobCopilot"
+
+
+def _hostname(netloc: str) -> str:
+    try:
+        return (urllib.parse.urlsplit("//" + netloc).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _netloc(value: str) -> str:
+    """host[:port] of a URL or Host header, lowercased, default ports dropped."""
+    try:
+        parts = urllib.parse.urlsplit(value if "//" in value else "//" + value)
+        host, port = (parts.hostname or "").lower().rstrip("."), parts.port
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    if ":" in host:
+        host = f"[{host}]"
+    return host if port in (None, 80, 443) else f"{host}:{port}"
+
+
+def host_allowed(host_header: str) -> bool:
+    host = _hostname(host_header or "")
+    if not host:
+        return False
+    if host in _LOCAL_HOSTS:
+        return True
+    if demo.enabled() and host.endswith(".run.app"):    # the Cloud Run demo (docs/DEPLOY.md)
+        return True
+    for entry in os.environ.get("JOBCOPILOT_ALLOWED_HOSTS", "").split(","):
+        entry = entry.strip().lower().rstrip(".")
+        if not entry:
+            continue
+        if entry.startswith("*."):
+            if host.endswith(entry[1:]):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+def csrf_refusal(request: Request) -> str | None:
+    """Why a state-changing request is refused, or None when it is our own UI's."""
+    own = _netloc(request.headers.get("host") or "")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        if origin.strip().lower() == "null" or _netloc(origin) != own:
+            return "cross-origin request refused"
+    else:
+        referer = request.headers.get("referer")
+        if not referer or _netloc(referer) != own:
+            return "missing Origin: requests that change state must come from the app's own page"
+    if request.headers.get(CSRF_HEADER) != "1":
+        return f"missing {CSRF_HEADER} header"
+    return None
+
+
+# Registered between demo_policy and security_headers: it runs before the demo
+# policy and the routes, and its refusals still get the security headers.
+@app.middleware("http")
+async def local_api_guard(request: Request, call_next):
+    if not host_allowed(request.headers.get("host") or ""):
+        return JSONResponse(status_code=400, content={"detail": "unknown Host header"})
+    if request.method.upper() in _UNSAFE_METHODS:
+        why = csrf_refusal(request)
+        if why:
+            return JSONResponse(status_code=403, content={"detail": why})
     return await call_next(request)
 
 

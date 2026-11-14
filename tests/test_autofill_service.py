@@ -4,6 +4,7 @@ conftest.py; one optional headless smoke test against a LOCAL fixture page."""
 from __future__ import annotations
 
 import copy
+import json
 import http.server
 import logging
 import threading
@@ -190,7 +191,15 @@ def test_plan_from_greenhouse_questions_api(gh_api, monkeypatch, caplog):
 
     row = store.get_fill_plan(key)
     assert row["ats"] == "greenhouse" and row["unresolved_count"] == len(plan.unresolved)
-    assert FillPlan.from_dict(row["plan"]).files == plan.files
+    # stored: field metadata + approval state only, never a value or a file path (L#4)
+    stored = FillPlan.from_dict(row["plan"])
+    assert stored.files == {} and row["plan"]["file_kinds"] == ["resume"]
+    assert all(a.value is None for a in stored.actions() if a.kind != "upload")
+    by_label = {a["label"]: a for s in row["plan"]["steps"] for a in s}
+    assert by_label["First Name"]["approved"] is True and by_label["First Name"]["source"].startswith("answers.yaml:")
+    assert by_label["Why do you want to work at Acme?"]["approved"] is False
+    assert by_label["Resume/CV"]["value"] == "resume"                  # the file KEY, not a path
+    assert "Alex" not in json.dumps(row["plan"]) and str(pdf) not in json.dumps(row["plan"])
     assert store.get_job(key)["fill_status"] == "planned_needs_you"
     for secret in SECRET_VALUES:                                   # labels + sources only in logs
         assert secret not in caplog.text
@@ -466,3 +475,98 @@ def test_headless_snapshot_is_read_only_against_local_fixture():
         assert service.PlaywrightBackend().snapshot(f"{base}/gone", "generic", c) is None
     finally:
         srv.shutdown()
+
+
+# --------------------------------------------------------------------------- review findings 3 + 4
+
+def _typed(plan: FillPlan) -> dict[str, str]:
+    return {a.label: a.value for a in plan.actions() if a.value is not None and a.kind != "upload"}
+
+
+def test_fill_re_resolves_values_from_current_answers_not_the_stored_plan(gh_api, monkeypatch):
+    """Finding 3: a plan built while answers were approved must not type them once
+    they aren't (the fill-time bank here is an empty profile dir)."""
+    key = seed_job()
+    approve_artifact(key)
+    built = service.plan_for_job(key, cfg=cfg(), bank=EXAMPLE_BANK)
+    assert _typed(built)                                          # approved when planned
+    fake = FakeBackend(states=[None])
+    _launch(monkeypatch, fake, key)
+    assert _typed(fake.plans[0]) == {}                            # nothing approved NOW -> nothing typed
+    assert len(gh_api) == 1                                       # fresh: re-resolved from the stored snapshot
+    # ... and with the example profile approved now, the same stored plan fills again
+    monkeypatch.setenv("JOBCOPILOT_PROFILE_DIR", str(Path(A.example_answers_path()).parent))
+    fake2 = FakeBackend(states=[None])
+    _launch(monkeypatch, fake2, key)
+    assert _typed(fake2.plans[0]).get("First Name") == "Alex" and len(gh_api) == 1
+
+
+def test_fill_uploads_only_the_currently_approved_resume(gh_api, monkeypatch):
+    """Finding 3: résumé rejected after planning, a new one approved: the fill
+    uploads the new one (plan.files recomputed at fill time)."""
+    key = seed_job()
+    old_pdf = approve_artifact(key)
+    service.plan_for_job(key, cfg=cfg(), bank=EXAMPLE_BANK)
+    store.update_artifact(store.get_job(key)["artifact_id"], status="rejected")
+    new_pdf = approve_artifact(key)
+    fake = FakeBackend(states=[None])
+    _launch(monkeypatch, fake, key)
+    assert fake.plans[0].files.get("resume") == str(new_pdf.resolve()) != str(old_pdf.resolve())
+    # rejected without a replacement: no upload at all
+    store.update_artifact(store.get_job(key)["artifact_id"], status="rejected")
+    fake2 = FakeBackend(states=[None])
+    _launch(monkeypatch, fake2, key)
+    up = [a for a in fake2.plans[0].actions() if a.kind == "upload"]
+    assert fake2.plans[0].files == {} and all(a.value is None for a in up)
+
+
+def test_api_fill_plan_never_serves_values(gh_api):
+    """Finding 4: GET /api/jobs/{key}/fill-plan returns metadata + approval state only,
+    also for a legacy row that still has values in it."""
+    from fastapi.testclient import TestClient
+    from server.app import app
+    key = seed_job()
+    pdf = approve_artifact(key)
+    service.plan_for_job(key, cfg=cfg(), bank=EXAMPLE_BANK)
+    row = store.get_fill_plan(key)
+    legacy = copy.deepcopy(row["plan"])
+    legacy.pop("format")
+    for a in legacy["steps"][0]:
+        if a["label"] == "First Name":
+            a["value"] = "Alex"
+    legacy["files"] = {"resume": str(pdf)}
+    store.save_fill_plan(key, legacy, ats=row["ats"], url=row["url"], unresolved_count=1,
+                         created_at=row["created_at"], stale_after=row["stale_after"])
+    with TestClient(app) as c:
+        r = c.get(f"/api/jobs/{key}/fill-plan")
+    assert r.status_code == 200
+    body = json.dumps(r.json())
+    for secret in ("Alex", "alex@example.com", str(pdf)):
+        assert secret not in body
+    acts = {a["label"]: a for s in r.json()["plan"]["steps"] for a in s}
+    assert acts["First Name"]["value"] is None and acts["First Name"]["approved"] is True
+    assert "snapshot" not in r.json()["plan"]
+    # a legacy row (no snapshot) is never trusted for a fill: it is rebuilt
+    assert service._fresh_plan(store.get_job(key), cfg(), None) is None
+
+
+def test_migration_v7_strips_values_from_old_plans(tmp_path):
+    db = tmp_path / "old.db"
+    migrations.migrate(db, [m for m in migrations.MIGRATIONS if m[0] <= 6])
+    old = {"job_key": "k", "ats": "generic", "url": "https://x.test", "files": {"resume": "/a/r.pdf"},
+           "steps": [[{"locator": "#e", "label": "Email", "kind": "fill", "value": "alex@example.com",
+                       "source": "answers.yaml:personal.email", "confidence": 1.0, "needs_user": False},
+                      {"locator": "#cv", "label": "Resume", "kind": "upload", "value": "resume",
+                       "source": "file:resume", "confidence": 1.0, "needs_user": False},
+                      {"locator": "#w", "label": "Why", "kind": "fill", "value": None,
+                       "source": "none", "confidence": 0.0, "needs_user": True}]]}
+    with store.connect(db) as conn:
+        conn.execute("INSERT INTO fill_plans(job_key, ats, url, plan, unresolved_count, created_at, stale_after)"
+                     " VALUES ('k', 'generic', 'https://x.test', ?, 0, 1, 9e12)", (json.dumps(old),))
+    assert migrations.migrate(db) == migrations.latest_version() >= 7
+    row = store.get_fill_plan("k", db)
+    assert "alex@example.com" not in json.dumps(row["plan"]) and row["plan"]["files"] == {}
+    acts = row["plan"]["steps"][0]
+    assert [a["value"] for a in acts] == [None, "resume", None]
+    assert [a["approved"] for a in acts] == [True, True, False]
+    assert row["stale_after"] == 0

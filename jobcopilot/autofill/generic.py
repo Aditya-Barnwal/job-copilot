@@ -36,7 +36,8 @@ _FT = {"textarea": "textarea", "number": "number", "date": "date", "select": "se
 def _ctx_parts(ctx: Any) -> tuple[Callable[..., Any], dict, float, str, str]:
     """(answer(q, field_type=, options=, required=), files, min_conf, job_key, url)."""
     if isinstance(ctx, PlanContext):
-        return ctx.answer, dict(ctx.files or {}), DEFAULT_MIN_CONFIDENCE, ctx.job_key, ctx.url
+        return (ctx.answer, dict(ctx.files or {}),
+                float(getattr(ctx, "min_confidence", None) or DEFAULT_MIN_CONFIDENCE), ctx.job_key, ctx.url)
     ctx = dict(ctx or {})
     job = ctx.get("job") or {}
     fn = ctx.get("answer") or ctx.get("answer_fn")
@@ -114,6 +115,8 @@ def normalize(snapshot: Any) -> list[dict]:
             g["label"] = m.get("label") or g["question"]
         if all(detect.honeypot(m) for m in metas):
             g["honeypot"] = True
+        if all(m.get("hidden") or m.get("offscreen") or m.get("aria_hidden") for m in metas):
+            g["hidden"] = True                     # an invisible group is never ticked
     return items
 
 
@@ -159,7 +162,11 @@ class GenericAdapter(Adapter):
                 unresolved.append({"label": label, "reason": "login wall: sign in yourself",
                                    "locator": it["locator"], "required": it["required"]})
                 continue
-            if it["hidden"] and t not in ("file", "checkbox", "radio", "select"):
+            if it["hidden"] and t in ("checkbox", "radio", "select"):
+                # an invisible box / radio / select is never ticked or set; listed for you
+                leave(it, "hidden control: choose it yourself", {"checkbox": "check"}.get(t, t))
+                continue
+            if it["hidden"] and t != "file":
                 continue                           # invisible text field: never touched
             if not it["locator"]:
                 unresolved.append({"label": label, "reason": "no locator", "required": it["required"]})
@@ -181,6 +188,12 @@ class GenericAdapter(Adapter):
             if t == "checkbox" and len(it["options"]) <= 1 and (
                     is_consent_label(label) or is_consent_label(question)):
                 leave(it, "consent / attestation: only you can tick this", "check")
+                continue
+            if t in ("radio", "select") and (
+                    is_consent_label(label) or is_consent_label(question)
+                    or (t == "radio" and any(is_consent_label(o, kind="radio") for o in it["options"]))):
+                leave(it, "consent / attestation: only you can choose this",
+                      "radio" if t == "radio" else "select", source="consent")
                 continue
             ft = _FT.get(t, "text")
             try:

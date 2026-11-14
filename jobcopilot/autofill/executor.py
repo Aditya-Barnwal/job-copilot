@@ -118,8 +118,8 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
         from .adapters import adapter_for
         adapter = adapter_for(plan.url)
     if min_confidence is None:
-        min_confidence = float((ctx or {}).get("min_confidence", DEFAULT_MIN_CONFIDENCE)
-                               if isinstance(ctx, dict) else DEFAULT_MIN_CONFIDENCE)
+        raw = ctx.get("min_confidence") if isinstance(ctx, dict) else getattr(ctx, "min_confidence", None)
+        min_confidence = float(raw or DEFAULT_MIN_CONFIDENCE)
     if isinstance(page_or_safe, SafePage):
         safe = page_or_safe
     else:
@@ -143,6 +143,7 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
         while True:
             total = max(len(plan.steps), i + 1)
             step_reached = f"step {i + 1} of {total}"
+            safe.check_site()                       # never read, re-plan or type on a denied host
             if detect.confirmation_page(safe.url, safe.text(4000), plan.ats, markers=markers):
                 safe.halt("already on a confirmation page")
                 return _outcome("needs_you", "the page already shows an application confirmation",
@@ -233,6 +234,9 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
                  run.left_empty, len(run.highlighted))
         return _outcome(status, reason, run, submit_selector=submit,
                         screenshot=_screenshot(safe, plan, status, screenshot_dir),
+                        step_reached=step_reached)
+    except DeniedHost as exc:                   # incl. DeniedHostHalt: a redirect landed there
+        return _outcome("blocked", f"{exc}: open it yourself (link-out only)", run,
                         step_reached=step_reached)
     except Halted as exc:
         return _outcome("needs_you", f"stopped: {exc}", run, step_reached=step_reached)

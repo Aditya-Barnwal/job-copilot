@@ -64,7 +64,8 @@ function friendlyError(status, payload, path) {
 async function api(path, opts = {}) {
   let res;
   try {
-    res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+    // X-JobCopilot: the server refuses state-changing requests without it (CSRF guard).
+    res = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-JobCopilot": "1", ...(opts.headers || {}) } });
   } catch (_) {
     const err = new Error(friendlyError(0, null, path));
     err.status = 0; err.payload = null;
@@ -833,7 +834,7 @@ $("#resume-form").addEventListener("submit", async (e) => {
   const fd = new FormData(e.target);
   let res;
   try {
-    res = await fetch("/api/resume", { method: "POST", body: fd });
+    res = await fetch("/api/resume", { method: "POST", body: fd, headers: { "X-JobCopilot": "1" } });
   } catch {
     notifyError(new Error(friendlyError(0)));
     return;

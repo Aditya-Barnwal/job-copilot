@@ -100,21 +100,19 @@ def _denied_hosts(cfg: Optional[dict] = None) -> frozenset[str]:
 
 
 def denied_host(url: str, cfg: Optional[dict] = None) -> Optional[str]:
-    """The do-not-automate entry `url`'s host equals or is a subdomain of, if any.
-    A URL that isn't plain http(s) is treated as denied (never automated)."""
+    """The do-not-automate entry for `url`, if any: the SAME rule the browser
+    guard enforces (guard.is_denied: the host or a subdomain, plus country
+    sites of a denied brand such as indeed.co.uk / linkedin.cn, plus lnkd.in),
+    with this config's extra hosts. A URL that isn't plain http(s) is treated
+    as denied (never automated)."""
+    from .guard import is_denied
     try:
         parts = urllib.parse.urlsplit(str(url or "").strip())
     except ValueError:
         return "invalid-url"
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return "invalid-url"
-    labels = parts.hostname.lower().rstrip(".").split(".")
-    denied = _denied_hosts(cfg)
-    for i in range(len(labels)):
-        suffix = ".".join(labels[i:])
-        if suffix in denied:
-            return suffix
-    return None
+    return is_denied(parts.hostname, extra=_denied_hosts(cfg))
 
 
 def target_url(job: dict) -> str:
@@ -289,8 +287,15 @@ _KIND = {"text": "fill", "textarea": "fill", "number": "fill", "date": "fill", "
 _ANS_TYPE = {"multi": "checkbox", "file": "text"}
 
 
-def is_consent_label(label: str) -> bool:
-    return bool(_CONSENT_RX.search(label or ""))
+def is_consent_label(label: str, kind: str = "check") -> bool:
+    """Consent / attestation wording. Radios and dropdowns also use the guard's
+    checkbox rule on their question (it covers "authorize", "I am", "hereby"...)."""
+    if _CONSENT_RX.search(label or ""):
+        return True
+    if kind in ("radio", "select"):
+        from .guard import is_consent_label as guard_consent
+        return guard_consent(label)
+    return False
 
 
 def _value_str(v: Any) -> Optional[str]:
@@ -325,7 +330,7 @@ def resolve_field(f: dict, job: dict, files: dict[str, str], cfg: dict, *, bank:
         if key == "cover_letter":
             return empty("no approved cover letter")
         return empty("file upload: attach it yourself")
-    if kind == "check" and is_consent_label(label):
+    if kind in ("check", "radio", "select") and is_consent_label(label, kind):
         return empty("consent / attestation: only you can tick this", "consent")
     if A.match_rule(label) == "open":   # free-text "why us?": yours to write, never auto-typed
         return empty("open question: write this yourself")
@@ -352,7 +357,7 @@ def enforce_policy(plan: FillPlan, cfg: dict) -> FillPlan:
                 continue
             if a.needs_user or float(a.confidence or 0) < floor:
                 reason = "needs your approval"
-            elif a.kind in ("check", "radio") and is_consent_label(a.label):
+            elif a.kind in ("check", "radio", "select") and is_consent_label(a.label, a.kind):
                 reason = "consent / attestation: only you can tick this"
             elif a.kind == "upload" and (a.value not in ("resume", "cover_letter")
                                          or not (plan.files or {}).get(a.value)):
@@ -461,16 +466,17 @@ class PlaywrightBackend:
                 # a submit event) is stopped in the page, and any non-GET request that
                 # still gets out is aborted below.
                 ctx.add_init_script(self._NO_SUBMIT_JS)
-                ctx.route("**/*", lambda route: route.abort() if route.request.method not in
-                          ("GET", "HEAD", "OPTIONS") else route.continue_())
+                ctx.route("**/*", self._planner_route)
                 page = ctx.new_page()
                 resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                self._refuse_if_denied(page, url)          # redirects never reach the route
                 if resp is not None and resp.status in (404, 410):
                     return None
                 try:
                     page.wait_for_load_state("networkidle", timeout=min(timeout, 10000))
                 except Exception:  # noqa: BLE001 - busy pages never go idle; fields are there
                     pass
+                self._refuse_if_denied(page, url)          # a late JS redirect counts too
                 notes = []
                 det = _detect()
                 if det is not None:
@@ -509,6 +515,32 @@ class PlaywrightBackend:
                 browser.close()
 
     @staticmethod
+    def _planner_route(route: Any) -> None:
+        """Read-only planner: every non-GET and every request to a do-not-automate
+        host is aborted (only the first URL of a redirect chain reaches here, so
+        the final URL is checked separately)."""
+        try:
+            req = route.request
+            if req.method not in ("GET", "HEAD", "OPTIONS") or (
+                    req.url.startswith(("http:", "https:")) and denied_host(req.url)):
+                return route.abort("blockedbyclient")
+            return route.continue_()
+        except Exception:  # noqa: BLE001 - fail closed
+            try:
+                route.abort("blockedbyclient")
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _refuse_if_denied(page: Any, url: str) -> None:
+        final = page.url or ""
+        entry = denied_host(final) if final.startswith(("http:", "https:")) else None
+        if entry and entry != "invalid-url":
+            log.warning("planner: the form redirected to a do-not-automate host (%s)", entry)
+            raise AutofillRefused("denylisted", f"the application link leads to {entry}, which is never "
+                                  "automated: open it and apply yourself", http=400, link_out=url)
+
+    @staticmethod
     def _launch_headless(pw):
         try:
             return pw.chromium.launch(channel="chrome", headless=True)
@@ -532,9 +564,15 @@ class PlaywrightBackend:
         Uploads are pinned to the plan's (approved) files."""
         if adapter is None:
             return Outcome("error", "no adapter available")
+        from .guard import DeniedHost, OffSite
         safe = handle["k"].safe_page(**adapter.safe_page_kwargs())
         safe.allowed_uploads = {str(Path(p).resolve()) for p in (plan.files or {}).values()}
-        safe.goto(plan.url)
+        try:
+            safe.goto(plan.url)
+        except DeniedHost as exc:
+            return Outcome("blocked", f"{exc}: open it yourself (link-out only)")
+        except OffSite as exc:
+            return Outcome("blocked", str(exc))
         return adapter.run(safe, plan, ctx)
 
     def handover(self, handle: dict) -> bool:
@@ -629,10 +667,36 @@ def answer_no_llm(question: str, **kw: Any) -> Any:
     return A.answer_question(question, **kw)
 
 
-def plan_context(job: dict, url: str, files: dict[str, str], bank: Any = None) -> Any:
+def plan_context(job: dict, url: str, files: dict[str, str], bank: Any = None,
+                 cfg: Optional[dict] = None) -> Any:
     from .adapters.base import PlanContext
+    floor = float((cfg or {}).get("min_confidence") or DEFAULTS["min_confidence"])
     return PlanContext(job_key=job["key"], job=job, url=url, files=dict(files), answers=bank,
-                       answer_fn=answer_no_llm)
+                       answer_fn=answer_no_llm, min_confidence=floor)
+
+
+def _plan_from_snapshot(job: dict, url: str, ats: str, adapter: Any, snapshot: dict,
+                        files: dict[str, str], file_unresolved: list[dict], cfg: dict, *,
+                        bank: Any = None) -> FillPlan:
+    """Snapshot (form structure only) -> FillPlan whose values come from the CURRENT
+    answers.yaml / facts (bank None = load them now) and the given approved files."""
+    plan = None
+    if adapter is not None and snapshot.get("adapter_snapshot") is not None:
+        try:
+            plan = adapter.build_plan(snapshot["adapter_snapshot"], plan_context(job, url, files, bank, cfg))
+            plan.job_key, plan.ats, plan.url = job["key"], plan.ats or ats, plan.url or url
+        except Exception as exc:  # noqa: BLE001 - fall back to the generic resolver
+            log.warning("adapter build_plan failed job=%s ats=%s: %s", job["key"], ats, type(exc).__name__)
+            plan = None
+    if plan is None:
+        plan = build_plan(job, url, ats, snapshot, files, file_unresolved, cfg, bank=bank)
+    plan.files = dict(files)
+    enforce_policy(plan, cfg)
+    plan.unresolved = _unresolved(plan, file_unresolved)
+    for note in snapshot.get("notes") or []:
+        plan.unresolved.append({"label": note, "reason": "the form page shows a "
+                                f"{'CAPTCHA' if note == 'captcha' else 'sign-in wall'}: you'll handle it"})
+    return plan
 
 
 def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = None,
@@ -661,23 +725,8 @@ def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = Non
         if snapshot is None:
             _gone(job_key, db_path)
 
-    plan = None
-    if adapter is not None and snapshot.get("adapter_snapshot") is not None:
-        try:
-            plan = adapter.build_plan(snapshot["adapter_snapshot"], plan_context(job, url, files, bank))
-            plan.job_key, plan.ats, plan.url = job_key, plan.ats or ats, plan.url or url
-        except Exception as exc:  # noqa: BLE001 - fall back to the generic resolver
-            log.warning("adapter build_plan failed job=%s ats=%s: %s", job_key, ats, type(exc).__name__)
-            plan = None
-    if plan is None:
-        plan = build_plan(job, url, ats, snapshot, files, file_unresolved, cfg, bank=bank)
-    plan.files = dict(files)
-    enforce_policy(plan, cfg)
-    plan.unresolved = _unresolved(plan, file_unresolved)
-    for note in snapshot.get("notes") or []:
-        plan.unresolved.append({"label": note, "reason": "the form page shows a "
-                                f"{'CAPTCHA' if note == 'captcha' else 'sign-in wall'}: you'll handle it"})
-    _save(plan, cfg, db_path)
+    plan = _plan_from_snapshot(job, url, ats, adapter, snapshot, files, file_unresolved, cfg, bank=bank)
+    _save(plan, cfg, db_path, snapshot=snapshot, target=url)
     store.set_fill_status(job_key, "planned" if not plan.unresolved else "planned_needs_you", db_path)
     n_vals = sum(1 for s in plan.steps for a in s if a.value is not None)
     log.info("fill plan job=%s ats=%s source=%s fields=%d valued=%d unresolved=%d", job_key, ats,
@@ -701,32 +750,96 @@ def _ts(created_at: Any) -> float:
         return time.time()
 
 
-def _save(plan: FillPlan, cfg: dict, db_path: Any) -> None:
+# Stored plans hold field metadata only (L#4): label, locator, kind, source /
+# rule, confidence, approval state, plus the read-only form snapshot they were
+# built from. Never a value: those are resolved from answers.yaml / facts /
+# the approved files when a fill starts.
+PLAN_FORMAT = 2
+
+
+def _strip_values(d: dict) -> dict:
+    """A FillPlan dict without any value: each action keeps `approved` (it had an
+    approved value when planned) and uploads keep their file KEY, never a path."""
+    d = dict(d or {})
+    steps = []
+    for step in d.get("steps") or []:
+        out = []
+        for a in step if isinstance(step, list) else []:
+            if not isinstance(a, dict):
+                continue
+            a = dict(a)
+            a.setdefault("approved", a.get("value") is not None and not a.get("needs_user"))
+            if not (a.get("kind") == "upload" and a.get("value") in ("resume", "cover_letter")):
+                a["value"] = None
+            out.append(a)
+        steps.append(out)
+    d["steps"] = steps
+    d["files"] = {}
+    return d
+
+
+def stored_plan_dict(plan: FillPlan, snapshot: Optional[dict] = None, target: str = "") -> dict:
+    d = _strip_values(plan.to_dict())
+    d["file_kinds"] = sorted(plan.files or {})
+    d["format"] = PLAN_FORMAT
+    d["target_url"] = target or plan.url
+    if snapshot is not None:
+        d["snapshot"] = snapshot
+    return d
+
+
+def _save(plan: FillPlan, cfg: dict, db_path: Any, *, snapshot: Optional[dict] = None,
+          target: str = "") -> None:
     at = _ts(plan.created_at)
-    store.save_fill_plan(plan.job_key, plan.to_dict(), ats=plan.ats, url=plan.url,
+    store.save_fill_plan(plan.job_key, stored_plan_dict(plan, snapshot, target), ats=plan.ats, url=plan.url,
                          unresolved_count=len(plan.unresolved), created_at=at,
                          stale_after=at + float(cfg["plan_stale_hours"]) * 3600, db_path=db_path)
 
 
 def stored_plan(job_key: str, db_path: Any = None) -> Optional[dict]:
-    return store.get_fill_plan(job_key, db_path)
+    """The stored plan row for the API / UI: metadata only. Any value a row from
+    before L#4 still carries is stripped; the form snapshot is left out."""
+    row = store.get_fill_plan(job_key, db_path)
+    if row is None:
+        return None
+    if isinstance(row.get("plan"), dict):
+        plan = _strip_values(row["plan"])
+        plan.pop("snapshot", None)
+        row["plan"] = plan
+    return row
 
 
 def _fresh_plan(job: dict, cfg: dict, db_path: Any) -> Optional[FillPlan]:
-    """The stored plan if still fresh enough to hand off (L#8), else None (rebuild)."""
+    """A plan to hand off without re-fetching the form: rebuilt from the stored
+    form snapshot when that is fresh enough (L#8), with every value re-resolved
+    NOW from answers.yaml / facts and plan.files = the job's approved files now.
+    None = rebuild from the live form (also for rows from before L#4)."""
     row = store.get_fill_plan(job["key"], db_path)
-    if not row or not row.get("plan"):
+    if not row or not isinstance(row.get("plan"), dict):
         return None
     now = time.time()
-    if row.get("stale_after") and now > float(row["stale_after"]):
+    if row.get("stale_after") is not None and now > float(row["stale_after"]):
         return None
     seen = max(float(job.get("last_seen") or 0), float(row.get("created_at") or 0))
     if now - seen > float(cfg["freshness_hours"]) * 3600:
         return None
-    try:
-        return FillPlan.from_dict(row["plan"])
-    except Exception:  # noqa: BLE001
+    d = row["plan"]
+    snap = d.get("snapshot")
+    if d.get("format") != PLAN_FORMAT or not isinstance(snap, dict):
         return None
+    url = target_url(job)
+    if not url or d.get("target_url") != url:
+        return None                     # the job's link changed since: re-check the live form
+    ats = d.get("ats") or detect_ats(url, job)
+    files, file_unresolved = approved_files(job, db_path)
+    try:
+        plan = _plan_from_snapshot(job, d.get("url") or url, ats, adapter_for(url, ats), snap, files,
+                                   file_unresolved, cfg)
+    except Exception as exc:  # noqa: BLE001 - rebuild from the live form instead
+        log.warning("re-resolving the stored plan failed job=%s: %s", job["key"], type(exc).__name__)
+        return None
+    plan.created_at = d.get("created_at") or plan.created_at
+    return plan
 
 
 # --------------------------------------------------------------------------- live sessions
@@ -797,17 +910,18 @@ def _worker(live: LiveSession) -> None:
     try:
         store.update_autofill_session(live.id, db, status="filling")
         job = _job_or_raise(key, db)
-        plan = _fresh_plan(job, cfg, db)
+        plan = _fresh_plan(job, cfg, db)                     # values re-resolved from answers NOW
         if plan is None:
             plan = plan_for_job(key, db_path=db, cfg=cfg)   # also the live re-check (≤ 6 h)
-        enforce_policy(plan, cfg)                            # again: a stored plan may predate a rule
+        plan.files, _ = approved_files(store.get_job(key, db) or job, db)   # the approved files NOW
+        enforce_policy(plan, cfg)                            # uploads not approved now are blanked
         live.ats = plan.ats or live.ats
         if "resume" not in (plan.files or {}):
             log.info("fill job=%s: no approved résumé; the résumé field stays empty", key)
         live.handle = BACKEND.open_headed(cfg)
         shots = _shots_dir(key, db)
         outcome = BACKEND.execute(live.handle, adapter_for(plan.url, plan.ats), plan,
-                                  plan_context(job, plan.url, plan.files), cfg)
+                                  plan_context(job, plan.url, plan.files, cfg=cfg), cfg)
         od = _outcome_dict(outcome)
         status = _SESSION_FOR_OUTCOME.get(od.get("status") or "", "error")
         shot = od.get("screenshot") or BACKEND.screenshot(

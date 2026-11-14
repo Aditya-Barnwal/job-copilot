@@ -25,6 +25,8 @@ timeouts:
   watch_poll_sec: 2
 
 # Extra do-not-automate hosts (link-out only). They ADD to the built-in list in
-# jobcopilot/http.py (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound, YC) and
-# config/sources.yaml http.denied_hosts; nothing here can remove one.
+# jobcopilot/http.py (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound, YC), autofill's
+# own floor (lnkd.in) and config/sources.yaml http.denied_hosts; nothing here can
+# remove one. Each entry also covers its subdomains and the brand's country sites
+# (indeed.co.uk, linkedin.cn...), for the planner and the fill browser alike.
 denied_hosts_extra: []

@@ -385,6 +385,38 @@ def _v6_autofill(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "jobs", "fill_status", "TEXT")
 
 
+def _v7_fill_plans_no_values(conn: sqlite3.Connection) -> None:
+    """Phase 4 hardening: fill plans keep field metadata only, never values.
+
+    A stored plan used to carry the typed values (phone, email, CTC...) and was
+    re-used for up to a day, so an answer you un-approved later could still be
+    typed. Plans now store labels, sources, confidence and approval state; the
+    values are resolved from answers.yaml / facts / approved files at fill time.
+    This step strips the values out of every existing row and marks it stale
+    (stale_after = 0), so the next fill rebuilds it instead of trusting it.
+    Upload actions keep their file KEY ('resume' / 'cover_letter'), not a path.
+    """
+    import json
+    rows = conn.execute("SELECT job_key, plan FROM fill_plans").fetchall()
+    for job_key, raw in rows:
+        try:
+            plan = json.loads(raw) if raw else {}
+        except ValueError:
+            plan = {}
+        if not isinstance(plan, dict):
+            plan = {}
+        for step in plan.get("steps") or []:
+            for a in step if isinstance(step, list) else []:
+                if not isinstance(a, dict):
+                    continue
+                a["approved"] = a.get("value") is not None and not a.get("needs_user")
+                if not (a.get("kind") == "upload" and a.get("value") in ("resume", "cover_letter")):
+                    a["value"] = None
+        plan["files"] = {}
+        conn.execute("UPDATE fill_plans SET plan = ?, stale_after = 0 WHERE job_key = ?",
+                     (json.dumps(plan, ensure_ascii=False, sort_keys=True), job_key))
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
@@ -392,6 +424,7 @@ MIGRATIONS: list[Migration] = [
     (4, "gone_runs_tracker_backfill", _v4_gone_runs_backfill),
     (5, "application_artifacts", _v5_application_artifacts),
     (6, "autofill", _v6_autofill),
+    (7, "fill_plans_no_values", _v7_fill_plans_no_values),
 ]
 
 

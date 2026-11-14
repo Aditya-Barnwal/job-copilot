@@ -58,7 +58,12 @@ def load_spec(name: str) -> dict:
     if unknown:
         raise ValueError(f"{p.name}: unknown keys {sorted(unknown)}")
     for pat in spec.get("submit_patterns") or []:
-        re.compile(pat["url_regex"])
+        rx = pat.get("url_regex") or pat.get("body_regex")
+        if not rx or set(pat) - {"method", "url_regex", "body_regex"}:
+            raise ValueError(f"{p.name}: a submit pattern needs url_regex or body_regex")
+        re.compile(rx)
+    for rx in spec.get("allow_post") or []:
+        re.compile(rx)
     return spec
 
 
@@ -260,7 +265,8 @@ class SpecAdapter(Adapter):
         cls.name = spec["ats"]
         cls.hosts = tuple(spec.get("hosts") or ())
         cls.priority = 10
-        cls.submit_patterns = tuple(p["url_regex"] for p in spec.get("submit_patterns") or ())
+        # The guard tests every submit pattern against the URL AND the request body.
+        cls.submit_patterns = tuple(p.get("url_regex") or p["body_regex"] for p in spec.get("submit_patterns") or ())
         cls.allow_post_patterns = tuple(spec.get("allow_post") or ())
         conf = spec.get("confirmation") or {}
         cls.confirmation_markers = {
@@ -362,7 +368,9 @@ class SpecAdapter(Adapter):
         if (entry or {}).get("skip"):
             return empty("not in answers.yaml: yours to choose")
         opts = list(f.get("options") or (entry or {}).get("options") or [])
-        if kind in ("check", "radio"):
+        if kind in ("check", "radio", "select"):
+            # the question (label / legend) uses the checkbox consent rule for radios
+            # and dropdowns too; option texts ("I agree") the radio rule
             texts = [label] + (opts if kind == "check" and len(opts) <= 1 else [])
             radio_consent = kind == "radio" and any(is_consent_label(o, kind="radio") for o in opts)
             if radio_consent or any(is_consent_label(t, kind="checkbox") for t in texts if t):
@@ -458,6 +466,7 @@ class SpecAdapter(Adapter):
         fields the plan didn't know are filled only when `ctx` is given
         (same answers rules), otherwise highlighted."""
         ctx = ctx if ctx is not None else self.ctx
+        self.ctx = ctx              # _fill reads the confidence floor (min_confidence) from it
         st = _Run()
         try:
             safe.allowed_uploads = {str(Path(p).expanduser().resolve()) for p in (plan.files or {}).values()}
@@ -719,6 +728,10 @@ class SpecAdapter(Adapter):
             except SubmitGuardViolation:
                 return Outcome("needs_you", f"the forward button on {name} looks like Submit; stopped",
                                st.filled, st.left_empty, list(st.highlighted), None, None, name)
+            except Halted as exc:     # e.g. Save and Continue redirected to a do-not-automate host
+                return Outcome("blocked" if "do-not-automate" in str(exc) else "needs_you",
+                               f"stopped: {exc}", st.filled, st.left_empty, list(st.highlighted),
+                               None, None, name)
             safe.wait(300)
             if self._step_name(safe) == name:
                 errs = [e for e in self.spec.get("errors") or [] if self._count(safe, e)]

@@ -103,6 +103,10 @@ _ROUTERS = [meta.router, ingest.router, queue.router, jobs.router, profile.route
 if importlib.util.find_spec("server.routers.writing") is not None:
     from .routers import writing  # noqa: E402
     _ROUTERS.append(writing.router)
+# Phase 4 autofill routes (same rule: only a missing module is skipped).
+if importlib.util.find_spec("server.routers.autofill") is not None:
+    from .routers import autofill  # noqa: E402
+    _ROUTERS.append(autofill.router)
 for _router in _ROUTERS:
     app.include_router(_router)
 

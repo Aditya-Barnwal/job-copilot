@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Buttons</title></head>
+<body>
+<button type="button" id="b-text">Submit application</button>
+<button type="button" id="b-aria" aria-label="Submit">&rarr;</button>
+<button type="button" id="b-formaction" formaction="/submit">Next</button>
+<a id="b-apply" href="/success.html">Apply</a>
+<form id="f" action="/submit" method="post">
+  <input name="x" value="1">
+  <button type="submit" id="b-type">Next</button>
+  <button id="b-notype">Continue</button>
+  <input type="submit" id="b-input" value="Continue">
+</form>
+<button type="button" id="b-next">Next</button>
+<button type="button" id="b-add" onclick="this.dataset.clicked='1'">Add another</button>
+<button type="button" id="b-cancel">Cancel</button>
+</body></html>

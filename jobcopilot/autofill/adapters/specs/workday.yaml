@@ -1,0 +1,90 @@
+# Workday candidate application (declarative adapter spec, L#3).
+# Read by jobcopilot/autofill/adapters/workday.py. Hooks are Workday's public
+# data-automation-id attributes (stable across tenants); the flow sits behind a
+# candidate account, so the user signs in by hand in the persistent profile.
+ats: workday
+hosts: [myworkdayjobs.com, myworkdaysite.com, myworkday.com]   # + every subdomain (<tenant>.wd5.…)
+url_patterns:
+  - '/[\w-]+/job/'
+  - '/apply(/applyManually|/autofillWithResume|/useMyLastApplication)?'
+
+# Multi-step: the active step is read from the progress bar; ONLY the
+# bottom-navigation-next-button ("Save and Continue") moves forward, and the run
+# STOPS on Review, where that same button reads "Submit".
+steps:
+  order: [My Information, My Experience, Application Questions, Voluntary Disclosures, Self Identify, Review]
+  active: '[data-automation-id="progressBarActiveStep"]'
+  heading: '[data-automation-id="pageHeader"]'
+  next: '[data-automation-id="bottom-navigation-next-button"]'
+  stop_at: Review
+  max_steps: 10
+
+fields:
+  My Information:
+    - {locator: '[data-automation-id="sourceDropdown"]', question: 'How did you hear about us?', kind: select}
+    - {locator: '[name="candidateIsPreviousWorker"]', question: 'Have you previously worked for this company?', kind: radio,
+       options: ['Yes', 'No']}
+    - {locator: '[data-automation-id="countryDropdown"]', question: 'Country', kind: select}
+    - {locator: '[data-automation-id="legalNameSection_firstName"]', question: 'First name', kind: fill}
+    - {locator: '[data-automation-id="legalNameSection_lastName"]', question: 'Last name', kind: fill}
+    - {locator: '[data-automation-id="addressSection_addressLine1"]', question: 'Address line 1', kind: fill}
+    - {locator: '[data-automation-id="addressSection_city"]', question: 'City', kind: fill}
+    - {locator: '[data-automation-id="addressSection_postalCode"]', question: 'Postal code', kind: fill}
+    - {locator: '[data-automation-id="email"]', question: 'Email', kind: fill}
+    # Device type is a choice Workday asks for; answers.yaml has no such key, so it
+    # stays empty and highlighted for you (never guessed).
+    - {locator: '[data-automation-id="phone-device-type"]', question: 'Phone device type', kind: select, skip: true}
+    - {locator: '[data-automation-id="phone-number"]', question: 'Phone number', kind: fill}
+  My Experience:
+    - {locator: '[data-automation-id="linkedinQuestion"]', question: 'LinkedIn', kind: fill}
+  Application Questions: []
+  Voluntary Disclosures:
+    - {locator: '[data-automation-id="gender"]', question: 'Gender', kind: select}
+    - {locator: '[data-automation-id="ethnicityDropdown"]', question: 'Race / ethnicity', kind: select}
+    - {locator: '[data-automation-id="veteranStatus"]', question: 'Veteran status', kind: select}
+  Self Identify: []
+  Review: []
+
+# Every other visible field on a step (custom questionnaires) is discovered from
+# the live page by label and resolved through answers.answer_question.
+custom_questions:
+  - {locator_regex: '.'}
+comboboxes: ['button[aria-haspopup="listbox"]']
+
+uploads:
+  resume: {locator: '[data-automation-id="file-upload-input-ref"]', button: 'Select files', label: 'Resume/CV',
+           step: My Experience}
+
+# Workday's bot trap: an off-screen text input. Never typed into, never planned.
+honeypots: ['[data-automation-id="beecatcher"]', 'input[name="website"].beecatcher']
+never: ['[data-automation-id="agreementCheckbox"]', '[data-automation-id="password"]',
+        '[data-automation-id="verifyPassword"]']
+
+# Sign-in / create-account wall: pause for the user (no typing, no accounts).
+login_wall: ['[data-automation-id="signInContent"]', '[data-automation-id="createAccountLink"]',
+             '[data-automation-id="signInSubmitButton"]', '[data-automation-id="createAccountSubmitButton"]',
+             'input[type="password"]']
+
+submit:
+  - '[data-automation-id="bottom-navigation-next-button"]'
+errors: ['[data-automation-id="errorBanner"]:not([hidden])']
+
+# Final submit. Workday's candidate UI talks to /wday/cxs/<tenant>/<site>/... ;
+# step saves are allowed, anything named submit/finalize is aborted. Kept
+# conservative and path-based because the exact endpoint varies by release.
+submit_patterns:
+  - {method: POST, url_regex: '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/.*/(submit|finali[sz]e)\w*([/?]|$)'}
+  - {method: PUT, url_regex: '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/.*/(submit|finali[sz]e)\w*([/?]|$)'}
+  - {method: POST, url_regex: '/wday/cxs/.*/(submit|finali[sz]e)\w*([/?]|$)'}   # local fixture / proxy
+
+# Step saves ("Save and Continue") and attachment uploads are ordinary POSTs to
+# the candidate API; the guard allows them, after checking submit_patterns first
+# (a submit-like URL is aborted even when it also matches here).
+allow_post:
+  - '^https?://[\w.-]+\.myworkday(jobs|site)?\.com/wday/cxs/'
+  - '/wday/cxs/[^?]*/apply/(step|save|upload)'                               # local fixture / proxy
+
+confirmation:
+  url_regex: ['jobTasks/completed/application', '/userHome\b']
+  text: ['Application Submitted', 'Your application has been submitted', 'Thank you for applying',
+         'Congratulations! Your application']

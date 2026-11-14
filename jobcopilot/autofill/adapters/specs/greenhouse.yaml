@@ -1,0 +1,64 @@
+# Greenhouse job-boards application form (declarative adapter spec, L#3).
+# Read by jobcopilot/autofill/adapters/greenhouse.py. Structure verified against a
+# public posting's server-rendered form on 2026-11-13 (job-boards.greenhouse.io, Remix UI).
+# Values never live here: every value comes from answers.answer_question or the
+# job's approved résumé / cover-letter files.
+ats: greenhouse
+hosts: [boards.greenhouse.io, job-boards.greenhouse.io, job-boards.eu.greenhouse.io, boards.eu.greenhouse.io]
+url_patterns:
+  - '/[\w-]+/jobs/\d+'                # job-boards.greenhouse.io/<board>/jobs/<id>
+  - '/embed/job_app\?.*\bfor='        # embed/job_app?for=<board>&token=<id>
+  - '[?&]gh_jid=\d+'                  # employer career pages embedding the board
+form: '#application-form'
+
+# Known fields. `question` is what answers.answer_question is asked (the form's
+# own label is used when omitted); kind overrides the snapshot's guess.
+fields:
+  - {locator: '#first_name', question: 'First Name', kind: fill}
+  - {locator: '#last_name', question: 'Last Name', kind: fill}
+  - {locator: '#preferred_name', question: 'Preferred First Name', kind: fill}
+  - {locator: '#email', question: 'Email', kind: fill}
+  - {locator: '#phone', question: 'Phone', kind: fill}
+  - {locator: '#country', question: 'Country', kind: combobox}
+  - {locator: '#candidate-location', question: 'Current location', kind: combobox}
+  - {locator: '[id^="school--"]', question: 'School', kind: combobox}
+  - {locator: '[id^="degree--"]', question: 'Degree', kind: combobox}
+  - {locator: '[id^="discipline--"]', question: 'Field of study', kind: combobox}
+
+# Custom questions: #question_<n> (text / textarea / react-select combobox) and
+# name="question_<n>[]" multi-checkbox groups. Discovered from the snapshot by
+# label; a combobox is recognised by role=combobox.
+custom_questions:
+  - {locator_regex: '^\[id="question_\d+"\]$|^#question_\d+$'}
+  - {locator_regex: 'question_\d+\[\]'}
+comboboxes: ['input[role="combobox"]']
+
+uploads:
+  resume: {locator: '#resume', button: 'Attach', label: 'Resume/CV'}
+  cover_letter: {locator: '#cover_letter', button: 'Attach', label: 'Cover Letter'}
+
+# Never touched by automation (paste-text alternatives to the files, the
+# "Locate me" geolocation button, Dropbox pickers).
+never: ['#resume_text', '#cover_letter_text', '[data-testid$="-dropbox"]']
+honeypots: []
+
+submit:
+  - '#application-form button[type="submit"]'
+  - '.application--submit button'
+errors: ['.helper-text--error', '[aria-invalid="true"]', '.error-message']
+
+# Final-submit endpoints aborted while filling (POST/PUT only). Sources: the board
+# page's own bootstrap JSON ("submitPath": "https://boards.greenhouse.io/embed/<board>/jobs/<id>",
+# "confirmationPath": "/embed/job_app/confirmation?..."), the Remix form action
+# (POST to the job page itself), and the documented Job Board API
+# "POST /v1/boards/{board_token}/jobs/{id}" (application submission).
+submit_patterns:
+  - {method: POST, url_regex: '^https?://(boards|job-boards)(\.eu)?\.greenhouse\.io/embed/[\w-]+/jobs/\d+'}
+  - {method: POST, url_regex: '^https?://(boards|job-boards)(\.eu)?\.greenhouse\.io/[\w-]+/jobs/\d+'}
+  - {method: POST, url_regex: '^https?://(boards|job-boards)(\.eu)?\.greenhouse\.io/embed/job_app'}
+  - {method: POST, url_regex: '^https?://boards-api(\.eu)?\.greenhouse\.io/v1/boards/[\w-]+/jobs/\d+'}
+  - {method: POST, url_regex: '/embed/[\w-]+/jobs/\d+'}     # same path on a local fixture / proxy
+
+confirmation:
+  url_regex: ['/confirmation\b', 'job_app/confirmation']
+  text: ['Thank you for applying', 'Your application has been submitted', 'Application submitted']

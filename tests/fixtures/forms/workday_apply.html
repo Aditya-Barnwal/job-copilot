@@ -1,0 +1,186 @@
+<!doctype html>
+<!-- STRUCTURE of a Workday candidate application ("Apply Manually", already signed in),
+     written from Workday's public data-automation-id hooks (the real page is a
+     client-rendered SPA behind a candidate account). Steps are client-side:
+     My Information -> My Experience -> Application Questions -> Voluntary Disclosures
+     -> Self Identify -> Review. Navigation is ONLY bottom-navigation-next-button
+     ("Save and Continue"; on Review the same button reads "Submit").
+     The 'beecatcher' input is Workday's honeypot. Each step is saved with a POST
+     (allowed); the final Submit POSTs to .../submit (must never happen).
+     ?strict=1 makes the Voluntary Disclosures terms checkbox required (validation
+     error banner), as many tenants do. Fake tenant, no personal data. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Software Engineer : Apply - Examplecorp Careers</title>
+<style>
+  [data-step]{display:none} [data-step].active{display:block}
+  .beecatcher{position:absolute;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0}
+  [role=listbox][hidden]{display:none}
+</style></head>
+<body>
+<div data-automation-id="applyFlowPage">
+<ol data-automation-id="progressBar">
+  <li data-automation-id="progressBarActiveStep" data-index="0"><label>My Information</label></li>
+  <li data-automation-id="progressBarInactiveStep" data-index="1"><label>My Experience</label></li>
+  <li data-automation-id="progressBarInactiveStep" data-index="2"><label>Application Questions</label></li>
+  <li data-automation-id="progressBarInactiveStep" data-index="3"><label>Voluntary Disclosures</label></li>
+  <li data-automation-id="progressBarInactiveStep" data-index="4"><label>Self Identify</label></li>
+  <li data-automation-id="progressBarInactiveStep" data-index="5"><label>Review</label></li>
+</ol>
+<div data-automation-id="errorBanner" role="alert" hidden><span data-automation-id="errorMessage">Errors Found</span></div>
+
+<section data-step="My Information" class="active" data-automation-id="applyFlowMyInfoPage">
+  <h2 data-automation-id="pageHeader">My Information</h2>
+  <div data-automation-id="formField-sourcePrompt">
+    <label for="source--source">How Did You Hear About Us?<abbr title="required">*</abbr></label>
+    <select id="source--source" data-automation-id="sourceDropdown">
+      <option value="">Select One</option><option>Company Website</option><option>Job Board</option><option>Referral</option></select>
+  </div>
+  <fieldset data-automation-id="formField-candidateIsPreviousWorker">
+    <legend>Have you previously worked for Examplecorp?<abbr title="required">*</abbr></legend>
+    <label><input type="radio" name="candidateIsPreviousWorker" value="true" data-automation-id="previousWorker-yes">Yes</label>
+    <label><input type="radio" name="candidateIsPreviousWorker" value="false" data-automation-id="previousWorker-no">No</label>
+  </fieldset>
+  <div data-automation-id="formField-countryDropdown">
+    <label for="country--country">Country<abbr title="required">*</abbr></label>
+    <select id="country--country" data-automation-id="countryDropdown"><option value="">Select One</option><option>India</option><option>Exampleland</option><option>United States of America</option></select>
+  </div>
+  <div data-automation-id="formField-legalName--firstName">
+    <label for="name--legalName--firstName">Given Name(s)<abbr title="required">*</abbr></label>
+    <input id="name--legalName--firstName" type="text" data-automation-id="legalNameSection_firstName">
+  </div>
+  <div data-automation-id="formField-legalName--lastName">
+    <label for="name--legalName--lastName">Family Name<abbr title="required">*</abbr></label>
+    <input id="name--legalName--lastName" type="text" data-automation-id="legalNameSection_lastName">
+  </div>
+  <div data-automation-id="formField-addressLine1">
+    <label for="address--addressLine1">Address Line 1</label>
+    <input id="address--addressLine1" type="text" data-automation-id="addressSection_addressLine1">
+  </div>
+  <div data-automation-id="formField-city">
+    <label for="address--city">City</label>
+    <input id="address--city" type="text" data-automation-id="addressSection_city">
+  </div>
+  <div data-automation-id="formField-postalCode">
+    <label for="address--postalCode">Postal Code</label>
+    <input id="address--postalCode" type="text" data-automation-id="addressSection_postalCode">
+  </div>
+  <div data-automation-id="formField-email">
+    <label for="emailAddress--emailAddress">Email Address</label>
+    <input id="emailAddress--emailAddress" type="text" data-automation-id="email">
+  </div>
+  <div data-automation-id="formField-phoneType">
+    <label for="phoneNumber--phoneType">Phone Device Type<abbr title="required">*</abbr></label>
+    <select id="phoneNumber--phoneType" data-automation-id="phone-device-type"><option value="">Select One</option><option>Mobile</option><option>Landline</option></select>
+  </div>
+  <div data-automation-id="formField-phoneNumber">
+    <label for="phoneNumber--phoneNumber">Phone Number<abbr title="required">*</abbr></label>
+    <input id="phoneNumber--phoneNumber" type="text" data-automation-id="phone-number">
+  </div>
+  <input type="text" name="website" class="beecatcher" data-automation-id="beecatcher" tabindex="-1" autocomplete="off" aria-label="Website">
+</section>
+
+<section data-step="My Experience" data-automation-id="applyFlowMyExpPage">
+  <h2 data-automation-id="pageHeader">My Experience</h2>
+  <div data-automation-id="resumeSection">
+    <h3>Resume/CV</h3>
+    <div data-automation-id="file-upload-drop-zone">
+      <button type="button" data-automation-id="select-files">Select files</button>
+      <input type="file" data-automation-id="file-upload-input-ref" style="display:none" accept=".pdf,.doc,.docx">
+    </div>
+    <div data-automation-id="file-upload-successful" hidden>Successfully Uploaded!</div>
+  </div>
+  <div data-automation-id="formField-linkedinQuestion">
+    <label for="socialNetworkAccounts--linkedInAccount">LinkedIn</label>
+    <input id="socialNetworkAccounts--linkedInAccount" type="text" data-automation-id="linkedinQuestion">
+  </div>
+</section>
+
+<section data-step="Application Questions" data-automation-id="applyFlowPrimaryQuestionsPage">
+  <h2 data-automation-id="pageHeader">Application Questions</h2>
+  <div data-automation-id="formField-q1">
+    <label for="primaryQuestionnaire--q1">Are you legally authorized to work in the country in which you are applying?<abbr title="required">*</abbr></label>
+    <select id="primaryQuestionnaire--q1"><option value="">Select One</option><option>Yes</option><option>No</option></select>
+  </div>
+  <div data-automation-id="formField-q2">
+    <label for="primaryQuestionnaire--q2">Will you now or in the future require sponsorship for employment visa status?<abbr title="required">*</abbr></label>
+    <select id="primaryQuestionnaire--q2"><option value="">Select One</option><option>Yes</option><option>No</option></select>
+  </div>
+  <div data-automation-id="formField-q3">
+    <label for="primaryQuestionnaire--q3">Which internal tool would you rebuild first, and why?</label>
+    <textarea id="primaryQuestionnaire--q3"></textarea>
+  </div>
+</section>
+
+<section data-step="Voluntary Disclosures" data-automation-id="applyFlowVoluntaryDisclosuresPage">
+  <h2 data-automation-id="pageHeader">Voluntary Disclosures</h2>
+  <div data-automation-id="formField-gender">
+    <label for="personalInfoUS--gender">Gender</label>
+    <select id="personalInfoUS--gender" data-automation-id="gender"><option value="">Select One</option><option>Male</option><option>Female</option><option>I do not wish to answer</option></select>
+  </div>
+  <div data-automation-id="formField-veteranStatus">
+    <label for="personalInfoUS--veteranStatus">Please select your veteran status</label>
+    <select id="personalInfoUS--veteranStatus" data-automation-id="veteranStatus"><option value="">Select One</option><option>I am not a protected veteran</option><option>I identify as one or more of the classifications of protected veteran</option><option>I do not wish to answer</option></select>
+  </div>
+  <div data-automation-id="formField-agreementCheckbox">
+    <input type="checkbox" id="termsAndConditions--acceptTermsAndAgreements" data-automation-id="agreementCheckbox">
+    <label for="termsAndConditions--acceptTermsAndAgreements">Yes, I have read and consent to the terms and conditions</label>
+  </div>
+</section>
+
+<section data-step="Self Identify" data-automation-id="applyFlowSelfIdentifyPage">
+  <h2 data-automation-id="pageHeader">Self Identify</h2>
+  <fieldset data-automation-id="formField-disabilityStatus">
+    <legend>Disability status: please check one of the boxes below</legend>
+    <label><input type="checkbox" data-automation-id="disability-yes" name="disability" value="yes">Yes, I have a disability, or have had one in the past</label>
+    <label><input type="checkbox" data-automation-id="disability-no" name="disability" value="no">No, I do not have a disability and have not had one in the past</label>
+    <label><input type="checkbox" data-automation-id="disability-decline" name="disability" value="decline">I do not want to answer</label>
+  </fieldset>
+</section>
+
+<section data-step="Review" data-automation-id="applyFlowReviewPage">
+  <h2 data-automation-id="pageHeader">Review</h2>
+  <p>Please review your application before you submit.</p>
+</section>
+
+<div data-automation-id="pageFooter">
+  <button type="button" data-automation-id="bottom-navigation-back-button">Back</button>
+  <button type="button" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+</div>
+</div>
+<script>
+(function () {
+  var strict = /[?&]strict=1/.test(location.search);
+  var steps = Array.prototype.slice.call(document.querySelectorAll('[data-step]'));
+  var bar = Array.prototype.slice.call(document.querySelectorAll('[data-automation-id=progressBar] li'));
+  var next = document.querySelector('[data-automation-id=bottom-navigation-next-button]');
+  var banner = document.querySelector('[data-automation-id=errorBanner]');
+  var i = 0;
+  function show(n) {
+    steps.forEach(function (s, k) { s.classList.toggle('active', k === n); });
+    bar.forEach(function (b, k) { b.setAttribute('data-automation-id',
+      k === n ? 'progressBarActiveStep' : (k < n ? 'progressBarCompletedStep' : 'progressBarInactiveStep')); });
+    next.textContent = steps[n].dataset.step === 'Review' ? 'Submit' : 'Save and Continue';
+    banner.hidden = true; i = n;
+  }
+  document.querySelector('[data-automation-id=select-files]').addEventListener('click', function () {
+    document.querySelector('[data-automation-id=file-upload-input-ref]').click(); });
+  document.querySelector('[data-automation-id=file-upload-input-ref]').addEventListener('change', function () {
+    document.querySelector('[data-automation-id=file-upload-successful]').hidden = !this.files.length; });
+  next.addEventListener('click', function () {
+    var name = steps[i].dataset.step;
+    if (name === 'Review') {           // the real final submit
+      fetch('/wday/cxs/examplecorp/External/job/R-1001/apply/submit', {method: 'POST', body: '{}'})
+        .then(function () { document.body.innerHTML = '<h2>Application Submitted</h2><p>Thank you for applying.</p>'; });
+      return;
+    }
+    if (strict && name === 'Voluntary Disclosures' &&
+        !document.querySelector('[data-automation-id=agreementCheckbox]').checked) {
+      banner.hidden = false; return;   // stays on the step, like Workday's validation
+    }
+    fetch('/wday/cxs/examplecorp/External/job/R-1001/apply/step?section=' + encodeURIComponent(name),
+          {method: 'POST', body: '{}'}).then(function () { show(i + 1); });
+  });
+})();
+</script>
+</body>
+</html>

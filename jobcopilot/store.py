@@ -1153,3 +1153,121 @@ def queue_days(db_path: Path | str | None = None) -> list[str]:
     with connect(db_path) as conn:
         return [r["day"] for r in conn.execute(
             "SELECT DISTINCT day FROM queue_items ORDER BY day DESC").fetchall()]
+
+
+# --- fill plans + autofill sessions (Phase 4) -------------------------------
+# Plans hold form values: they stay in the local DB and are never logged.
+
+AUTOFILL_OPEN_STATUSES = ("starting", "filling", "needs_you", "blocked", "ready_to_submit")
+AUTOFILL_SESSION_FIELDS = ("status", "outcome", "screenshot_path", "finished_at", "pid")
+
+
+def save_fill_plan(job_key: str, plan: dict, *, ats: Optional[str], url: Optional[str],
+                   unresolved_count: int, created_at: float, stale_after: Optional[float],
+                   db_path: Path | str | None = None) -> None:
+    """Store (replace) a job's current fill plan."""
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO fill_plans(job_key, ats, url, plan, unresolved_count, created_at, stale_after) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_key) DO UPDATE SET ats = excluded.ats, "
+            "url = excluded.url, plan = excluded.plan, unresolved_count = excluded.unresolved_count, "
+            "created_at = excluded.created_at, stale_after = excluded.stale_after",
+            (job_key, ats, url, json.dumps(plan, ensure_ascii=False, sort_keys=True),
+             int(unresolved_count), float(created_at), stale_after))
+
+
+def get_fill_plan(job_key: str, db_path: Path | str | None = None) -> Optional[dict]:
+    """{job_key, ats, url, plan (dict), unresolved_count, created_at, stale_after} or None."""
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM fill_plans WHERE job_key = ?", (job_key,)).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["plan"] = json.loads(out["plan"]) if out.get("plan") else None
+    except ValueError:
+        out["plan"] = None
+    return out
+
+
+def set_fill_status(job_key: str, fill_status: Optional[str],
+                    db_path: Path | str | None = None) -> None:
+    with connect(db_path) as conn:
+        conn.execute("UPDATE jobs SET fill_status = ? WHERE key = ?", (fill_status, job_key))
+
+
+def _decode_session(row: dict) -> dict:
+    v = row.get("outcome")
+    if isinstance(v, str) and v:
+        try:
+            row["outcome"] = json.loads(v)
+        except ValueError:
+            row["outcome"] = None
+    row["open"] = row.get("status") in AUTOFILL_OPEN_STATUSES
+    return row
+
+
+def _reap_sessions(conn: sqlite3.Connection) -> None:
+    """Open sessions whose process (this host) died can never finish: mark them abandoned."""
+    for r in conn.execute("SELECT id, pid FROM autofill_sessions WHERE status IN "
+                          f"({','.join('?' * len(AUTOFILL_OPEN_STATUSES))})",
+                          AUTOFILL_OPEN_STATUSES).fetchall():
+        if r["pid"] is not None and not _pid_alive(r["pid"]):
+            conn.execute("UPDATE autofill_sessions SET status = 'abandoned', finished_at = ? "
+                         "WHERE id = ?", (time.time(), r["id"]))
+
+
+def claim_autofill_session(job_key: str, db_path: Path | str | None = None
+                           ) -> tuple[Optional[int], Optional[dict]]:
+    """Atomically start a session unless one is open: (new_id, None) or (None, open_session).
+    One browser fill at a time (the persistent profile can only be opened once)."""
+    with connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _reap_sessions(conn)
+        row = conn.execute("SELECT * FROM autofill_sessions WHERE status IN "
+                           f"({','.join('?' * len(AUTOFILL_OPEN_STATUSES))}) "
+                           "ORDER BY started_at DESC LIMIT 1", AUTOFILL_OPEN_STATUSES).fetchone()
+        if row:
+            return None, _decode_session(dict(row))
+        cur = conn.execute("INSERT INTO autofill_sessions(job_key, status, started_at, pid) "
+                           "VALUES (?, 'starting', ?, ?)", (job_key, time.time(), os.getpid()))
+        return int(cur.lastrowid), None
+
+
+def update_autofill_session(session_id: int, db_path: Path | str | None = None,
+                            **fields: Any) -> None:
+    bad = set(fields) - set(AUTOFILL_SESSION_FIELDS)
+    if bad:
+        raise ValueError(f"unknown session fields: {sorted(bad)}")
+    if not fields:
+        return
+    if "outcome" in fields and fields["outcome"] is not None and not isinstance(fields["outcome"], str):
+        fields["outcome"] = json.dumps(fields["outcome"], ensure_ascii=False, sort_keys=True)
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connect(db_path) as conn:
+        conn.execute(f"UPDATE autofill_sessions SET {cols} WHERE id = ?", (*fields.values(), session_id))
+
+
+def get_autofill_session(session_id: int, db_path: Path | str | None = None) -> Optional[dict]:
+    with connect(db_path) as conn:
+        _reap_sessions(conn)
+        row = conn.execute("SELECT * FROM autofill_sessions WHERE id = ?", (session_id,)).fetchone()
+    return _decode_session(dict(row)) if row else None
+
+
+def list_autofill_sessions(status: Optional[Iterable[str]] = None, job_key: Optional[str] = None,
+                           limit: int = 50, db_path: Path | str | None = None) -> list[dict]:
+    """Sessions newest first, optionally filtered by status(es) and job."""
+    sql, args = "SELECT * FROM autofill_sessions WHERE 1 = 1", []
+    if status is not None:
+        st = list(status)
+        sql += f" AND status IN ({','.join('?' * len(st)) or 'NULL'})"
+        args += st
+    if job_key is not None:
+        sql += " AND job_key = ?"
+        args.append(job_key)
+    sql += " ORDER BY started_at DESC, id DESC LIMIT ?"
+    args.append(int(limit))
+    with connect(db_path) as conn:
+        _reap_sessions(conn)
+        return [_decode_session(dict(r)) for r in conn.execute(sql, args).fetchall()]

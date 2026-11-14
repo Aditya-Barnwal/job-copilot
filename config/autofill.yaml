@@ -1,0 +1,30 @@
+# Phase 4: form autofill — it fills, highlights what it couldn't, and STOPS before Submit.
+# You press Submit yourself. Read by jobcopilot/autofill/service.py.
+
+browser:
+  headed: true                      # the fill runs in a window you can see and finish
+  channel: chrome                   # your installed Google Chrome (no stealth flags, real UA)
+  profile_dir: ~/.jobcopilot/browser-profile   # outside the repo; you sign in to portals manually
+
+# Only answers with needs_user false AND at least this confidence are typed;
+# anything else is left empty and highlighted for you.
+min_confidence: 0.8
+
+# Open questions ("why us?") get a grounded LLM draft shown for review in the
+# plan (never typed). Off by default: no LLM calls during nightly planning.
+draft_open_answers: false
+
+freshness_hours: 6        # hand-off re-check: posting seen / plan built within this many hours
+plan_stale_hours: 24      # a stored plan older than this is rebuilt before a fill
+nightly_limit: 25         # fill plans built per nightly run (today's main-queue jobs with an approved résumé)
+
+timeouts:
+  page_load_sec: 30       # headless read-only form load while planning
+  fill_sec: 180           # executing a plan in the headed window
+  watch_min: 180          # how long the open window is watched for your submission
+  watch_poll_sec: 2
+
+# Extra do-not-automate hosts (link-out only). They ADD to the built-in list in
+# jobcopilot/http.py (LinkedIn, Indeed, Naukri, Glassdoor, Wellfound, YC) and
+# config/sources.yaml http.denied_hosts; nothing here can remove one.
+denied_hosts_extra: []

@@ -1407,6 +1407,7 @@ RULES: list[tuple[str, str, Any]] = [
                      r"desired (base|total)", h_expected_ctc),
     ("currently_employed", r"currently (employed|working)|are you (presently )?employed|employment status", h_employed),
     ("current_employer", r"(current|present|most recent|latest|last) (employer|company|organi[sz]ation)|employer name|"
+                         r"(current|present) (or|/) (previous|past|most recent) (employer|company)|"
                          r"^company( name)?$|where do you (currently )?work|name of (your )?(current )?(employer|company)",
      h_employer),
     ("current_title", r"(current|present|most recent|latest) (job )?(title|designation|role|position)|job title|"
@@ -1424,7 +1425,9 @@ RULES: list[tuple[str, str, Any]] = [
     ("middle_name", r"middle name", h_middle),
     ("last_name", r"last name|surname|family name|\blname\b", _p("personal.last_name", "last_name")),
     ("preferred_name", r"preferred (first )?name|nick ?name|known as|what should we call you", h_preferred_name),
-    ("full_name", r"full name|legal name|^name$|^your name$|candidate name|applicant name|\bname\b", _p("personal.full_name", "full_name")),
+    # No bare "\bname\b": "What is the name of your team/manager/college?" must not get the user's name.
+    ("full_name", r"full name|legal name|^(your )?name\s*\*?$|^(first and last|first & last) name|candidate name|"
+                  r"applicant name|^what is your name\??$", _p("personal.full_name", "full_name")),
     ("languages", r"^(?!.*(programming|coding|scripting)).*\blanguages?\b", h_languages),
     ("current_location", r"current location|where (are you|do you) (currently )?(based|located|live)|^location$|"
                          r"current city of residence|your location", h_location),

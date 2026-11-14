@@ -1,0 +1,54 @@
+# Lever hosted application form (declarative adapter spec, L#3).
+# Read by jobcopilot/autofill/adapters/lever.py. Structure verified against a
+# public jobs.lever.co/<site>/<id>/apply page on 2026-11-13.
+ats: lever
+hosts: [jobs.lever.co, jobs.eu.lever.co]
+url_patterns:
+  - '/[\w.-]+/[0-9a-f-]{8,}(/apply)?'
+form: '#application-form'
+
+fields:
+  - {locator: '[data-qa="name-input"]', names: [name], question: 'Full name', kind: fill}
+  - {locator: '[data-qa="email-input"]', names: [email], question: 'Email', kind: fill}
+  - {locator: '[data-qa="phone-input"]', names: [phone], question: 'Phone', kind: fill}
+  - {locator: '[data-qa="location-input"]', names: [location], question: 'Current location', kind: fill}
+  - {locator: '[data-qa="org-input"]', names: [org], question: 'Current company', kind: fill}
+  - {locator: '[name="urls[LinkedIn]"]', question: 'LinkedIn URL', kind: fill}
+  - {locator: '[name="urls[GitHub]"]', question: 'GitHub URL', kind: fill}
+  - {locator: '[name="urls[Portfolio]"]', question: 'Portfolio URL', kind: fill}
+  - {locator: '[name="urls[Other]"]', question: 'Personal website', kind: fill}
+
+# Custom "cards": name="cards[<uuid>][fieldN]" (text, textarea, select,
+# radio = multiple-choice, checkbox = multiple-select). Label = the card's
+# .application-label .text.
+custom_questions:
+  - {locator_regex: 'cards\[[0-9a-f-]+\]\[field\d+\]'}
+comboboxes: []
+
+uploads:
+  resume: {locator: '[data-qa="input-resume"]', label: 'Resume/CV'}
+
+# "Additional information" is free text (a pasted cover letter): yours to write.
+# selectedLocation / baseTemplate / tracking fields are hidden plumbing.
+never: ['#additional-information', '[name="comments"]', '#selected-location',
+        '[name$="[baseTemplate]"]', '[name="h-captcha-response"]']
+honeypots: []
+
+# Lever runs hCaptcha INVISIBLY when the user presses Submit; an empty
+# invisible container is not a challenge (the user will see one, if any).
+invisible_captcha: ['#h-captcha', '.h-captcha[data-size="invisible"]']
+
+submit:
+  - '[data-qa="btn-submit"]'
+  - '#btn-submit'
+errors: ['.application-error', '.error-message', '[data-qa="error"]']
+
+# The form has no action: it POSTs multipart to the /apply URL itself.
+submit_patterns:
+  - {method: POST, url_regex: '^https?://jobs(\.eu)?\.lever\.co/[\w.-]+/[0-9a-f-]+/apply/?(\?|$)'}
+  - {method: POST, url_regex: '^https?://api(\.eu)?\.lever\.co/v0/postings/[\w.-]+/[0-9a-f-]+(/apply)?'}
+  - {method: POST, url_regex: '/apply(\?|$)'}              # same path on a local fixture / proxy
+
+confirmation:
+  url_regex: ['/thanks\b']
+  text: ['Application submitted', 'Thanks for applying', 'Thank you for applying']

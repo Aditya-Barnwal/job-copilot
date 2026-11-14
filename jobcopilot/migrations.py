@@ -349,12 +349,49 @@ def _v5_application_artifacts(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "jobs", "artifact_id", "INTEGER")
 
 
+def _v6_autofill(conn: sqlite3.Connection) -> None:
+    """Phase 4: fill plans (built nightly, D3) and browser-fill sessions.
+
+    - fill_plans: one current plan per job (field -> value, source, confidence,
+      plus the unresolved fields); `stale_after` is when it must be rebuilt
+      before a hand-off. Values are local only (data/ never leaves the Mac).
+    - autofill_sessions: one row per headed fill. status runs
+      starting -> filling -> ready_to_submit | needs_you | blocked | error, then
+      submitted (the user's own click, detected) | closed | timed_out | abandoned.
+      `pid` lets a row whose server process died be recognised as abandoned.
+    - jobs.fill_status: the latest plan / fill state, for the queue and tracker.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS fill_plans (
+        job_key TEXT PRIMARY KEY,
+        ats TEXT,
+        url TEXT,
+        plan TEXT NOT NULL,           -- JSON FillPlan.to_dict()
+        unresolved_count INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        stale_after REAL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS autofill_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        outcome TEXT,                 -- JSON Outcome (+ reason) — labels only, never values
+        screenshot_path TEXT,
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        pid INTEGER
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_autofill_sessions_status "
+                 "ON autofill_sessions(status, started_at)")
+    add_column_if_missing(conn, "jobs", "fill_status", "TEXT")
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
     (3, "eligibility_queue_tracker", _v3_eligibility_queue),
     (4, "gone_runs_tracker_backfill", _v4_gone_runs_backfill),
     (5, "application_artifacts", _v5_application_artifacts),
+    (6, "autofill", _v6_autofill),
 ]
 
 

@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- STRUCTURE of Workday's candidate sign-in / create-account wall, shown after
+     "Apply" when the persistent browser profile has no session for the tenant.
+     Automation must stop here (needs_you): no typing, no account creation.
+     Fake tenant, no personal data. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign In - Examplecorp Careers</title></head>
+<body>
+<div data-automation-id="signInContent">
+  <h2 data-automation-id="headingText">Sign In</h2>
+  <form data-automation-id="signInForm" method="post" action="/wday/authgwy/examplecorp/login-auth.htmld">
+    <label for="input-email">Email Address</label>
+    <input id="input-email" type="text" data-automation-id="email" autocomplete="email">
+    <label for="input-password">Password</label>
+    <input id="input-password" type="password" data-automation-id="password" autocomplete="current-password">
+    <button type="submit" data-automation-id="signInSubmitButton">Sign In</button>
+  </form>
+  <button type="button" data-automation-id="forgotPasswordLink">Forgot your password?</button>
+  <button type="button" data-automation-id="createAccountLink">Create Account</button>
+</div>
+</body>
+</html>

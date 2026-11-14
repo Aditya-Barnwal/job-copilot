@@ -209,7 +209,19 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
         step("tailor", None, noop="fixture mode: no LLM calls")
     else:
         step("tailor", _tailor_today)
-    step("fill_plan", None, noop="Phase 4: fill planning not built yet")
+    # Fill plans (D3): read-only, for today's main-queue jobs with an APPROVED résumé.
+    # Nothing is typed or submitted; the fill itself only runs when you click.
+    # Limit: config/autofill.yaml nightly_limit. Each job is failure-isolated.
+    def _fill_plans_today() -> dict:
+        from .autofill import service as _autofill
+        return _autofill.plan_today(day=day, db_path=db_path)
+
+    if no_network:
+        step("fill_plan", None, noop="fixture mode: no browser, no network")
+    elif not any(a.get("status") == "approved" for a in store.list_artifacts(db_path=db_path)):
+        step("fill_plan", None, noop="no approved résumé yet: nothing to plan")
+    else:
+        step("fill_plan", _fill_plans_today)
 
     failed_all = results["ingest"]["status"] != "ok" or _all_sources_failed(ingest_summary)
     errors = [r["name"] for r in summary["steps"] if r["status"] == "error"]

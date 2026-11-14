@@ -1,0 +1,52 @@
+# Ashby hosted application form (declarative adapter spec, L#3).
+# Read by jobcopilot/autofill/adapters/ashby.py. The real page is a client-rendered
+# SPA; structure follows its rendered DOM (system fields "_systemfield_*",
+# custom fields keyed by UUID, .ashby-application-form-* class hooks).
+ats: ashby
+hosts: [jobs.ashbyhq.com]
+url_patterns:
+  - '/[\w.-]+/[0-9a-f-]{36}(/application)?'
+form: '.ashby-application-form-container form'
+
+fields:
+  - {locator: '#_systemfield_name', question: 'Full name', kind: fill}
+  - {locator: '#_systemfield_email', question: 'Email', kind: fill}
+  - {locator: '#_systemfield_phone', question: 'Phone', kind: fill}
+  - {locator: '#_systemfield_location', question: 'Current location', kind: combobox}
+
+custom_questions:
+  - {locator_regex: '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'}
+  - {locator_regex: '_eeoc_'}
+comboboxes: ['input[role="combobox"]']
+
+uploads:
+  resume: {locator: '#_systemfield_resume', button: 'Upload File', label: 'Resume'}
+  cover_letter: {locator: '#_systemfield_cover_letter', label: 'Cover Letter'}
+
+never: ['#_systemfield_data_consent']
+honeypots: []
+# reCAPTCHA Enterprise runs invisibly on submit (site key in the page bootstrap).
+invisible_captcha: ['.grecaptcha-badge']
+
+submit:
+  - 'button.ashby-application-form-submit-button'
+errors: ['.ashby-application-form-field-entry [class*="error"]', '[role="alert"]']
+
+# Submission goes through Ashby's non-user GraphQL endpoint (operation names
+# ApiSubmitSingleApplicationFormAction / ...ApplicationForm...), and Ashby's public
+# API documents applicationForm.submit. Both aborted while filling.
+submit_patterns:
+  - {method: POST, url_regex: '^https?://jobs\.ashbyhq\.com/api/non-user-graphql\?.*op=\w*Submit\w*'}
+  - {method: POST, url_regex: '^https?://api\.ashbyhq\.com/applicationForm\.submit'}
+  - {method: POST, url_regex: '/api/non-user-graphql\?.*op=\w*Submit\w*'}   # local fixture / proxy
+
+# Harmless non-GETs while filling (the guard denies every other one; submit_patterns
+# win over this list): the résumé upload handshake. The signed upload itself goes
+# to Ashby's storage host; verify it in the supervised live dry run.
+allow_post:
+  - '^https?://jobs\.ashbyhq\.com/api/non-user-graphql\?(?!.*op=\w*Submit)[^#]*op=\w*(FileUpload|UploadHandle|ParseResume)\w*'
+
+confirmation:
+  url_regex: []
+  text: ['Thanks for applying', 'Application submitted', 'successfully submitted']
+  selector: ['.ashby-application-form-success-container']

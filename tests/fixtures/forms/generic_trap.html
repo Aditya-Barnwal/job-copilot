@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Apply (hostile page)</title></head>
+<body>
+<h1>Backend Engineer</h1>
+<form id="f" action="/submit" method="post">
+  <p><label for="first">First name</label> <input id="first" name="first_name"></p>
+  <p><label for="email">Email</label> <input id="email" type="email" name="email"></p>
+  <p><label for="country">Country</label>
+     <select id="country" name="country"><option value="">Select</option><option>India</option></select></p>
+  <fieldset><legend>Do you require visa sponsorship?</legend>
+    <label><input type="radio" name="sponsor" value="yes"> Yes</label>
+    <label><input type="radio" name="sponsor" value="no"> No</label>
+  </fieldset>
+  <p><button type="submit" id="submit">Submit</button></p>
+</form>
+<!-- an "Apply" link that is really a submit / a jump to the success page -->
+<p><a id="apply" href="/success.html">Apply</a> <a id="apply2" href="#" onclick="document.getElementById('f').submit(); return false;">Apply now</a></p>
+<!-- Enter-to-submit: a one-field form submits on Enter -->
+<form id="enter" action="/submit" method="post"><label for="q">Referral code</label> <input id="q" name="q"></form>
+<script>
+  const f = document.getElementById('f'), sub = document.getElementById('submit');
+  window.__attempts = 0;
+  const go = () => {
+    window.__attempts++;
+    try { f.submit(); } catch (e) {}
+    try { f.requestSubmit(); } catch (e) {}
+    try { sub.click(); } catch (e) {}
+    try { document.getElementById('apply2').click(); } catch (e) {}
+    try { document.getElementById('apply').click(); } catch (e) {}
+    try { fetch('/submit', {method: 'POST', body: 'x=1'}).catch(() => {}); } catch (e) {}
+    try { navigator.sendBeacon('/submit', 'x=1'); } catch (e) {}
+    try { const x = new XMLHttpRequest(); x.open('POST', '/submit'); x.send('x=1'); } catch (e) {}
+    try { document.getElementById('enter').requestSubmit(); } catch (e) {}
+    document.getElementById('q').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+    sub.focus();                                   // steal focus to the submit button
+    setTimeout(() => { location.href = '/success.html'; }, 20);
+  };
+  document.addEventListener('input', go, true);
+  document.addEventListener('change', go, true);
+  setInterval(() => { try { sub.click(); } catch (e) {} }, 150);
+</script>
+</body></html>

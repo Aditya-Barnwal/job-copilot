@@ -823,3 +823,64 @@ def test_legacy_browse_hides_excluded_jobs_by_default(client):
     assert "t:sde" in keys and "t:sre" not in keys
     keys_all = {j["key"] for j in client.get("/api/jobs?include_excluded=true").json()["jobs"]}
     assert {"t:sde", "t:sre"} <= keys_all
+
+
+# --- Phase 4: autofill routes (server/routers/autofill.py) ----------------------
+
+from jobcopilot import demo  # noqa: E402
+from jobcopilot.autofill import service as autofill_service  # noqa: E402
+
+EXPECTED_ROUTES.update({
+    ("POST", "/api/jobs/{key}/autofill"), ("GET", "/api/autofill/sessions/{session_id}"),
+    ("GET", "/api/jobs/{key}/fill-plan"), ("POST", "/api/jobs/{key}/fill-plan/rebuild"),
+    ("POST", "/api/autofill/sessions/{session_id}/handover"), ("GET", "/api/autofill/needs-you"),
+})
+
+
+def _seed_url(url: str, external_id: str) -> str:
+    job = Job(source="greenhouse", company="Foo", company_sector="tech", external_id=external_id,
+              title="Backend Engineer", location_text="Bengaluru", workplace_type="onsite",
+              country_bucket="IN", url=url, description_text="Python")
+    store.upsert_jobs([FilterResult(job=job, package_estimated=False, country_uncertain=False)])
+    return job.key
+
+
+def test_autofill_denylisted_is_400_with_link_out(client):
+    url = "https://www.linkedin.com/jobs/view/99"
+    key = _seed_url(url, "li1")
+    r = client.post(f"/api/jobs/{key}/autofill")
+    assert r.status_code == 400 and r.json()["code"] == "denylisted" and r.json()["link_out"] == url
+    assert client.post(f"/api/jobs/{key}/fill-plan/rebuild").status_code == 400
+    assert client.post("/api/jobs/nope/autofill").status_code == 404
+
+
+def test_autofill_busy_409_and_session_routes(client):
+    a = _seed_url("https://job-boards.greenhouse.io/foo/jobs/1", "a1")
+    b = _seed_url("https://job-boards.greenhouse.io/foo/jobs/2", "b1")
+    sid, _ = store.claim_autofill_session(a)
+    store.update_autofill_session(sid, status="needs_you", outcome={"status": "needs_you", "reason": "CAPTCHA"})
+    r = client.post(f"/api/jobs/{b}/autofill")
+    assert r.status_code == 409 and r.json()["code"] == "busy" and r.json()["session_id"] == sid
+    s = client.get(f"/api/autofill/sessions/{sid}").json()
+    assert s["status"] == "needs_you" and s["open"] is True and s["live"] is False
+    assert [x["id"] for x in client.get("/api/autofill/needs-you").json()["sessions"]] == [sid]
+    assert client.post(f"/api/autofill/sessions/{sid}/handover").status_code == 409   # no window here
+    assert client.get("/api/autofill/sessions/999").status_code == 404
+
+
+def test_fill_plan_get_and_rebuild(client, monkeypatch):
+    key = _seed_url("https://job-boards.greenhouse.io/foo/jobs/7", "p7")
+    assert client.get(f"/api/jobs/{key}/fill-plan").status_code == 404
+    monkeypatch.setattr(autofill_service, "fetch_greenhouse_questions", lambda b, j: {"questions": [
+        {"label": "What is your favourite colour?", "required": False,
+         "fields": [{"name": "question_1", "type": "input_text"}]}]})
+    r = client.post(f"/api/jobs/{key}/fill-plan/rebuild")
+    assert r.status_code == 200 and r.json()["unresolved_count"] == 2   # the question + no approved résumé
+    assert client.get(f"/api/jobs/{key}/fill-plan").json()["plan"]["ats"] == "greenhouse"
+
+
+def test_autofill_refused_in_demo_mode(client, monkeypatch):
+    key = _seed_url("https://job-boards.greenhouse.io/foo/jobs/3", "d3")
+    monkeypatch.setattr(demo, "enabled", lambda: True)
+    assert client.post(f"/api/jobs/{key}/autofill").status_code == 403
+    assert client.post(f"/api/jobs/{key}/fill-plan/rebuild").status_code == 403

@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Apply in steps</title></head>
+<body>
+<form id="f" action="/submit" method="post">
+  <section id="s1">
+    <h2>My information</h2>
+    <p><label for="first">First name</label> <input id="first" name="first_name"></p>
+    <button type="button" id="next1" onclick="document.getElementById('s1').hidden=true;document.getElementById('s2').hidden=false;">Next</button>
+  </section>
+  <section id="s2" hidden>
+    <h2>Review</h2>
+    <p><label for="email">Email</label> <input id="email" type="email" name="email"></p>
+    <button type="submit" id="submit">Submit application</button>
+  </section>
+</form>
+</body></html>

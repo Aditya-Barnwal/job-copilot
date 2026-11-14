@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<form action="/submit" method="post">
+  <p><label for="first">First name</label> <input id="first" name="first_name"></p>
+  <p><label for="email">Email</label> <input id="email" type="email" name="email"></p>
+  <div id="slot"></div>
+  <button type="submit" id="submit">Submit application</button>
+</form>
+<script>
+  document.addEventListener('input', () => {
+    if (document.querySelector('#slot iframe')) return;
+    const fr = document.createElement('iframe');
+    fr.src = '/recaptcha/api2/anchor?k=test-key'; fr.width = 304; fr.height = 78; fr.title = 'reCAPTCHA';
+    document.getElementById('slot').appendChild(fr);
+  }, true);
+</script>
+</body></html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- STRUCTURE of an Ashby hosted application (jobs.ashbyhq.com/<org>/<id>/application).
+     The real page is a client-rendered SPA (the HTML shell carries no form), so this
+     mirrors the rendered DOM: .ashby-application-form-field-entry blocks with a
+     label.ashby-application-form-question-title, system fields with ids
+     _systemfield_name / _systemfield_email / _systemfield_phone / _systemfield_location /
+     _systemfield_resume, custom fields keyed by UUID, Yes/No questions, an EEO survey,
+     a data-consent checkbox and button.ashby-application-form-submit-button.
+     Submit goes through script: POST /api/non-user-graphql?op=ApiSubmitSingleApplicationFormAction,
+     then the form is replaced by .ashby-application-form-success-container. Fake org. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Software Engineer @ Examplecorp</title>
+<style>.ashby-application-form-field-entry{margin:8px 0}._hidden{display:none}</style></head>
+<body>
+<div id="root"><div class="ashby-job-posting-right-pane">
+<div class="ashby-application-form-container">
+<form class="_form" id="ashby-form">
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="_systemfield_name">Name<span>*</span></label>
+    <input id="_systemfield_name" name="_systemfield_name" type="text" placeholder="Type here..." required>
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="_systemfield_email">Email<span>*</span></label>
+    <input id="_systemfield_email" name="_systemfield_email" type="email" placeholder="hello@example.com..." required>
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="_systemfield_phone">Phone</label>
+    <input id="_systemfield_phone" name="_systemfield_phone" type="tel" placeholder="1-415-555-1234...">
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="_systemfield_resume">Resume<span>*</span></label>
+    <div class="_container_file"><button type="button" class="_button_upload" id="resume-upload-button">Upload File</button>
+    <input id="_systemfield_resume" name="_systemfield_resume" type="file" class="_hidden" accept=".pdf,.doc,.docx"></div>
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="5f1c0a52-0001-4c4e-9a1d-000000000001">LinkedIn Profile</label>
+    <input id="5f1c0a52-0001-4c4e-9a1d-000000000001" name="5f1c0a52-0001-4c4e-9a1d-000000000001" type="text">
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="5f1c0a52-0002-4c4e-9a1d-000000000002">GitHub</label>
+    <input id="5f1c0a52-0002-4c4e-9a1d-000000000002" name="5f1c0a52-0002-4c4e-9a1d-000000000002" type="text">
+  </div>
+  <fieldset class="ashby-application-form-field-entry">
+    <legend class="ashby-application-form-question-title">Will you now or in the future require visa sponsorship?<span>*</span></legend>
+    <div class="_yesno"><label><input type="radio" name="5f1c0a52-0003-4c4e-9a1d-000000000003" value="Yes">Yes</label>
+    <label><input type="radio" name="5f1c0a52-0003-4c4e-9a1d-000000000003" value="No">No</label></div>
+  </fieldset>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="5f1c0a52-0004-4c4e-9a1d-000000000004">Which internal tool would you rebuild first, and why?<span>*</span></label>
+    <textarea id="5f1c0a52-0004-4c4e-9a1d-000000000004" name="5f1c0a52-0004-4c4e-9a1d-000000000004" required></textarea>
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <label class="ashby-application-form-question-title" for="5f1c0a52-0005-4c4e-9a1d-000000000005">What is your notice period?</label>
+    <select id="5f1c0a52-0005-4c4e-9a1d-000000000005" name="5f1c0a52-0005-4c4e-9a1d-000000000005">
+      <option value="">Select...</option><option>Immediately</option><option>Less than 30 days</option>
+      <option>30 days</option><option>60 days</option><option>90 days</option></select>
+  </div>
+  <div class="ashby-application-form-field-entry" data-section="eeoc">
+    <label class="ashby-application-form-question-title" for="_eeoc_gender">Gender</label>
+    <select id="_eeoc_gender" name="_eeoc_gender"><option value="">Select...</option><option>Male</option><option>Female</option><option>Decline to self-identify</option></select>
+  </div>
+  <div class="ashby-application-form-field-entry">
+    <input type="checkbox" id="_systemfield_data_consent" name="_systemfield_data_consent">
+    <label for="_systemfield_data_consent">I consent to Examplecorp storing and processing my personal data for recruiting purposes.</label>
+  </div>
+  <button type="submit" class="ashby-application-form-submit-button">Submit Application</button>
+</form>
+</div></div></div>
+<script>
+document.getElementById('resume-upload-button').addEventListener('click', function () { document.getElementById('_systemfield_resume').click(); });
+document.getElementById('ashby-form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  fetch('/api/non-user-graphql?op=ApiSubmitSingleApplicationFormAction', {method: 'POST', body: new FormData(this)})
+    .then(function () {
+      document.querySelector('.ashby-application-form-container').innerHTML =
+        '<div class="ashby-application-form-success-container"><h2>Thanks for applying!</h2><p>Your application was successfully submitted.</p></div>';
+    });
+});
+</script>
+</body>
+</html>

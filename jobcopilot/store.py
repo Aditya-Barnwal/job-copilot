@@ -67,9 +67,26 @@ def resolve_resumes_dir() -> Path:
     return data_dir() / "resumes"
 
 
+_REAL_DATA_DIR = (Path(__file__).resolve().parent.parent / "data").resolve()
+
+
+def _refuse_real_db_under_tests(p: Path) -> None:
+    """Belt and braces: under pytest, never open the owner's real data/ database,
+    even if a test undoes the conftest's isolation by mistake."""
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        return
+    try:
+        real = Path(p).resolve().is_relative_to(_REAL_DATA_DIR)
+    except OSError:
+        real = False
+    if real:
+        raise RuntimeError(f"refusing to open the real database under tests: {p}")
+
+
 @contextmanager
 def connect(db_path: Path | str | None = None):
     p = resolve_db_path(db_path)
+    _refuse_real_db_under_tests(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     # 30 s busy timeout + WAL: the server reads (and the UI writes statuses)
     # while the nightly run holds a write transaction.

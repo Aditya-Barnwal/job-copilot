@@ -20,6 +20,7 @@ Knobs live under `queue:` in config/filters.yaml; defaults in QUEUE_DEFAULTS.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import logging
 import time
 from typing import Any, Iterable, Optional
@@ -40,6 +41,7 @@ QUEUE_DEFAULTS: dict[str, Any] = {
     "ready_reminder_days": 2,
     "followup_days": 7,
     "gone_after_days": 3,          # not seen by ingest for this long -> posting probably gone
+    "reapply_cooldown_days": 90,   # after a rejection, wait this long before applying there again (L#6)
 }
 
 # Hidden from Today's best and All matches: submitted or later, or dismissed.
@@ -160,8 +162,24 @@ def summarize_job(row: dict, now: Optional[float] = None) -> dict[str, Any]:
         "fresher_friendly": bool(row.get("fresher_friendly")),
         "india_eligible": None if row.get("india_eligible") is None else bool(row["india_eligible"]),
         "salary_annual_inr": row.get("salary_annual_inr"),
+        "comp_summary": row.get("comp_summary"),
+        "tz_requirement": row.get("tz_requirement_text"),
+        "timezone_restrictions": _json_list(row.get("timezone_restrictions")),
+        "region_restrictions": _json_list(row.get("region_restrictions")),
         "flags": row.get("flags") or [],
     }
+
+
+def _json_list(v: Any) -> list:
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v.strip().startswith("["):
+        try:
+            out = json.loads(v)
+            return out if isinstance(out, list) else []
+        except ValueError:
+            return []
+    return []
 
 
 # --- catch-up: evaluate legacy rows, score what is unscored ------------------
@@ -609,4 +627,39 @@ def tracker(limit_per_column: int = 200, now: Optional[float] = None,
             columns.append({"status": col, "count": int(total), "items": items})
     return {"columns": columns,
             "ready_to_submit": ready_to_submit(now, cfg, db_path),
-            "followups_due": followups(now, cfg, db_path, due_only=True)}
+            "followups_due": followups(now, cfg, db_path, due_only=True),
+            "cooldowns": reapply_cooldowns(now, cfg, db_path)}
+
+
+def reapply_cooldowns(now: Optional[float] = None, cfg: Optional[dict] = None,
+                      db_path: Any = None) -> list[dict]:
+    """Companies that rejected you within `reapply_cooldown_days`: when you can apply
+    there again. One row per company (its latest rejection), soonest-free first."""
+    now = time.time() if now is None else now
+    days = int(queue_config(cfg)["reapply_cooldown_days"])
+    if days <= 0:
+        return []
+    statuses = store.statuses_with_canonical(["rejected"])
+    with store.connect(db_path) as conn:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT key, company, company_id, title, status_changed_at, last_seen FROM jobs "
+            f"WHERE status IN ({_placeholders(statuses)})", statuses).fetchall()]
+        hist = _history_dates(conn, [r["key"] for r in rows])
+    latest: dict[str, dict] = {}
+    for r in rows:
+        at = hist.get(r["key"], {}).get("rejected") or r.get("status_changed_at")
+        if at is None:
+            continue
+        co = _company_key(r)
+        if co not in latest or at > latest[co]["rejected_at"]:
+            latest[co] = {"company": r.get("company"), "key": r["key"], "title": r.get("title"),
+                          "rejected_at": float(at)}
+    out = []
+    for c in latest.values():
+        until = c["rejected_at"] + days * 86400
+        if until <= now:
+            continue
+        c.update(reapply_after=until, days_left=max(0, int(-(-(until - now) // 86400))),
+                 cooldown_days=days)
+        out.append(c)
+    return sorted(out, key=lambda c: c["reapply_after"])

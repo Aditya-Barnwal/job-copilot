@@ -138,21 +138,21 @@ def test_meta_summary_shape(client):
                         "version_count": 0}
 
 
-APP_JS = Path(server_app.STATIC_DIR) / "app.js"
-INDEX_HTML = Path(server_app.STATIC_DIR) / "index.html"
+WEB = Path(server_app.ROOT) / "web"
+WEB_SRC = WEB / "src"
+DIST_INDEX = Path(server_app.DIST_DIR) / "index.html"
 NODE = shutil.which("node")
 
 
-def _js_function(src: str, name: str) -> str:
-    m = re.search(rf"^function {name}\(.*?^}}\n", src, re.S | re.M)
-    assert m, f"function {name} not found in app.js"
-    return m.group(0)
+def _web_sources() -> dict[str, str]:
+    return {str(p.relative_to(WEB_SRC)): p.read_text(encoding="utf-8")
+            for p in sorted(WEB_SRC.rglob("*")) if p.suffix in (".ts", ".tsx")}
 
 
 def test_security_headers_on_ui_static_and_api(client):
     # Review finding #2: no CSP meant an attribute-injection XSS could exfiltrate
     # the profile and self-confirm /approve. A strict CSP is the backstop.
-    for method, path in (("GET", "/"), ("GET", "/static/app.js"),
+    for method, path in (("GET", "/"), ("GET", "/today"), ("GET", "/assets/missing.js"),
                          ("GET", "/api/meta"), ("POST", "/api/jobs/nope/status")):
         r = client.request(method, path, json={"status": "new"} if method == "POST" else None)
         csp = r.headers.get("content-security-policy", "")
@@ -169,55 +169,69 @@ def test_security_headers_on_ui_static_and_api(client):
         assert r.headers.get("referrer-policy") == "no-referrer"
 
 
-def test_ui_is_compatible_with_strict_csp():
-    html = INDEX_HTML.read_text(encoding="utf-8")
+def _assert_csp_safe_html(html: str) -> None:
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html), "inline <script>"
     assert not re.search(r"\son[a-z]+\s*=", html, re.I), "inline event handler"
     assert not re.search(r"\sstyle\s*=", html, re.I), "inline style attribute"
-    js = APP_JS.read_text(encoding="utf-8")
-    assert not re.search(r"\sstyle\s*=\s*[\"']", js), "inline style attribute in markup"
-    assert not re.search(r"\son[a-z]+\s*=\s*[\"']", js), "inline event handler in markup"
+    assert not re.search(r"(src|href)\s*=\s*[\"']https?://", html, re.I), "external script/style/font"
 
 
-def test_ui_builds_every_link_through_link_html():
-    src = APP_JS.read_text(encoding="utf-8")
-    outside = src.replace(_js_function(src, "linkHtml"), "")
-    assert not re.search(r"href\s*=\s*[\"']", outside), "raw href= outside linkHtml()"
+def test_ui_is_compatible_with_strict_csp():
+    _assert_csp_safe_html((WEB / "index.html").read_text(encoding="utf-8"))
+    if DIST_INDEX.exists():                                   # the built page (make ui)
+        _assert_csp_safe_html(DIST_INDEX.read_text(encoding="utf-8"))
+    for name, src in _web_sources().items():
+        assert "dangerouslySetInnerHTML" not in src, name
+        assert not re.search(r"\beval\(|new Function\(|\.innerHTML\s*=|insertAdjacentHTML", src), name
+        assert "fonts.googleapis" not in src and "cdn." not in src, name
+    css = (WEB_SRC / "index.css").read_text(encoding="utf-8")
+    assert "@import url(" not in css and "googleapis" not in css      # fonts are self-hosted (@fontsource)
+    cfg = (WEB / "vite.config.ts").read_text(encoding="utf-8")
+    assert "assetsInlineLimit: 0" in cfg                      # no data: fonts (font-src is 'self')
+
+
+def test_ui_links_only_go_to_http_or_same_origin():
+    """Every href in the React UI is a vetted value: safeHttpUrl() output, a router
+    path, or a same-origin /api/ URL; never a raw string from job data."""
+    allowed = re.compile(r"^(href|to|current\.pdf_url|v\.pdf_url|`/api/[^`]*`|\"/api/[^\"]*\")$")
+    for name, src in _web_sources().items():
+        for m in re.finditer(r"href=\{(`[^`]*`|[^}`]*)\}", src):
+            assert allowed.match(m.group(1).strip()), f"{name}: href={{{m.group(1)}}}"
+        if name != "lib/api.ts":                                # its comment names the schemes it refuses
+            assert "javascript:" not in src, name
+    job = _web_sources()["components/JobCard.tsx"]
+    assert job.count("safeHttpUrl(") >= 3                       # posting, attribution, keyboard 'o'
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_ui_escaping_and_http_only_links():
-    src = APP_JS.read_text(encoding="utf-8")
-    fns = "\n".join(_js_function(src, n) for n in ("escapeHtml", "safeHttpUrl", "linkHtml"))
-    script = fns + """
-globalThis.window = { location: { href: "http://127.0.0.1:8000/" } };
-console.log(JSON.stringify({
-  esc: escapeHtml(`x" autofocus onfocus='alert(1)' <b>&`),
+def test_ui_http_only_links_and_friendly_errors():
+    api_ts = WEB_SRC / "lib" / "api.ts"
+    script = f"""
+globalThis.window = {{ location: {{ href: "http://127.0.0.1:8000/" }} }};
+const m = await import({json.dumps(api_ts.as_uri())});
+console.log(JSON.stringify({{
   bad: ["javascript:alert(1)", "  JaVaScRiPt:alert(1)", "java\tscript:alert(1)",
-        "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)", "", null]
-        .map(safeHttpUrl),
-  https: safeHttpUrl("https://boards.example.com/jobs/1?a=1&b=2"),
-  rel: safeHttpUrl("/api/resume-versions/3/download"),
-  badLink: linkHtml("javascript:alert(1)", "open posting", 'target="_blank"'),
-  goodLink: linkHtml('https://x.example/a"b', "open", 'target="_blank"'),
-}));
+        "data:text/html,<script>alert(1)</script>", "vbscript:msgbox(1)", "", null].map(m.safeHttpUrl),
+  https: m.safeHttpUrl("https://boards.example.com/jobs/1?a=1&b=2"),
+  rel: m.safeHttpUrl("/api/resume-versions/3/download"),
+  net: m.friendlyError(0, null, "/api/x"),
+  demo: m.friendlyError(403, {{demo: true}}, "/api/jobs/k/tailor/v2"),
+  detail: m.friendlyError(409, {{detail: "Confirm every flag"}}),
+  server: m.friendlyError(500, null),
+}}));
 """
-    r = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    r = subprocess.run([NODE, "--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", script],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0 and "strip-types" in r.stderr:
+        pytest.skip("this node can't strip TypeScript types")
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout)
-    assert out["esc"] == "x&quot; autofocus onfocus=&#39;alert(1)&#39; &lt;b&gt;&amp;"
     assert out["bad"] == [None] * 7
     assert out["https"] == "https://boards.example.com/jobs/1?a=1&b=2"
     assert out["rel"] == "http://127.0.0.1:8000/api/resume-versions/3/download"
-    assert "<a" not in out["badLink"] and "href" not in out["badLink"]
-    assert "open posting" in out["badLink"]
-    assert out["goodLink"].startswith('<a href="https://x.example/a%22b"')
-
-
-def test_ui_does_not_hide_senior_roles_by_default():
-    html = (Path(server_app.STATIC_DIR) / "index.html").read_text(encoding="utf-8")
-    tag = next(line for line in html.splitlines() if 'id="f-hide-senior"' in line)
-    assert "checked" not in tag
+    assert out["net"] == "Couldn't reach the app — is it running?"
+    assert "public demo" in out["demo"] and out["detail"] == "Confirm every flag"
+    assert "server error 500" in out["server"]
 
 
 # --- jobs ------------------------------------------------------------------
@@ -831,6 +845,17 @@ from jobcopilot import demo  # noqa: E402
 from jobcopilot.autofill import service as autofill_service  # noqa: E402
 
 EXPECTED_ROUTES.update({
+    # Phase 5 (server/routers/ui.py) + the built React UI (server/app.py)
+    ("GET", "/assets/{rel:path}"), ("GET", "/{rel:path}"),
+    ("GET", "/api/ui/config"), ("GET", "/api/autofill/sessions/{session_id}/screenshot"),
+    ("GET", "/api/jobs/{key}/proof"), ("GET", "/api/jobs/{key}/autofill/sessions"),
+    ("GET", "/api/artifacts/{artifact_id}/review"), ("POST", "/api/jobs/{key}/artifacts/{artifact_id}/edit"),
+    ("POST", "/api/jobs/{key}/artifacts/{artifact_id}/reject"), ("GET", "/api/answers/unanswered"),
+    ("POST", "/api/answers/save"), ("GET", "/api/facts"), ("POST", "/api/facts/{fact_id}/confirm"),
+    ("GET", "/api/resumes"), ("GET", "/api/resumes/bases/{name}/source"),
+    ("GET", "/api/tracker/export.csv"), ("GET", "/api/portals"), ("POST", "/api/portals/open"),
+})
+EXPECTED_ROUTES.update({
     ("POST", "/api/jobs/{key}/autofill"), ("GET", "/api/autofill/sessions/{session_id}"),
     ("GET", "/api/jobs/{key}/fill-plan"), ("POST", "/api/jobs/{key}/fill-plan/rebuild"),
     ("POST", "/api/autofill/sessions/{session_id}/handover"), ("GET", "/api/autofill/needs-you"),
@@ -963,5 +988,13 @@ def test_allowed_hosts_env_adds_names(client, monkeypatch):
 
 
 def test_ui_sends_the_csrf_header():
-    js = (Path(server_app.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
-    assert js.count('"X-JobCopilot": "1"') >= 2                      # api() wrapper + the résumé upload
+    """One fetch wrapper (web/src/lib/api.ts) adds X-JobCopilot: 1 to every
+    state-changing request, uploads included; nothing else calls fetch()."""
+    api_ts = (WEB_SRC / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert 'headers["X-JobCopilot"] = "1"' in api_ts
+    assert 'const UNSAFE = new Set(["POST", "PUT", "PATCH", "DELETE"]);' in api_ts
+    for name, src in _web_sources().items():
+        if name != "lib/api.ts":
+            assert not re.search(r"\bfetch\(|XMLHttpRequest|sendBeacon", src), name
+
+

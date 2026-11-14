@@ -1,112 +1,101 @@
-"""Light checks on the vanilla-JS UI: the v2 tabs exist, they call the v2
-endpoints, errors are shown as plain text, and the markup stays compatible
-with the strict CSP (no inline scripts, handlers or styles)."""
+"""Light checks on the React UI source (web/): every screen exists and calls the
+endpoints it needs, demo mode switches actions off, the safety copy is there,
+and the build settings keep the strict CSP. The built page itself is covered
+by tests/test_api.py and the Playwright e2e test (tests/test_ui_e2e.py)."""
 from __future__ import annotations
 
+import json
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
-import pytest
-
-from server import app as server_app
-
-STATIC = Path(server_app.STATIC_DIR)
-HTML = (STATIC / "index.html").read_text(encoding="utf-8")
-JS = (STATIC / "app.js").read_text(encoding="utf-8")
-CSS = (STATIC / "styles.css").read_text(encoding="utf-8")
-NODE = shutil.which("node")
+ROOT = Path(__file__).resolve().parent.parent
+WEB = ROOT / "web"
+SRC = WEB / "src"
 
 
-def test_tabs_and_panels_exist():
-    for tab in ("today", "matches", "excluded", "tracker", "resume", "answers", "browse"):
-        assert f'data-tab="{tab}"' in HTML, tab
-        assert f'id="tab-{tab}"' in HTML, tab
-    # Today is the default tab.
-    assert re.search(r'data-tab="today" class="tab active"', HTML)
-    assert re.search(r'id="tab-today" class="tab-panel active"', HTML)
+def read(rel: str) -> str:
+    return (SRC / rel).read_text(encoding="utf-8")
 
 
-def test_tab_names_and_subtitles():
-    assert "Saved answers" in HTML and "Answer Pack" not in HTML
-    assert "Hidden roles" in HTML and "config/filters.yaml" in HTML
-    assert "Your base résumés + tailored versions per job" in HTML
-    assert "Answers the app uses to fill application forms" in HTML
-    # every panel has a one-line subtitle
-    assert HTML.count('class="subtitle"') >= 7
+ALL = "\n".join(p.read_text(encoding="utf-8") for p in SRC.rglob("*.ts*"))
 
 
-def test_js_uses_v2_endpoints():
-    for endpoint in ("/api/queue?lane=main", "/api/queue?lane=extended", "/api/queue?lane=near_miss",
-                     "/api/matches?", "/api/excluded?", "/api/tracker", "/api/answers/review",
-                     "/api/runs", "/api/runs/daily", "/history", "/status", "include_excluded"):
-        assert endpoint in JS, endpoint
+def test_every_screen_is_routed():
+    app = read("App.tsx")
+    for path in ("/today", "/needs-you", "/tracker", "/matches", "/watchlist", "/hidden", "/runs",
+                 "/resumes", "/facts", "/portals"):
+        assert f'"{path}"' in app, path
+    assert "<ReviewDrawer />" in app
 
 
-def test_legacy_functionality_kept():
-    for el in ('id="run-ingest"', 'id="run-score"', 'id="export-csv"', 'id="f-hide-stale"',
-               'id="f-hide-senior"', 'id="resume-form"', 'id="answer-form"', 'id="tailor-modal"'):
-        assert el in HTML, el
-    assert "/api/export.csv" in JS
+def test_screens_call_their_endpoints():
+    for endpoint in ("/api/queue?lane=", "/api/matches?", "/api/excluded?", "/api/tracker", "/api/runs",
+                     "/api/runs/daily", "/autofill/sessions", "/handover", "/api/autofill/needs-you",
+                     "/api/answers/unanswered", "/api/answers/save", "/api/answers/review", "/api/facts",
+                     "/confirm", "/api/resumes", "/api/tracker/export.csv", "/api/portals/open",
+                     "/tailor/v2", "/approve", "/reject", "/edit", "/review", "/cover-letter", "/fill-plan",
+                     "/status", "/api/answer-pack", "/api/profile", "/api/user-yoe", "/api/resume"):
+        assert endpoint in ALL, endpoint
 
 
-def test_tracker_columns_and_actions():
-    for label in ("Found", "Tailored", "Ready to submit", "Submitted", "OA", "Interview", "Offer", "Rejected"):
-        assert f'"{label}"' in JS, label
-    assert "✓ Submitted" in JS and 'data-action="undo"' in JS
+def test_tracker_columns_in_order():
+    src = read("screens/Tracker.tsx")
+    labels = re.findall(r'\["(\w+)", "([^"]+)"\]', src.split("const NEXT")[0])
+    assert [s for s, _ in labels] == ["found", "tailored", "ready_to_submit", "submitted", "oa",
+                                      "interview", "offer", "rejected"]
+    assert "Re-apply cooldowns" in src and "Reminders" in src and "Export CSV" in src
 
 
-def test_checkboxes_sit_next_to_labels():
-    # checkbox inside its label, before the text; the CSS no longer gives
-    # checkboxes the text-input min-width that pushed them away from the label.
-    for cid in ("f-hide-stale", "f-hide-senior"):
-        assert re.search(rf'<label class="chk" for="{cid}"><input id="{cid}" type="checkbox" /><span>', HTML)
-    assert '.filters input:not([type="checkbox"])' in CSS
-    assert re.search(r"\.chk input\[type=\"checkbox\"\]\s*\{[^}]*min-width:\s*0", CSS)
+def test_open_and_submit_explains_the_submit_lock_and_never_submits():
+    src = read("screens/review/ApplyTab.tsx")
+    assert "Unlock Submit" in src
+    assert "Until you unlock, even your own click on Submit is blocked" in src
+    assert "Mark submitted" in src
+    for status in ("ready_to_submit", "needs_you", "blocked", "submitted", "error"):
+        assert status in src, status
+    # the UI has no way to submit a form: only the documented endpoints are called
+    assert not re.search(r"/submit\b", ALL.replace("/api/autofill/sessions", ""))
 
 
-def test_demo_mode_disables_tailor_and_fake_links():
-    assert "Not available in the public demo — run Job-Copilot locally to tailor" in JS
-    assert "Sample job — the link is not real in the demo" in JS
-    assert ".demo-banner" in JS and 'provider === "demo"' in JS
+def test_demo_mode_disables_refused_actions_and_fake_links():
+    api = read("lib/api.ts")
+    assert "Not available in the public demo — run Job-Copilot locally to tailor" in api
+    assert "Sample job — the link is not real in the demo" in api
+    assert ".demo-banner" in read("lib/app.tsx")           # the server-injected banner switches demo on
+    card = read("components/JobCard.tsx")
+    assert "DEMO_LINK_TIP" in card and "disabled" in card
+    # every screen with a write action checks demo mode
+    for rel in ("screens/review/ResumeTab.tsx", "screens/review/ApplyTab.tsx", "screens/review/AnswersTab.tsx",
+                "screens/review/CoverLetterTab.tsx", "screens/NeedsYou.tsx", "screens/Facts.tsx",
+                "screens/Portals.tsx", "screens/Resumes.tsx", "screens/Today.tsx"):
+        assert "useDemo()" in read(rel), rel
 
 
-def test_no_inline_scripts_handlers_or_styles():
-    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", HTML)
-    assert not re.search(r"\son[a-z]+\s*=", HTML, re.I)
-    assert not re.search(r"\sstyle\s*=", HTML, re.I)
-    assert not re.search(r"\sstyle\s*=\s*[\"']", JS)
-    assert not re.search(r"\son[a-z]+\s*=\s*[\"']", JS)
-    assert ".style." not in JS     # CSSOM writes are allowed but keep styling in styles.css
-    assert "alert(" not in JS      # toasts, not blocking alerts
+def test_keyboard_support():
+    card = read("components/JobCard.tsx")
+    for key in ('j:', 'k:', 'o:', 'x:'):
+        assert key in card, key
+    drawer = read("screens/review/ReviewDrawer.tsx")
+    assert '"Escape"' in drawer and 'aria-modal="true"' in drawer and "trapTab" in drawer
+    shell = read("components/Shell.tsx")
+    assert "Skip to content" in shell and '"?"' in shell
+    css = read("index.css")
+    assert ":focus-visible" in css and "prefers-reduced-motion" in css
 
 
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
-def test_js_parses_and_errors_are_friendly():
-    m = re.search(r"^function friendlyError\(.*?^}\n", JS, re.S | re.M)
-    assert m
-    script = m.group(0) + """
-const out = [
-  friendlyError(403, {detail: "demo: disabled — tailoring needs an LLM", demo: true}, "/api/jobs/x/tailor"),
-  friendlyError(0, null, "/api/queue"),
-  friendlyError(409, {detail: {error: "a daily run is already running", run_id: 3}}, "/api/runs/daily"),
-  friendlyError(400, {detail: "invalid status"}, "/api/jobs/x/status"),
-  friendlyError(422, {detail: [{msg: "field required"}]}, "/api/x"),
-  friendlyError(500, null, "/api/x"),
-];
-console.log(JSON.stringify(out));
-"""
-    r = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
-    assert r.returncode == 0, r.stderr
-    import json
-    out = json.loads(r.stdout)
-    assert out[0] == "Not available in the public demo — run Job-Copilot locally to tailor"
-    assert out[1] == "Couldn't reach the app — is it running?"
-    assert out[2] == "a daily run is already running"
-    assert out[3] == "invalid status"
-    assert out[4] == "Invalid request: field required"
-    assert "{" not in "".join(out)
-    # whole file parses
-    r = subprocess.run([NODE, "--check", str(STATIC / "app.js")], capture_output=True, text=True, timeout=30)
-    assert r.returncode == 0, r.stderr
+def test_themes_and_fonts():
+    css = read("index.css")
+    assert '[data-theme="dark"]' in css and "@fontsource-variable/fraunces" in css
+    assert "@fontsource-variable/inter" in css
+    init = (WEB / "public" / "theme-init.js").read_text(encoding="utf-8")
+    assert "prefers-color-scheme: dark" in init and "localStorage" in init
+
+
+def test_dependencies_are_pinned_and_locked():
+    pkg = json.loads((WEB / "package.json").read_text(encoding="utf-8"))
+    for section in ("dependencies", "devDependencies"):
+        for name, ver in pkg[section].items():
+            assert re.fullmatch(r"\d+\.\d+\.\d+", ver), f"{name} is not pinned: {ver}"
+    assert (WEB / "package-lock.json").exists()
+    cfg = (WEB / "vite.config.ts").read_text(encoding="utf-8")
+    assert 'outDir: "../server/static/dist"' in cfg and "changeOrigin: false" in cfg

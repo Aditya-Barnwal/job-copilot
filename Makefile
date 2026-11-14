@@ -4,7 +4,7 @@ PORT    ?= 8000
 TORCH_CPU = --extra-index-url https://download.pytorch.org/whl/cpu
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev run test pii check ingest discover smoke-live facts-check facts-review answers-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status demo-local deploy-demo stop-demo demo-url
+.PHONY: help setup ui dev api run test pii check ingest discover smoke-live facts-check facts-review answers-review llm-check docker-build docker-up daily daily-fixtures schedule-install schedule-uninstall schedule-status demo-local deploy-demo stop-demo demo-url
 
 help:  ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[1m%-14s\033[0m %s\n", $$1, $$2}'
@@ -17,7 +17,16 @@ setup: .venv/bin/python  ## create venv + install everything (incl. dev + autofi
 	$(PY) -m pip install -q $(TORCH_CPU) -r requirements-dev.txt
 	@test -f .env || (cp .env.example .env && echo "created .env from .env.example — add your keys")
 
-dev:  ## run the app with auto-reload on http://127.0.0.1:8000 (PORT=… to change)
+ui:  ## build the React UI (web/) into server/static/dist — Node 22 + npm, build time only
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+dev:  ## UI dev: API with reload on :$(PORT) + Vite on http://127.0.0.1:5173 (proxies /api)
+	@test -d web/node_modules || (cd web && npm ci --no-audit --no-fund)
+	@trap 'kill 0' INT TERM EXIT; \
+	  $(PY) -m uvicorn server.app:app --reload --host 127.0.0.1 --port $(PORT) & \
+	  cd web && JOBCOPILOT_API_PORT=$(PORT) npm run dev -- --host 127.0.0.1
+
+api:  ## the API (+ the built UI) with auto-reload on http://127.0.0.1:8000 (PORT=… to change)
 	$(PY) -m uvicorn server.app:app --reload --host 127.0.0.1 --port $(PORT)
 
 run:  ## run the app without reload

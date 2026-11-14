@@ -181,12 +181,165 @@ def build_db(state: DemoState, *, day: Optional[str] = None) -> dict:
     store.init_db(state.db_path)
     result = daily.run(no_network=True, fixtures_dir=FIXTURES_DIR, db_path=state.db_path, day=day)
     q = result.get("queue") or {}
+    try:
+        showcase = seed_showcase(state)
+    except Exception as exc:  # noqa: BLE001 — the demo still works without the sample states
+        log.warning("demo showcase not seeded: %s", type(exc).__name__)
+        showcase = {}
     with store.connect(state.db_path) as conn:
         jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     out = {"run_id": result["run_id"], "status": result["status"],
-           "queue_day": q.get("day"), "queue_counts": q.get("counts"), "jobs": jobs}
+           "queue_day": q.get("day"), "queue_counts": q.get("counts"), "jobs": jobs,
+           "showcase": showcase}
     log.info("demo DB built: %s", out)
     return out
+
+
+# --------------------------------------------------------------------------- showcase
+
+_DAY = 86400.0
+
+
+def _fa(label: str, kind: str, source: str, *, approved: bool, required: bool = False,
+        note: str = "", value: Optional[str] = None) -> dict:
+    """One fill-plan field as stored (values are never stored; uploads keep their key)."""
+    return {"label": label, "kind": kind, "source": source, "value": value,
+            "confidence": 1.0 if approved else 0.0, "needs_user": not approved, "approved": approved,
+            "required": required, "note": note, "locator": ""}
+
+
+def seed_showcase(state: DemoState, now: Optional[float] = None) -> dict:
+    """Give the demo DB a lived-in look, on the fake profile only: tracker states with
+    dates, two tailored résumé versions for the top job (built from profile.example's
+    confirmed facts, no LLM), fill plans with open questions, and two sample fill
+    sessions (no browser runs in the demo). Everything is sample data."""
+    import json
+    import time as _time
+    from . import facts as F
+    from . import queue as jq
+    from . import store, tailor_v2
+    from .grounding import check_lines
+
+    db = state.db_path
+    now = _time.time() if now is None else float(now)
+    queue = jq.list_queue(lane="main", db_path=db).get("items") or []
+    extra = jq.list_matches(lane="all", limit=60, db_path=db).get("items") or []
+    in_queue = {j["key"] for j in queue}
+    others = [j for j in extra if j["key"] not in in_queue]
+    if len(queue) < 3 or len(others) < 6:
+        return {}
+    top, ready, needs = queue[0], queue[2], queue[4]
+
+    def history(key: str, steps: list[tuple[str, float]], source: str = "user") -> None:
+        for status, days_ago in steps:
+            store.set_status(key, status, source=source if status not in ("tailored", "ready_to_submit") else "system",
+                             at=now - days_ago * _DAY, db_path=db)
+
+    # -- tailored versions for the top job (v1 flagged, v2 clean), and an approved one for `ready`
+    rf = F.load(state.profile_dir / "resume_facts.yaml")
+    bases = F.load_bases_for(rf.path) or {}
+
+    def artifact(job: dict, plan_over: dict, status: str, *, approved: bool = False) -> Optional[int]:
+        job_row = store.get_job(job["key"], db) or {}
+        base = tailor_v2._pick_base(job_row, bases) or next(iter(bases), None)
+        if not base:
+            return None
+        usable = F.usable_facts(rf, base)
+        plan = dict(tailor_v2.EMPTY_PLAN, **plan_over)
+        plan.setdefault("kept_original", [])
+        plan["attested_keywords"], plan["struck_keywords"] = [], []
+        lines = tailor_v2.apply_plan(usable, bases[base], plan)
+        g = check_lines(lines, usable, attested=[])
+        aid, _v = store.create_artifact(job["key"], base, db)
+        store.update_artifact(aid, db, edit_plan=plan, grounding=g, pages=1,
+                              status=status if g["clean"] or status != "ok" else "needs_review",
+                              facts_hash=tailor_v2.facts_hash(usable, lines),
+                              **({"approved_at": now - 3 * _DAY} if approved else {}))
+        return aid
+
+    reorder = {"order": ["exp.acme.b2", "exp.acme.b1"], "skills_order": ["skill.python", "skill.go"]}
+    artifact(top, dict(reorder, rephrase={
+        "exp.acme.b1": "Led a team building a Go order service handling 500+ requests per second behind a REST API."}),
+        "needs_review")
+    a2 = artifact(top, dict(reorder, rephrase={
+        "exp.acme.b1": "Built a REST API for a Go order service handling 200+ requests per second."}), "ok")
+    a3 = artifact(ready, reorder, "approved", approved=True)
+    if a2:
+        store.link_job_artifact(top["key"], a2, db)
+    if a3:
+        store.link_job_artifact(ready["key"], a3, db)
+
+    # -- tracker states, oldest first
+    history(top["key"], [("tailored", 0.2)])
+    history(ready["key"], [("found", 5), ("tailored", 4), ("ready_to_submit", 3)])
+    history(needs["key"], [("found", 1)])
+    plan_tracker = [
+        (others[0], [("found", 12), ("submitted", 9)]),
+        (others[1], [("found", 4), ("submitted", 2)]),
+        (others[2], [("found", 16), ("submitted", 12), ("oa", 4)]),
+        (others[3], [("found", 26), ("submitted", 20), ("oa", 14), ("interview", 3)]),
+        (others[4], [("found", 31), ("submitted", 25), ("rejected", 6)]),
+        (others[5], [("found", 40), ("submitted", 33), ("interview", 16), ("offer", 1)]),
+    ]
+    for job, steps in plan_tracker:
+        history(job["key"], steps)
+    with store.connect(db) as conn:      # one "detected" submission, as the confirmation watcher records it
+        conn.execute("UPDATE jobs SET submit_source = 'detected' WHERE key = ?", (others[1]["key"],))
+
+    # -- fill plans (labels and sources only) + two sample sessions
+    def save_plan(job: dict, steps: list[dict], unresolved: list[dict], snapshot: list[dict]) -> None:
+        plan = {"job_key": job["key"], "ats": "greenhouse", "url": job.get("apply_url") or job.get("url") or "",
+                "steps": [steps], "unresolved": unresolved, "files": {}, "file_kinds": ["resume"],
+                "created_at": "", "format": 2, "target_url": job.get("apply_url") or "",
+                "snapshot": {"source": "demo", "steps": [snapshot]}}
+        store.save_fill_plan(job["key"], plan, ats="greenhouse", url=plan["url"],
+                             unresolved_count=len(unresolved), created_at=now - 0.3 * _DAY,
+                             stale_after=now + _DAY, db_path=db)
+
+    company = top.get("company") or "the company"
+    common = [
+        _fa("First Name", "fill", "answers.yaml:personal.first_name", approved=True, required=True),
+        _fa("Last Name", "fill", "answers.yaml:personal.last_name", approved=True, required=True),
+        _fa("Email", "fill", "answers.yaml:personal.email", approved=True, required=True),
+        _fa("Phone", "fill", "answers.yaml:personal.phone", approved=True),
+        _fa("Resume/CV", "upload", "file:resume", approved=True, required=True, value="resume"),
+        _fa("LinkedIn Profile", "fill", "answers.yaml:personal.links.linkedin", approved=True),
+        _fa("Are you legally authorized to work in India?", "select", "answers.yaml:work_authorization.india",
+            approved=True, required=True),
+        _fa("Notice period", "fill", "answers.yaml:availability.notice_period", approved=True),
+        _fa("How did you hear about us?", "select", "answers.yaml:screening_defaults.how_did_you_hear", approved=True),
+    ]
+    why_q = f"Why do you want to work at {company}?"
+    reloc_q = "Are you open to relocating to Bengaluru?"
+    save_plan(top, common + [
+        _fa(why_q, "fill", "generated", approved=False, required=True, note="drafted from your facts; needs your review"),
+        _fa(reloc_q, "radio", "answers.yaml:location_preferences.willing_to_relocate", approved=False,
+            note="location_preferences is not approved yet"),
+    ], [{"label": why_q, "reason": "open question: needs your answer", "required": True},
+        {"label": reloc_q, "reason": "location_preferences is not approved yet"}],
+        [{"label": reloc_q, "type": "radio", "options": ["Yes", "No"], "required": False}])
+    kafka_q = "How many years of experience do you have with Kafka?"
+    shift_q = "Are you comfortable with occasional on-call shifts?"
+    save_plan(needs, common[:6] + [
+        _fa(kafka_q, "select", "none", approved=False, required=True, note="no matching answer in answers.yaml"),
+        _fa(shift_q, "radio", "none", approved=False, note="no matching answer in answers.yaml"),
+    ], [{"label": kafka_q, "reason": "no matching answer in answers.yaml", "required": True},
+        {"label": shift_q, "reason": "no matching answer in answers.yaml"}],
+        [{"label": kafka_q, "type": "select", "options": ["None", "Less than 1 year", "1-2 years", "3+ years"], "required": True},
+         {"label": shift_q, "type": "radio", "options": ["Yes", "No"], "required": False}])
+    with store.connect(db) as conn:
+        for job, status, outcome, ago in (
+            (ready, "ready_to_submit", {"status": "ready", "reason": "stopped before Submit", "filled": 11,
+                                        "left_empty": 0, "highlighted": [], "step_reached": "Application"}, 0.05),
+            (needs, "needs_you", {"status": "needs_you", "reason": "required questions left for you", "filled": 7,
+                                  "left_empty": 2, "highlighted": [kafka_q, shift_q], "step_reached": "Application"}, 0.1),
+        ):
+            conn.execute("INSERT INTO autofill_sessions(job_key, status, outcome, started_at, pid) "
+                         "VALUES (?, ?, ?, ?, NULL)", (job["key"], status, json.dumps(outcome), now - ago * _DAY))
+            conn.execute("UPDATE jobs SET fill_status = ? WHERE key = ?",
+                         ("ready" if status == "ready_to_submit" else status, job["key"]))
+    return {"tailored": top["key"], "ready": ready["key"], "needs_you": needs["key"],
+            "tracked": len(plan_tracker) + 3}
 
 
 @contextmanager

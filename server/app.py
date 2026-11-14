@@ -15,7 +15,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -194,19 +193,66 @@ if importlib.util.find_spec("server.routers.writing") is not None:
 if importlib.util.find_spec("server.routers.autofill") is not None:
     from .routers import autofill  # noqa: E402
     _ROUTERS.append(autofill.router)
+# Phase 5 routes for the React UI (review card, answers writer, facts, portals, CSV).
+from .routers import ui  # noqa: E402
+_ROUTERS.append(ui.router)
 for _router in _ROUTERS:
     app.include_router(_router)
 
 
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+# --- the React UI (web/ -> `make ui` -> server/static/dist) --------------------
+# Built files only; Node is never needed at runtime. Paths under /api are never
+# shadowed: the SPA fallback below is registered after every router and refuses
+# /api/... itself. Unknown non-API paths get index.html (client-side routes).
+DIST_DIR = STATIC_DIR / "dist"
+_NOT_BUILT = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Job-Copilot: build the UI</title></head>
+<body>
+<h1>Job-Copilot</h1>
+<p>The web UI isn't built yet. Run <code>make ui</code> (needs Node 22 once, at build time),
+then reload this page.</p>
+<p>The API is running: try <a href="/api/meta">/api/meta</a>.</p>
+</body></html>
+"""
 
 
-@app.get("/")
+def _index_html() -> str:
+    index = DIST_DIR / "index.html"
+    try:
+        html = index.read_text(encoding="utf-8")
+    except OSError:
+        html = _NOT_BUILT
+    return demo.inject_banner(html) if demo.enabled() else html
+
+
+def _dist_file(rel: str) -> Path | None:
+    """A file inside dist/ (no traversal), or None."""
+    if not rel or "\x00" in rel:
+        return None
+    root = DIST_DIR.resolve()
+    p = (root / rel).resolve()
+    return p if p.is_relative_to(root) and p.is_file() else None
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def root():
-    index = STATIC_DIR / "index.html"
-    if index.exists():
-        if demo.enabled():
-            return HTMLResponse(demo.inject_banner(index.read_text(encoding="utf-8")))
-        return FileResponse(str(index))
-    return {"ok": True, "message": "UI not built yet"}
+    return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
+
+
+@app.api_route("/assets/{rel:path}", methods=["GET", "HEAD"], include_in_schema=False)
+def assets(rel: str):
+    p = _dist_file("assets/" + rel)
+    if p is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    # Vite fingerprints asset names, so they can be cached for good.
+    return FileResponse(str(p), headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.api_route("/{rel:path}", methods=["GET", "HEAD"], include_in_schema=False)
+def spa(rel: str):
+    if rel == "api" or rel.startswith(("api/", "docs", "redoc", "openapi.json")):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    p = _dist_file(rel) if "/" not in rel else None      # top-level public files (favicon, theme-init.js)
+    if p is not None and p.name != "index.html":
+        return FileResponse(str(p), headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})

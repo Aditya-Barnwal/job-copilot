@@ -11,7 +11,7 @@ from fastapi.responses import Response
 
 from jobcopilot import store
 
-from ..deps import enrich, filter_max_yoe
+from ..deps import csv_safe, enrich, filter_max_yoe
 
 router = APIRouter()
 
@@ -94,7 +94,7 @@ def export_csv(
     w = csv.writer(buf)
     w.writerow(_CSV_COLUMNS)
     for r in rows:
-        w.writerow([r.get(c, "") for c in _CSV_COLUMNS])
+        w.writerow([csv_safe(r.get(c, "")) for c in _CSV_COLUMNS])
     return Response(content=buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=jobs.csv"})
 

@@ -70,3 +70,19 @@ def filter_max_yoe(rows: list[dict], max_yoe: Optional[int]) -> list[dict]:
             or r.get("yoe_is_preferred")
             or r["min_yoe_required"] <= max_yoe)
     ]
+
+
+# CSV formula injection: a cell that starts with one of these is run as a formula
+# by Excel / Sheets / Numbers. Prefix it with a single quote so it shows as text.
+_CSV_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: Any) -> Any:
+    """A CSV cell value that a spreadsheet will never evaluate as a formula."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    if isinstance(value, str) and value.startswith(_CSV_TRIGGERS):
+        return "'" + value
+    return value

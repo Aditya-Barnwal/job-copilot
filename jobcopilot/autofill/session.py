@@ -129,4 +129,49 @@ def launch_ephemeral(*, headless: bool = True, channel: Optional[str] = DEFAULT_
     raise BrowserUnavailable(f"no usable browser: {type(last).__name__ if last else '?'}")
 
 
-__all__ = ["BrowserSession", "BrowserUnavailable", "launch", "launch_ephemeral", "PROFILE_DIR"]
+# --------------------------------------------------------------------------- sign-in window
+
+_CHROME_PATHS = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+_CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chrome")
+
+
+def chrome_executable() -> Optional[str]:
+    """Your installed Google Chrome, or None."""
+    import shutil
+    for p in _CHROME_PATHS:
+        q = Path(p).expanduser()
+        if q.is_file() and os.access(q, os.X_OK):
+            return str(q)
+    for name in _CHROME_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def open_for_sign_in(*, profile_dir: Optional[Path | str] = None) -> dict:
+    """Open plain Google Chrome (not automated: no Playwright, no driver) on the
+    dedicated profile with one blank tab, so you can sign in to Workday and other
+    portals by hand. Nothing is typed or navigated for you; the sessions you
+    create are what autofill later reuses. Returns {"ok", "profile"}; raises
+    BrowserUnavailable when Chrome isn't installed."""
+    import subprocess
+    exe = chrome_executable()
+    if not exe:
+        raise BrowserUnavailable("Google Chrome is not installed")
+    profile = Path(profile_dir or PROFILE_DIR).expanduser()
+    profile.mkdir(parents=True, exist_ok=True)
+    args = [exe, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
+            "--new-window", "about:blank"]
+    subprocess.Popen(_check_args(args), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    log.info("sign-in window opened on the dedicated profile")
+    return {"ok": True, "profile": "~/" + str(profile.relative_to(Path.home()))
+            if profile.is_relative_to(Path.home()) else profile.name}
+
+
+__all__ = ["BrowserSession", "BrowserUnavailable", "launch", "launch_ephemeral", "open_for_sign_in",
+           "chrome_executable", "PROFILE_DIR"]

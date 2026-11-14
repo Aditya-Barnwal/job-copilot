@@ -494,6 +494,109 @@ def load(path: Path | str | None = None) -> ResumeFacts:
     return parse(_read_yaml(p), path=p)
 
 
+# --------------------------------------------------------------------------- confirm (UI)
+
+_ID_LINE_RE = r"^(\s*)(-\s+)?id:\s*[\"']?{ident}[\"']?\s*(#.*)?$"
+_STATUS_LINE_RE = re.compile(r"^(\s*)status:\s*[\"']?([A-Za-z_]+)[\"']?(\s*#.*)?$")
+
+
+def _status_map(facts: ResumeFacts) -> dict[str, tuple[str, str]]:
+    """{fact or claim id: (status, text)} for every fact and claim."""
+    out: dict[str, tuple[str, str]] = {}
+    for f in facts.facts():
+        out[f.id] = (f.status, f.text)
+        for c in f.claims:
+            out[c.id] = (c.status, c.text)
+    return out
+
+
+def confirm(ident: str, path: Path | str | None = None) -> dict:
+    """Mark one `unconfirmed` fact or claim as `confirmed` (an explicit user action
+    in the app). Edits only that line's `status:` value, so every comment and the
+    layout stay as they are; the result is re-parsed and must differ from the old
+    file in that one status only, else nothing is written. Pending lines (claims
+    that are not true yet) can't be confirmed here. Returns {id, status, changed}."""
+    import tempfile
+    p = Path(path) if path else default_facts_path()
+    if not isinstance(ident, str) or not _ID_RE.match(ident):
+        raise FactsError("not a fact id")
+    before = load(p)
+    old = _status_map(before)
+    if ident not in old:
+        raise FactsError(f"unknown fact id {ident}")
+    status = old[ident][0]
+    if status == "confirmed":
+        return {"id": ident, "status": "confirmed", "changed": False}
+    if status != "unconfirmed":
+        raise FactsError(f"{ident} is {status}; only unconfirmed lines can be confirmed here")
+    text = p.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    rx = re.compile(_ID_LINE_RE.format(ident=re.escape(ident)))
+    hits = [i for i, ln in enumerate(lines) if rx.match(ln.rstrip("\r\n"))]
+    if len(hits) != 1:
+        raise FactsError(f"{ident}: can't find its line in {p.name} safely; confirm it by hand")
+    m = rx.match(lines[hits[0]].rstrip("\r\n"))
+    indent = len(m.group(1)) + len(m.group(2) or "")
+    target = None
+    for k in range(hits[0] + 1, len(lines)):
+        ln = lines[k].rstrip("\r\n")
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        ind = len(ln) - len(ln.lstrip(" "))
+        if ind < indent:
+            break
+        sm = _STATUS_LINE_RE.match(ln)
+        if ind == indent and sm:
+            target = (k, sm)
+            break
+    if target is None:
+        raise FactsError(f"{ident}: no status line found; confirm it by hand")
+    k, sm = target
+    eol = lines[k][len(lines[k].rstrip("\r\n")):]
+    lines[k] = f"{sm.group(1)}status: confirmed{sm.group(3) or ''}{eol}"
+    new_text = "".join(lines)
+    try:
+        after = parse(yaml.load(new_text, Loader=_StrictLoader), path=p)  # noqa: S506 — SafeLoader subclass
+    except yaml.YAMLError:
+        raise FactsError("the edit would break the file; nothing was changed") from None
+    new = _status_map(after)
+    want = dict(old)
+    want[ident] = ("confirmed", old[ident][1])
+    if new != want:
+        raise FactsError(f"{p.name} has a layout this editor can't change safely; confirm it by hand")
+    fd, tmp = tempfile.mkstemp(prefix=".facts-", suffix=".yaml", dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        os.chmod(tmp, p.stat().st_mode & 0o777)
+        os.replace(tmp, p)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise FactsError(f"could not write {p.name}: {type(exc).__name__}") from None
+    log.info("confirmed fact %s", ident)
+    return {"id": ident, "status": "confirmed", "changed": True}
+
+
+def review_rows(facts: ResumeFacts) -> list[dict]:
+    """Every fact (and its claims) for the app's Facts screen, document order."""
+    rows = []
+    for f in facts.facts():
+        rows.append({
+            "id": f.id, "section": f.section, "kind": f.kind, "parent": f.parent or None,
+            "text": f.text, "status": f.status, "sources": list(f.sources),
+            "variants": dict(f.variants), "tech": list(getattr(f, "tech", []) or []),
+            "pending_until": f.pending_until or None, "pending_reason": f.pending_reason or None,
+            "note": f.note or None,
+            "claims": [{"id": c.id, "text": c.text, "tech": list(c.tech), "status": c.status,
+                        "pending_until": c.pending_until or None,
+                        "pending_reason": c.pending_reason or None} for c in f.claims],
+        })
+    return rows
+
+
 def load_bases(path: Path | str) -> dict[str, Base]:
     """Load base_resumes/bases.yaml. A malformed layout file raises FactsError:
     it is small and hand-written, so a structural slip should stop the run."""

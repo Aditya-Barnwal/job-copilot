@@ -33,3 +33,4 @@ server/static/dist/
 
 # Private working notes (progress log, decisions): never committed
 private/
+web/*.tsbuildinfo

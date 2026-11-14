@@ -1,0 +1,231 @@
+@import "@fontsource-variable/fraunces/opsz.css";
+@import "@fontsource-variable/inter/index.css";
+@import "tailwindcss";
+
+/* Theme switch: [data-theme] on <html> (public/theme-init.js sets it before paint). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Design tokens. One accent (spruce), a warm paper-and-ink neutral ramp, and
+ * three quiet signal colours. Every colour is a CSS variable so the dark theme
+ * is a token swap, not a second set of classes.
+ */
+:root {
+  --paper: #f8f6f1;
+  --paper-2: #f2efe8;
+  --surface: #fffefb;
+  --surface-2: #faf8f3;
+  --ink: #1c1b18;
+  --ink-2: #3d3a34;
+  --muted: #6b665c;
+  --faint: #736e62;
+  --line: #e6e1d6;
+  --line-2: #d8d2c4;
+  --accent: #1f5f55;
+  --accent-ink: #164a42;
+  --accent-soft: #e3eeea;
+  --accent-line: #b9d3cb;
+  --on-accent: #f7f4ee;
+  --good: #2f6b3a;
+  --good-soft: #e5efe3;
+  --warn: #8a5a10;
+  --warn-soft: #f6ecd9;
+  --bad: #9b2f25;
+  --bad-soft: #f7e3df;
+  --shadow: 28 27 24;
+  --focus: #1f5f55;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --paper: #121311;
+  --paper-2: #171816;
+  --surface: #1b1c1a;
+  --surface-2: #20221f;
+  --ink: #eceae4;
+  --ink-2: #d2cfc7;
+  --muted: #a39f95;
+  --faint: #8a867c;
+  --line: #2c2e2a;
+  --line-2: #3a3c37;
+  --accent: #7cc7b4;
+  --accent-ink: #9fd8c9;
+  --accent-soft: #1d2f2a;
+  --accent-line: #2f5149;
+  --on-accent: #0f1a17;
+  --good: #8fc79a;
+  --good-soft: #1c2a1f;
+  --warn: #e0b56a;
+  --warn-soft: #2e2617;
+  --bad: #f0958a;
+  --bad-soft: #321d1a;
+  --shadow: 0 0 0;
+  --focus: #7cc7b4;
+  color-scheme: dark;
+}
+
+@theme {
+  --font-display: "Fraunces Variable", "Iowan Old Style", Georgia, serif;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-on-accent: var(--on-accent);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+
+  --radius-card: 14px;
+  --ease-calm: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --animate-rise: rise 320ms var(--ease-calm) both;
+  --animate-fade: fade 220ms ease-out both;
+  --animate-drawer: drawer 340ms var(--ease-calm) both;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes drawer {
+    from { opacity: 0.4; transform: translateX(28px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes shimmer {
+    from { background-position: -400px 0; }
+    to { background-position: 400px 0; }
+  }
+}
+
+@layer base {
+  html {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--paper);
+    min-height: 100vh;
+  }
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  button, [role="button"], a, summary, input[type="checkbox"] {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+    font-optical-sizing: auto;
+    letter-spacing: -0.01em;
+  }
+  kbd {
+    font-family: var(--font-sans);
+  }
+}
+
+@layer components {
+  /* Subtle paper grain on the canvas, drawn with gradients only (no image request). */
+  .canvas {
+    background:
+      radial-gradient(1200px 600px at 85% -10%, color-mix(in oklab, var(--accent) 7%, transparent), transparent 60%),
+      var(--paper);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    box-shadow: 0 1px 0 rgb(var(--shadow) / 0.03), 0 1px 2px rgb(var(--shadow) / 0.04);
+  }
+  .card-hover {
+    transition: border-color 160ms ease, box-shadow 200ms ease, transform 200ms var(--ease-calm);
+  }
+  .card-hover:hover {
+    border-color: var(--line-2);
+    box-shadow: 0 1px 0 rgb(var(--shadow) / 0.03), 0 8px 24px -12px rgb(var(--shadow) / 0.18);
+  }
+  .card:focus-visible,
+  .card-selected {
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 14%, transparent);
+  }
+  .eyebrow {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--paper-2) 0px, var(--surface-2) 120px, var(--paper-2) 240px);
+    background-size: 800px 100%;
+    animation: var(--animate-shimmer);
+    border-radius: 8px;
+  }
+  .hairline {
+    border-color: var(--line);
+  }
+  .prose-jd {
+    white-space: pre-wrap;
+    line-height: 1.7;
+    color: var(--ink-2);
+    font-size: 0.9375rem;
+  }
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+  .demo-banner {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    padding: 0.4rem 1rem;
+    text-align: center;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: var(--warn);
+    background: var(--warn-soft);
+    border-bottom: 1px solid color-mix(in oklab, var(--warn) 25%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

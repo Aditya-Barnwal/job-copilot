@@ -41,6 +41,8 @@ text only — never contact details.
 """
 from __future__ import annotations
 
+import copy
+
 import dataclasses
 import hashlib
 import json
@@ -781,6 +783,18 @@ def tailor(job_key: str, *, base: Optional[str] = None, db_path: Any = None,
     result = TailorResult(status="ok", base=base, edit_plan=plan, lines=lines, diff=diff,
                           keywords=keywords, attempts=attempts, plan_problems=problems,
                           kept_original=kept, attempt_problems=history)
+    _record(job_key, job, rf, base, usable, attested, before, result, reasons,
+            db_path=db_path, persist=persist, note="tailored")
+    return result
+
+
+def _record(job_key: str, job: dict, rf: Any, base: str, usable: list[F.Fact],
+            attested: list[str], before: list[dict], result: TailorResult, reasons: list[str],
+            *, db_path: Any, persist: bool, note: str) -> None:
+    """Render, ground and (persist=True) store a new artifact version for the plan
+    in `result` (shared by tailor() and edit())."""
+    plan, lines, diff = result.edit_plan, result.lines, result.diff
+    attempts, kept = result.attempts, result.kept_original
 
     artifact_id = version = None
     out_dir: Optional[Path] = None
@@ -846,7 +860,7 @@ def tailor(job_key: str, *, base: Optional[str] = None, db_path: Any = None,
                 facts_hash=facts_hash(usable, lines))
             if store.canonical_status(job.get("status")) == "found":
                 store.set_status(job_key, "tailored", source="system",
-                                 note=f"tailored v{version} ({result.status})", db_path=db_path)
+                                 note=f"{note} v{version} ({result.status})", db_path=db_path)
     except Exception:
         if persist and artifact_id is not None:
             store.update_artifact(artifact_id, db_path, status="failed")
@@ -854,7 +868,133 @@ def tailor(job_key: str, *, base: Optional[str] = None, db_path: Any = None,
     log.info("tailor_v2 key=%s base=%s status=%s attempts=%d lines=%d changed=%d kept_original=%d",
              job_key, base, result.status, attempts, len(lines),
              sum(1 for d in diff if d["op"] != "same"), len(kept))
-    return result
+
+
+# --------------------------------------------------------------------------- review / edit (UI)
+
+MAX_EDIT_CHARS = 600
+_EDITABLE_FROM = frozenset({"ok", "needs_review", "approved", "rejected"})
+
+
+def review(artifact_id: int, *, facts_path: Path | str | None = None, db_path: Any = None) -> Optional[dict]:
+    """A stored version for the review card: its lines and the line diff against
+    the untailored base, recomputed (no LLM) from the stored plan and the CURRENT
+    confirmed facts. `stale` = the cited facts changed since it was tailored
+    (approve() would refuse it). None when the artifact doesn't exist."""
+    art = store.get_artifact(int(artifact_id), db_path)
+    if not art:
+        return None
+    plan = art.get("edit_plan") if isinstance(art.get("edit_plan"), dict) else None
+    out: dict[str, Any] = {
+        "artifact_id": art["id"], "job_key": art["job_key"], "version": art["version"],
+        "base": art.get("base"), "status": art.get("status"), "pages": art.get("pages"),
+        "created_at": art.get("created_at"), "approved_at": art.get("approved_at"),
+        "grounding": art.get("grounding"), "lines": [], "diff": [], "stale": False, "problem": None,
+        "pdf_url": f"/api/artifacts/{art['id']}/pdf" if art.get("pdf_path") else None,
+        "kept_original": (plan or {}).get("kept_original") or [],
+        "user_edited": (plan or {}).get("user_edited") or [],
+        "keywords": {k: list((plan or {}).get(f"{k}_keywords") or []) for k in ("surfaced", "attested", "struck")},
+    }
+    if plan is None:
+        out["problem"] = f"this version is {art.get('status')}; there is nothing to review"
+        return out
+    rf, bases, err = _load(facts_path)
+    base = art.get("base")
+    if rf is None or not bases or base not in bases:
+        out["problem"] = ("your résumé facts or base résumés are unavailable"
+                          + (f" ({err})" if err else "") + "; the stored version can't be shown")
+        return out
+    usable = F.usable_facts(rf, base)
+    lines = apply_plan(usable, bases[base], plan)
+    before = apply_plan(usable, bases[base], EMPTY_PLAN)
+    out["lines"] = lines
+    out["diff"] = diff_lines(before, lines)
+    out["stale"] = facts_hash(usable, lines) != art.get("facts_hash")
+    out["editable"] = [f.id for f in usable if f.kind == "bullet"]
+    # the same check approve() runs, so the flags shown are the ones to confirm
+    g = check_lines(lines, usable, attested=list(plan.get("attested_keywords") or []))
+    if isinstance(art.get("pages"), int) and art["pages"] > 1:
+        g["flags"]["over_one_page"] = [f"{art['pages']} pages"]
+        g["clean"] = False
+    out["grounding"] = g
+    return out
+
+
+def edit(job_key: str, artifact_id: int, rephrase: Any, *, facts_path: Path | str | None = None,
+         db_path: Any = None) -> dict:
+    """Your own inline edits to a tailored version: {bullet fact id: new text, or
+    null / "" to go back to the confirmed wording}. No LLM. Writes a NEW version
+    (the old one is kept); your text is never silently reverted: grounding checks
+    it against the cited fact and flags anything the fact doesn't support, and
+    approve() then needs each flag confirmed, as for model output.
+    Returns {"ok", "http", ...} like approve()."""
+    job = store.get_job(job_key, db_path)
+    if not job:
+        return {"ok": False, "http": 404, "detail": "job not found"}
+    art = store.get_artifact(int(artifact_id), db_path)
+    if not art or art.get("job_key") != job_key:
+        return {"ok": False, "http": 404, "detail": "version not found for this job"}
+    if art.get("status") not in _EDITABLE_FROM or not isinstance(art.get("edit_plan"), dict):
+        return {"ok": False, "http": 409, "detail": f"this version is {art.get('status')}; tailor again"}
+    if not isinstance(rephrase, dict) or not rephrase:
+        return {"ok": False, "http": 400, "detail": "send at least one edited line"}
+    if len(rephrase) > 60:
+        return {"ok": False, "http": 400, "detail": "too many edits at once"}
+    rf, bases, err = _load(facts_path)
+    base = art.get("base")
+    if rf is None or not _has_content(F.usable_facts(rf)):
+        return {"ok": False, "http": 409, "detail": CONFIRM_FACTS_MSG}
+    if base not in bases:
+        return {"ok": False, "http": 409, "detail": f"base {base!r} no longer exists; tailor again"}
+    usable = F.usable_facts(rf, base)
+    by_id = {f.id: f for f in usable}
+    changes: dict[str, Optional[str]] = {}
+    for fid, text in rephrase.items():
+        f = by_id.get(fid) if isinstance(fid, str) else None
+        if f is None or f.kind != "bullet":
+            return {"ok": False, "http": 400, "detail": "only confirmed bullet lines can be edited"}
+        if text is not None and not isinstance(text, str):
+            return {"ok": False, "http": 400, "detail": "an edited line must be text"}
+        t = " ".join((text or "").split())
+        if len(t) > MAX_EDIT_CHARS:
+            return {"ok": False, "http": 400, "detail": f"a line is longer than {MAX_EDIT_CHARS} characters"}
+        changes[fid] = None if (not t or t == f.text) else t
+    plan = copy.deepcopy(art["edit_plan"])
+    reph = dict(plan.get("rephrase") or {})
+    for fid, t in changes.items():
+        if t is None:
+            reph.pop(fid, None)
+        else:
+            reph[fid] = t
+    plan["rephrase"] = reph
+    plan["user_edited"] = sorted(set(plan.get("user_edited") or []) | {k for k, v in changes.items() if v})
+    plan["user_edited"] = [k for k in plan["user_edited"] if k in reph]
+    plan["kept_original"] = [k for k in plan.get("kept_original") or [] if k.get("fact_id") not in changes]
+    base_obj = bases[base]
+    lines = apply_plan(usable, base_obj, plan)
+    before = apply_plan(usable, base_obj, EMPTY_PLAN)
+    result = TailorResult(status="ok", base=base, edit_plan=plan, lines=lines,
+                          diff=diff_lines(before, lines), keywords={})
+    attested = [str(k) for k in plan.get("attested_keywords") or []]
+    _record(job_key, job, rf, base, usable, attested, before, result, [],
+            db_path=db_path, persist=True, note="edited")
+    log.info("tailor_v2 edit key=%s from artifact=%s -> v%s (%d line(s))", job_key, art["id"],
+             result.version, len(changes))
+    return {"ok": True, "http": 200, "artifact_id": result.artifact_id, "version": result.version,
+            "status": result.status, "reasons": result.reasons, "grounding": result.grounding}
+
+
+def reject(job_key: str, artifact_id: int, *, db_path: Any = None) -> dict:
+    """You turned a tailored version down: it is marked rejected and never used.
+    An approved version can't be rejected (tailor or edit a new one instead)."""
+    art = store.get_artifact(int(artifact_id), db_path)
+    if not art or art.get("job_key") != job_key:
+        return {"ok": False, "http": 404, "detail": "version not found for this job"}
+    if art.get("status") == "approved":
+        return {"ok": False, "http": 409,
+                "detail": "this version is already approved; edit or tailor a new one to replace it"}
+    store.update_artifact(art["id"], db_path, status="rejected")
+    return {"ok": True, "http": 200, "artifact_id": art["id"], "status": "rejected"}
 
 
 def preview(job_key: str, *, base: Optional[str] = None, db_path: Any = None,

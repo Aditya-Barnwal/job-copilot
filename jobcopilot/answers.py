@@ -1664,7 +1664,9 @@ def _strip_marks(question: str) -> str:
 def answer_question(question: str, *, field_type: str = "text", options: Optional[list[str]] = None,
                     job: Optional[dict] = None, answers: Any = None, facts: Any = None,
                     required: Optional[bool] = None, company: Any = None,
-                    today: Optional[dt.date] = None) -> Answer:
+                    today: Optional[dt.date] = None, allow_open: bool = True) -> Answer:
+    """allow_open=False never drafts an open answer (no LLM call): such questions
+    come back unanswered."""
     ft = field_type if field_type in FIELD_TYPES else "text"
     raw = _strip_marks(question)
     ctx = _Ctx(norm(raw), raw, ft, list(options or []), job, as_bank(answers), facts,
@@ -1673,6 +1675,9 @@ def answer_question(question: str, *, field_type: str = "text", options: Optiona
         return _none("empty question")
     if _is_attestation(ctx):
         return _none("consent / attestation / authorisation checkbox: only you can tick this", "consent")
+    saved = _custom_answer(ctx)
+    if saved is not None:
+        return saved
     for name, rx, handler in _COMPILED:
         if not rx.search(ctx.q):
             continue
@@ -1682,7 +1687,7 @@ def answer_question(question: str, *, field_type: str = "text", options: Optiona
         a.rule = name
         return _safety_guard(a, ctx) or _finalize(a, ctx)
     if OPEN_RE.search(ctx.q):
-        return answer_open(raw, ctx)
+        return answer_open(raw, ctx) if allow_open else _none("open question: needs your answer", "open")
     return _none()
 
 
@@ -1731,6 +1736,189 @@ def answer_open(question: str, ctx: _Ctx) -> Answer:
         note += "; NEEDS REVIEW: " + "; ".join(issues)
     return Answer(text, "generated", 0.5 if not issues else 0.2, True, note, "open",
                   fact_ids=g.get("cited_fact_ids") or [], grounding=g)
+
+
+# --------------------------------------------------------------------------- saved answers
+
+# Answers the user typed in the app ("Needs you" -> Save to answers bank) live in
+# one top-level block of answers.yaml:
+#
+#     custom_answers:                 # approved
+#       - question: "What is your favourite colour?"
+#         answer: "Green"
+#
+# save_custom_answer() rewrites ONLY that block (every other line, comment and
+# status marker of the file is kept byte for byte), verifies the result parses
+# to exactly the old data plus the change, and replaces the file atomically.
+# It runs only on an explicit user action (the API endpoint); nothing here is
+# called by autofill or the nightly run.
+
+CUSTOM_KEY = "custom_answers"
+MAX_QUESTION_CHARS = 500
+MAX_ANSWER_CHARS = 4000
+_CUSTOM_HEADER = ("# Answers you typed in the app (Needs you -> Save to answers bank). The app rewrites\n"
+                  "# only this block; edit it by hand if you like, keeping the question/answer shape.\n")
+# Credentials and ID / card numbers are never stored (PLAN non-negotiable 4).
+_SECRET_QUESTION_RE = re.compile(
+    r"\b(pass ?(word|code|phrase)|otp|one time (code|password|pin)|pin( code| number)?|cvv|cvc|"
+    r"security code|card (number|no)|credit card|debit card|ssn|social security|aadha+r|"
+    r"pan (card|number|no)|passport (number|no)|bank account|account (number|no)|iban|ifsc|"
+    r"routing number|sort code|tax (id|identification)|national (id|insurance)|"
+    r"security question|mother s maiden)\b")
+
+
+def is_secret_question(question: Any) -> bool:
+    """A question asking for a password, code, or ID / card number (never stored)."""
+    return bool(_SECRET_QUESTION_RE.search(norm(_strip_marks(str(question or "")))))
+
+
+class AnswerSaveError(AnswersError):
+    """The answer can't be saved (bad input, or the file has an unexpected shape)."""
+
+
+def _custom_answer(ctx: "_Ctx") -> Optional[Answer]:
+    """Your own saved answer to this exact question (normalised), if any."""
+    entries = ctx.bank.data.get(CUSTOM_KEY) if isinstance(ctx.bank.data, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for i, e in enumerate(entries):
+        if not isinstance(e, dict) or _empty(e.get("answer")):
+            continue
+        if norm(_strip_marks(str(e.get("question") or ""))) != ctx.q:
+            continue
+        path = f"{CUSTOM_KEY}[{i}].answer"
+        status = ctx.bank.status_of(path)
+        note = "your saved answer to this exact question"
+        if status != "approved":
+            note += f"; {CUSTOM_KEY} is not approved yet"
+        a = Answer(e["answer"] if isinstance(e["answer"], str) else str(e["answer"]),
+                   f"answers.yaml:{path}", 1.0, status != "approved", note, "custom", status)
+        return _finalize(a, ctx)
+    return None
+
+
+def _yaml_str(s: str) -> str:
+    # A JSON string is a valid YAML double-quoted scalar (escapes included).
+    import json
+    return json.dumps(s, ensure_ascii=False)
+
+
+def _render_custom_block(entries: list[dict]) -> str:
+    if not entries:
+        return f"{CUSTOM_KEY}: []                # approved\n"
+    out = [f"{CUSTOM_KEY}:                 # approved\n"]
+    for e in entries:
+        out.append(f"  - question: {_yaml_str(e['question'])}\n")
+        out.append(f"    answer: {_yaml_str(e['answer'])}\n")
+    return "".join(out)
+
+
+def _replace_top_block(text: str, key: str, block: str) -> str:
+    """Swap the top-level `key:` block (its line plus the indented lines under it)
+    for `block`; append it (with a short header comment) when the key is absent."""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, ln in enumerate(lines) if re.match(rf"^{re.escape(key)}\s*:", ln)), None)
+    if start is None:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        return text + sep + ("\n" if text.strip() else "") + _CUSTOM_HEADER + block
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():     # trailing blank lines stay outside
+        end -= 1
+    return "".join(lines[:start]) + block + "".join(lines[end:])
+
+
+def _check_saveable(question: Any, answer: Any) -> tuple[str, str]:
+    if not isinstance(question, str) or not isinstance(answer, str):
+        raise AnswerSaveError("question and answer must be text")
+    q = _strip_marks(question)
+    a = answer.strip()
+    if not q or not norm(_strip_marks(q)):
+        raise AnswerSaveError("the question is empty")
+    if not a:
+        raise AnswerSaveError("type an answer first")
+    if len(q) > MAX_QUESTION_CHARS or len(a) > MAX_ANSWER_CHARS:
+        raise AnswerSaveError(f"too long (question ≤ {MAX_QUESTION_CHARS}, answer ≤ {MAX_ANSWER_CHARS} characters)")
+    if _SECRET_QUESTION_RE.search(norm(q)):
+        raise AnswerSaveError("passwords, codes and ID or card numbers are never stored; type this one in the form yourself")
+    if len(re.sub(r"\D", "", a)) >= 13 and re.fullmatch(r"[\d\s-]+", a):
+        raise AnswerSaveError("that looks like a card or ID number, which is never stored")
+    if "\x00" in q or "\x00" in a:
+        raise AnswerSaveError("invalid characters")
+    return q, a
+
+
+def save_custom_answer(question: Any, answer: Any, *, path: Path | str | None = None) -> dict:
+    """Save (or replace) your answer to one form question in answers.yaml.
+
+    Returns {"question", "answer", "replaced", "file"}. Raises AnswerSaveError
+    for bad input or a file this writer can't edit safely; the file is then
+    left untouched.
+    """
+    import os
+    import tempfile
+    q, a = _check_saveable(question, answer)
+    p = Path(path) if path else default_answers_path()
+    try:
+        text = p.read_text(encoding="utf-8") if p.exists() else ""
+    except OSError as exc:
+        raise AnswerSaveError(f"{p.name}: {type(exc).__name__}") from exc
+    if not text.strip():
+        text = f"schema_version: {SCHEMA_VERSION}\n"
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise AnswerSaveError(f"{p.name} is not valid YAML; fix it first") from exc
+    if not isinstance(data, dict):
+        raise AnswerSaveError(f"{p.name}: top level must be a mapping")
+    entries = data.get(CUSTOM_KEY)
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list) or not all(
+            isinstance(e, dict) and set(e) <= {"question", "answer"}
+            and isinstance(e.get("question"), str) and isinstance(e.get("answer"), (str, int, float, bool))
+            for e in entries):
+        raise AnswerSaveError(f"{CUSTOM_KEY} in {p.name} has an unexpected shape; fix it by hand first")
+    entries = [{"question": e["question"], "answer": str(e["answer"]) if not isinstance(e["answer"], str)
+                else e["answer"]} for e in entries]
+    key = norm(_strip_marks(q))
+    replaced = False
+    for e in entries:
+        if norm(_strip_marks(e["question"])) == key:
+            e["answer"], replaced = a, True
+            break
+    if not replaced:
+        entries.append({"question": q, "answer": a})
+
+    new_text = _replace_top_block(text, CUSTOM_KEY, _render_custom_block(entries))
+    expected = dict(data)
+    expected[CUSTOM_KEY] = entries
+    try:
+        got = yaml.safe_load(new_text)
+    except yaml.YAMLError as exc:      # pragma: no cover - the block is generated
+        raise AnswerSaveError("could not write a valid file; nothing was changed") from exc
+    if got != expected:
+        raise AnswerSaveError(f"{p.name} has a layout this writer can't edit safely; add the answer by hand")
+    if parse_statuses(new_text).get(CUSTOM_KEY) != "approved":
+        raise AnswerSaveError(f"{CUSTOM_KEY} must be marked approved; fix {p.name} by hand")
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".answers-", suffix=".yaml", dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        if p.exists():
+            os.chmod(tmp, p.stat().st_mode & 0o777)
+        os.replace(tmp, p)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise AnswerSaveError(f"could not write {p.name}: {type(exc).__name__}") from exc
+    log.info("saved a custom answer (replaced=%s, %d saved in total)", replaced, len(entries))
+    return {"question": q, "answer": a, "replaced": replaced, "file": p.name}
 
 
 # --------------------------------------------------------------------------- review

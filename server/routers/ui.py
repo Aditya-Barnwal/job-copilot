@@ -1,0 +1,381 @@
+"""Phase 5 API for the React UI: review card data, inline edits, the answers bank
+writer, fact confirmation, screenshots, the tracker CSV, résumés and the
+"Sign in to portals" window.
+
+Every write here is an explicit user action from the UI. Demo mode refuses all
+of them (the demo middleware in app.py 403s any write it doesn't allow; the
+handlers below also check, so a mounted-without-middleware app is safe too).
+Nothing here submits an application.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import FileResponse, JSONResponse, Response
+
+from jobcopilot import answers as answers_mod
+from jobcopilot import config, demo, store
+from jobcopilot import facts as facts_mod
+from jobcopilot import queue as jq
+from jobcopilot import tailor_v2
+from jobcopilot.autofill import service
+
+from ..deps import csv_safe
+
+log = logging.getLogger("jobcopilot.server.ui")
+router = APIRouter()
+
+
+def _no_demo(what: str = "this") -> None:
+    if demo.enabled():
+        raise HTTPException(status_code=403, detail=f"{what} is off in the public demo")
+
+
+def _reply(out: dict) -> Any:
+    code = out.pop("http", 200)
+    if code == 404:
+        raise HTTPException(status_code=404, detail=out.get("detail") or "not found")
+    if code != 200:
+        return JSONResponse(status_code=code, content=out)
+    return out
+
+
+# --------------------------------------------------------------------------- app config
+
+@router.get("/api/ui/config")
+def ui_config():
+    """What the UI needs before it renders: demo mode, the banner text."""
+    return {"demo": demo.enabled(), "banner": demo.BANNER if demo.enabled() else None,
+            "autofill": not demo.enabled()}
+
+
+# --------------------------------------------------------------------------- files
+
+def _served_png(raw: Optional[str]) -> Optional[Path]:
+    """A screenshot path from the DB, served only when it is a .png under the data
+    dir's applications/ or proofs/ folder (no traversal through a stored path)."""
+    if not raw or not isinstance(raw, str) or "\x00" in raw:
+        return None
+    roots = [store.applications_dir().resolve(), (store.data_dir() / "proofs").resolve()]
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = roots[1] / p
+    p = p.resolve()
+    if p.suffix.lower() != ".png" or not any(p.is_relative_to(r) for r in roots) or not p.is_file():
+        return None
+    return p
+
+
+def _png(p: Optional[Path]) -> FileResponse:
+    if p is None:
+        raise HTTPException(status_code=404, detail="no screenshot")
+    return FileResponse(str(p), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/api/autofill/sessions/{session_id}/screenshot")
+def session_screenshot(session_id: int):
+    row = store.get_autofill_session(int(session_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such session")
+    return _png(_served_png(row.get("screenshot_path")))
+
+
+@router.get("/api/jobs/{key}/proof")
+def submission_proof(key: str):
+    job = store.get_job(key)
+    if not job:
+        raise HTTPException(status_code=404, detail="not found")
+    return _png(_served_png(job.get("submit_proof_path")))
+
+
+def _session_view(row: dict) -> dict:
+    out = dict(row)
+    out.pop("pid", None)
+    shot = out.pop("screenshot_path", None)
+    out["has_screenshot"] = _served_png(shot) is not None
+    return out
+
+
+@router.get("/api/jobs/{key}/autofill/sessions")
+def job_sessions(key: str, limit: int = 10):
+    if store.get_job(key) is None:
+        raise HTTPException(status_code=404, detail="not found")
+    rows = store.list_autofill_sessions(job_key=key, limit=max(1, min(int(limit), 50)))
+    return {"sessions": [_session_view(r) for r in rows]}
+
+
+# --------------------------------------------------------------------------- review card
+
+@router.get("/api/artifacts/{artifact_id}/review")
+def artifact_review(artifact_id: int):
+    out = tailor_v2.review(artifact_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail="version not found")
+    return out
+
+
+@router.post("/api/jobs/{key}/artifacts/{artifact_id}/edit")
+def artifact_edit(key: str, artifact_id: int, body: dict = Body(...)):
+    """{rephrase: {bullet fact id: text | null}} -> a NEW version (re-grounded, no LLM)."""
+    _no_demo("editing")
+    return _reply(tailor_v2.edit(key, artifact_id, (body or {}).get("rephrase")))
+
+
+@router.post("/api/jobs/{key}/artifacts/{artifact_id}/reject")
+def artifact_reject(key: str, artifact_id: int):
+    _no_demo("rejecting a version")
+    return _reply(tailor_v2.reject(key, artifact_id))
+
+
+# --------------------------------------------------------------------------- needs you / answers bank
+
+def _bank_or_none():
+    try:
+        return answers_mod.load()
+    except answers_mod.AnswersError:
+        return None
+
+
+@router.get("/api/answers/unanswered")
+def unanswered(limit: int = 200):
+    """Form questions the fill plans could not answer from your answers bank,
+    grouped by question (normalised), with the jobs that ask them. A question your
+    bank now answers (e.g. you just saved it) is left out."""
+    bank = _bank_or_none()
+    groups: dict[str, dict] = {}
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT p.job_key, p.plan, p.created_at, j.title, j.company, j.status "
+            "FROM fill_plans p JOIN jobs j ON j.key = p.job_key "
+            "WHERE p.unresolved_count > 0 ORDER BY p.created_at DESC LIMIT 500").fetchall()
+    import json as _json
+    for r in rows:
+        if store.is_submitted_or_later(r["status"]) or store.canonical_status(r["status"]) == "not_interested":
+            continue
+        try:
+            plan = _json.loads(r["plan"]) if r["plan"] else {}
+        except ValueError:
+            continue
+        actions = {a.get("label"): a for step in plan.get("steps") or [] if isinstance(step, list)
+                   for a in step if isinstance(a, dict)}
+        snap = {f.get("label"): f for step in (plan.get("snapshot") or {}).get("steps") or []
+                if isinstance(step, list) for f in step if isinstance(f, dict)}
+        for u in plan.get("unresolved") or []:
+            label = (u.get("label") or "").strip() if isinstance(u, dict) else ""
+            if not label:
+                continue
+            key = answers_mod.norm(label)
+            if not key or answers_mod.is_secret_question(label):
+                continue
+            act, field = actions.get(label) or {}, snap.get(label) or {}
+            kind = act.get("kind") or ""
+            ftype = field.get("type") or {"select": "select", "radio": "radio", "check": "checkbox"}.get(kind, "text")
+            if kind == "upload" or ftype in ("file", "hidden") or field.get("hidden"):
+                continue      # file uploads come from your approved résumé / cover letter
+            if service.is_consent_label(label, "check" if ftype in ("checkbox", "multi") else "text"):
+                continue      # consent and attestations: only you tick those, in the form
+            ftype = {"multi": "checkbox"}.get(ftype, ftype)
+            if ftype not in answers_mod.FIELD_TYPES:
+                ftype = "text"
+            options = [str(o) for o in field.get("options") or [] if str(o).strip()]
+            g = groups.setdefault(key, {"question": label, "field_type": ftype, "options": options,
+                                        "required": False, "reasons": [], "jobs": []})
+            g["required"] = g["required"] or bool(u.get("required") or act.get("required")
+                                                  or field.get("required"))
+            reason = u.get("reason")
+            if reason and reason not in g["reasons"]:
+                g["reasons"].append(reason)
+            if all(j["key"] != r["job_key"] for j in g["jobs"]):
+                g["jobs"].append({"key": r["job_key"], "title": r["title"], "company": r["company"]})
+    out = []
+    for g in groups.values():
+        if bank is not None:
+            a = answers_mod.answer_question(g["question"], field_type=g["field_type"],
+                                            options=g["options"] or None, answers=bank, allow_open=False)
+            if a.value not in ("", None) and not a.needs_user:
+                continue
+        out.append(g)
+    out.sort(key=lambda g: (not g["required"], -len(g["jobs"]), g["question"].lower()))
+    return {"questions": out[: max(1, min(int(limit), 500))], "bank_available": bank is not None}
+
+
+@router.post("/api/answers/save")
+def save_answer(body: dict = Body(...)):
+    """Save YOUR typed answer to one form question into profile/answers.yaml
+    (custom_answers block, approved). Explicit user action only."""
+    _no_demo("saving answers")
+    body = body or {}
+    try:
+        out = answers_mod.save_custom_answer(body.get("question"), body.get("answer"))
+    except answers_mod.AnswerSaveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, **out}
+
+
+# --------------------------------------------------------------------------- facts
+
+@router.get("/api/facts")
+def facts_review():
+    try:
+        rf = facts_mod.load()
+    except facts_mod.FactsError as exc:
+        return {"available": False, "detail": str(exc).split(": ", 1)[-1], "facts": [], "errors": [],
+                "counts": {}}
+    bases = facts_mod.load_bases_for(rf.path) if rf.path else None
+    rows = facts_mod.review_rows(rf)
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return {"available": True, "file": rf.path.name if rf.path else None, "facts": rows,
+            "errors": facts_mod.validate(rf, bases)[:50], "counts": counts,
+            "usable": len(facts_mod.usable_facts(rf))}
+
+
+@router.post("/api/facts/{fact_id}/confirm")
+def facts_confirm(fact_id: str):
+    """Mark one unconfirmed fact or claim confirmed (you checked it is true)."""
+    _no_demo("confirming facts")
+    try:
+        return {"ok": True, **facts_mod.confirm(fact_id)}
+    except facts_mod.FactsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc).split("resume_facts.yaml: ")[-1])
+
+
+# --------------------------------------------------------------------------- résumés
+
+_BASE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _bases_dir() -> Path:
+    return facts_mod.profile_dir() / "base_resumes"
+
+
+@router.get("/api/resumes")
+def resumes():
+    """Your base résumés (LaTeX templates) and every tailored version per job."""
+    bases_out = []
+    try:
+        bases = facts_mod.load_bases(_bases_dir() / "bases.yaml")
+    except Exception:  # noqa: BLE001 — missing or invalid file: show none
+        bases = {}
+    d = _bases_dir()
+    for name, b in bases.items():
+        tpl = next((p for p in (d / f"{name}.tex.j2", d / f"{name}.tex") if p.is_file()), None)
+        bases_out.append({"name": name, "roles": list(getattr(b, "roles", []) or []),
+                          "sections": list(getattr(b, "sections", []) or []),
+                          "template": tpl.name if tpl else None})
+    by_job: dict[str, dict] = {}
+    for a in store.list_artifacts(None):
+        g = a.get("grounding") or {}
+        entry = by_job.setdefault(a["job_key"], {"job_key": a["job_key"], "versions": []})
+        entry["versions"].append({
+            "id": a["id"], "version": a["version"], "base": a.get("base"), "status": a.get("status"),
+            "pages": a.get("pages"), "created_at": a.get("created_at"), "approved_at": a.get("approved_at"),
+            "grounding_clean": g.get("clean"),
+            "pdf_url": f"/api/artifacts/{a['id']}/pdf" if a.get("pdf_path") else None})
+    jobs = []
+    for key, entry in by_job.items():
+        job = store.get_job(key) or {}
+        entry.update(title=job.get("title"), company=job.get("company"),
+                     status=store.canonical_status(job.get("status")) if job else None)
+        entry["versions"].sort(key=lambda v: v["version"], reverse=True)
+        jobs.append(entry)
+    jobs.sort(key=lambda e: max((v["created_at"] or 0) for v in e["versions"]), reverse=True)
+    return {"bases": bases_out, "jobs": jobs, "legacy_versions": store.list_versions()}
+
+
+@router.get("/api/resumes/bases/{name}/source")
+def base_source(name: str):
+    if not _BASE_NAME.match(name):
+        raise HTTPException(status_code=404, detail="not found")
+    d = _bases_dir().resolve()
+    for p in (d / f"{name}.tex.j2", d / f"{name}.tex"):
+        p = p.resolve()
+        if p.is_relative_to(d) and p.is_file():
+            return {"name": name, "file": p.name, "source": p.read_text(encoding="utf-8", errors="replace")}
+    raise HTTPException(status_code=404, detail="no template for this base")
+
+
+# --------------------------------------------------------------------------- tracker CSV
+
+TRACKER_CSV_COLUMNS = ["company", "title", "status", "status_changed", "submitted", "days_in_status",
+                       "location", "workplace_type", "source", "fit_score", "url", "found", "tailored",
+                       "ready_to_submit", "oa", "interview", "offer", "rejected"]
+
+
+def _iso(ts: Any) -> str:
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(float(ts))) if ts else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+@router.get("/api/tracker/export.csv")
+def tracker_csv():
+    """Every tracked application with its dates. Cells that a spreadsheet would run
+    as a formula (= + - @ tab CR) are prefixed with a single quote."""
+    t = jq.tracker(limit_per_column=5000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(TRACKER_CSV_COLUMNS)
+    for col in t["columns"]:
+        for j in col["items"]:
+            dates = j.get("dates") or {}
+            row = {"company": j.get("company"), "title": j.get("title"), "status": col["status"],
+                   "status_changed": _iso(j.get("status_changed_at")), "submitted": _iso(j.get("submitted_at")),
+                   "days_in_status": j.get("days_in_status"), "location": j.get("location"),
+                   "workplace_type": j.get("workplace_type"), "source": j.get("source"),
+                   "fit_score": j.get("fit_score"), "url": j.get("apply_url") or j.get("url")}
+            for s in ("found", "tailored", "ready_to_submit", "oa", "interview", "offer", "rejected"):
+                row[s] = _iso(dates.get(s))
+            w.writerow([csv_safe(row.get(c)) for c in TRACKER_CSV_COLUMNS])
+    return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=job-copilot-tracker.csv"})
+
+
+# --------------------------------------------------------------------------- sign in to portals
+
+def _portal_links() -> list[dict]:
+    out: list[dict] = []
+    try:
+        from jobcopilot.ingest import load_companies
+        companies = load_companies(str(config.companies_path()))
+    except Exception:  # noqa: BLE001
+        companies = []
+    for c in companies:
+        if c.get("connector") == "workday" and c.get("tenant") and c.get("wd_server"):
+            site = str(c.get("site") or "").strip("/")
+            url = f"https://{c['tenant']}.{c['wd_server']}.myworkdayjobs.com/{site}"
+            out.append({"name": c.get("name"), "portal": "Workday", "url": url})
+    return sorted(out, key=lambda p: (p["portal"], str(p["name"]).lower()))
+
+
+@router.get("/api/portals")
+def portals():
+    from jobcopilot.autofill import session as sess
+    return {"links": _portal_links(), "available": not demo.enabled(),
+            "chrome": sess.chrome_executable() is not None if not demo.enabled() else False}
+
+
+@router.post("/api/portals/open")
+def portals_open():
+    """Open the dedicated Chrome profile (~/.jobcopilot/browser-profile) with one
+    blank tab, for you to sign in to portals yourself. Refused in the demo and
+    while a fill window is using that profile."""
+    _no_demo("the sign-in browser")
+    from jobcopilot.autofill import session as sess
+    busy = store.list_autofill_sessions(status=store.AUTOFILL_OPEN_STATUSES, limit=1)
+    if busy:
+        raise HTTPException(status_code=409,
+                            detail="a fill window is using the browser profile; finish or close it first")
+    try:
+        return sess.open_for_sign_in()
+    except sess.BrowserUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))

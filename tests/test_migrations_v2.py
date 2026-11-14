@@ -27,7 +27,7 @@ def test_v1_db_upgrades_to_v2_keeping_rows(tmp_path):
     assert {"normalized_name", "ats", "ats_slug", "tier", "tier_reasons", "yc_batch"} <= _cols(db, "companies")
     assert {"source", "etag", "last_ok"} <= _cols(db, "source_state")
     job = store.get_job("greenhouse:Acme:1", db_path=db)
-    assert job["status"] == "applied"
+    assert job["status"] == "submitted"           # v1 "applied" renamed by migration 8
 
 
 def test_job_sources_unique_per_source_listing(tmp_path):

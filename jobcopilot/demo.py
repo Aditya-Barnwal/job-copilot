@@ -318,6 +318,7 @@ def seed_showcase(state: DemoState, now: Optional[float] = None) -> dict:
     ], [{"label": why_q, "reason": "open question: needs your answer", "required": True},
         {"label": reloc_q, "reason": "location_preferences is not approved yet"}],
         [{"label": reloc_q, "type": "radio", "options": ["Yes", "No"], "required": False}])
+    save_plan(ready, common, [], [])
     kafka_q = "How many years of experience do you have with Kafka?"
     shift_q = "Are you comfortable with occasional on-call shifts?"
     save_plan(needs, common[:6] + [

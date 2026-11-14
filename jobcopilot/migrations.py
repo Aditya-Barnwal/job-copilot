@@ -417,6 +417,16 @@ def _v7_fill_plans_no_values(conn: sqlite3.Connection) -> None:
                      (json.dumps(plan, ensure_ascii=False, sort_keys=True), job_key))
 
 
+def _v8_v1_status_names(conn: sqlite3.Connection) -> None:
+    """Phase 5: rename the v1 tracker statuses still stored (interested -> found,
+    ready -> ready_to_submit, applied -> submitted) in jobs and status_history, so
+    every view and the CSV export show one set of names. 'new' stays: it means
+    "untouched" (not on the tracker). The API still accepts the old names."""
+    for old, new in (("interested", "found"), ("ready", "ready_to_submit"), ("applied", "submitted")):
+        conn.execute("UPDATE jobs SET status = ? WHERE status = ?", (new, old))
+        conn.execute("UPDATE status_history SET status = ? WHERE status = ?", (new, old))
+
+
 MIGRATIONS: list[Migration] = [
     (1, "baseline", _v1_baseline),
     (2, "sources_companies", _v2_sources_companies),
@@ -425,6 +435,7 @@ MIGRATIONS: list[Migration] = [
     (5, "application_artifacts", _v5_application_artifacts),
     (6, "autofill", _v6_autofill),
     (7, "fill_plans_no_values", _v7_fill_plans_no_values),
+    (8, "v1_status_names", _v8_v1_status_names),
 ]
 
 

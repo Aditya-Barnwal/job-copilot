@@ -9,6 +9,7 @@ import type { ArtifactReview, ArtifactSummary, DiffRow, Grounding, JobDetail, Li
 import { Badge, Button, EmptyState, ErrorState, LinkButton, Meter, Skeleton, cx } from "../../components/ui";
 import { useArtifacts, type FitInfo } from "./ReviewDrawer";
 
+const VERSION_LABEL: Record<string, string> = { ok: "ready", needs_review: "needs review", approved: "approved", rejected: "rejected" };
 const SECTION_LABEL: Record<string, string> = {
   education: "Education", skills: "Skills", experience: "Experience", projects: "Projects",
   research: "Research", hackathons: "Hackathons",
@@ -406,7 +407,7 @@ function VersionView({ jobKey, versions, current, onPick }:
         <select id="version-pick" value={current.id} onChange={(e) => onPick(Number(e.target.value))}
           className="h-8 rounded-[8px] border border-line-2 bg-surface px-2 text-[13px] text-ink">
           {versions.map((v) => (
-            <option key={v.id} value={v.id}>v{v.version} · {v.base} · {v.status.replace("_", " ")}</option>
+            <option key={v.id} value={v.id}>Version {v.version} · {v.base?.replace(/_/g, " ")} · {VERSION_LABEL[v.status] || v.status}</option>
           ))}
         </select>
         <Badge tone={current.status === "approved" ? "good" : current.status === "needs_review" ? "warn" : current.status === "rejected" ? "neutral" : "accent"}>

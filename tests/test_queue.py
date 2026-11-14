@@ -79,7 +79,7 @@ def test_v3_upgrades_a_legacy_v2_db_and_keeps_rows(tmp_path):
     assert {"probed_at", "probe_job_count", "probe_india_count"} <= ccols
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"runs", "queue_items", "status_history"} <= tables
-    assert con.execute("SELECT status, notes, excluded FROM jobs").fetchone() == ("applied", "my note", 0)
+    assert con.execute("SELECT status, notes, excluded FROM jobs").fetchone() == ("submitted", "my note", 0)   # v1 name renamed by migration 8
     assert con.execute("SELECT ats_evidence FROM companies").fetchone() == ("probe",)
 
 
@@ -374,7 +374,7 @@ def test_v4_backfills_tracker_dates(tmp_path):
     assert rows["a"]["submitted_at"] == rows["s"]["submitted_at"] == 1000.0
     assert rows["i"]["submitted_at"] is None
     hist = store.status_history("a", db_path=db)
-    assert hist == [{"status": "applied", "at": 1000.0, "source": "system",
+    assert hist == [{"status": "submitted", "at": 1000.0, "source": "system",     # renamed by migration 8
                      "note": "submission date backfilled by migration v4"}]
     assert store.status_history("i", db_path=db) == []
 

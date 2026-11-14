@@ -400,3 +400,27 @@ def test_spa_serves_index_or_a_build_hint_and_never_shadows_the_api(client, monk
     assert client.get("/api/nope").json() == {"detail": "Not Found"}
     monkeypatch.setenv("JOBCOPILOT_DEMO", "1")
     assert 'class="demo-banner"' in client.get("/tracker").text
+
+
+# --------------------------------------------------------------------------- v1 statuses
+
+def test_v1_status_names_are_migrated(tmp_path):
+    from jobcopilot import migrations
+    db = tmp_path / "old.db"
+    store.init_db(db)
+    keys = {}
+    for i, st in enumerate(("interested", "ready", "applied", "new", "rejected")):
+        job = Job(source="greenhouse", company=f"C{i}", company_sector="tech", external_id=str(i), title="T",
+                  location_text="Bengaluru", workplace_type="onsite", country_bucket="IN", url=f"https://x/{i}",
+                  description_text="")
+        store.upsert_jobs([FilterResult(job=job, package_estimated=False, country_uncertain=False)], db_path=db)
+        store.set_status(job.key, st, db_path=db)
+        keys[st] = job.key
+    with store.connect(db) as conn:          # pretend the DB predates v8
+        conn.execute("DELETE FROM schema_version WHERE version = 8")
+    assert migrations.migrate(db) == 8
+    got = {st: store.get_job(k, db)["status"] for st, k in keys.items()}
+    assert got == {"interested": "found", "ready": "ready_to_submit", "applied": "submitted",
+                   "new": "new", "rejected": "rejected"}
+    hist = {h["status"] for k in keys.values() for h in store.status_history(k, db)}
+    assert not hist & {"interested", "ready", "applied"}

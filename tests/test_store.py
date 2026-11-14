@@ -96,7 +96,7 @@ def test_legacy_db_without_schema_version_upgrades_preserving_rows(tmp_path):
 
     assert {"min_yoe_required", "yoe_is_preferred"} <= _columns(db, "jobs")
     job = store.get_job("gh:Foo:1", db_path=db)
-    assert job["status"] == "applied"
+    assert job["status"] == "submitted"     # v1 "applied" renamed by migration 8
     assert job["notes"] == "called back"
     assert job["match_score"] == 61.5
     assert job["yoe_is_preferred"] == 0  # column default applied to old rows

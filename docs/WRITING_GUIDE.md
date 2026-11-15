@@ -6,8 +6,8 @@ career-office guidance (sources at the end), adjusted for software-engineering
 roles and for a generator that may only use **confirmed facts**. Every draft is
 shown to the user before use; nothing is sent or submitted automatically.
 
-Length limits, the default salutation, the minimum number of cited facts and
-the number of model attempts are knobs in
+Length limits, the default salutation, the minimum number of cited facts, the
+AI-tell thresholds and the number of model attempts are knobs in
 [`config/writing.yaml`](../config/writing.yaml); defaults live in
 `jobcopilot/writing/style.py`. This guide explains what each rule is for.
 
@@ -19,16 +19,21 @@ the number of model attempts are knobs in
    hard limit (`cover_letter.target_words`, `cover_letter.max_words`). An
    over-long draft is retried once, then trimmed by whole sentences, the
    least-evidenced first, and the trim is reported.
-2. **Structure** (MIT CAPD, Harvard OCS, Stanford worksheet):
-   - *Opening*: name the role, plus one specific thing from the posting that
-     the applicant's work connects to. Say how the role was found only if it's
-     a referral or an event.
-   - *Evidence*: one or two paragraphs. Map two or three of the JD's must-haves
-     to concrete results, citing at least one fact for each
-     (`cover_letter.min_facts_cited` overall). Choose the facts that answer the
-     posting rather than summarising the résumé.
-   - *Close*: a sentence or two on what the applicant would like to discuss,
-     then thanks. Restate interest without grovelling.
+2. **Shape** (MIT CAPD, Harvard OCS, Stanford worksheet): three or four short
+   paragraphs, and the model picks which. A fixed four-paragraph template with
+   the same opening line every time is the easiest way to spot a generated
+   letter, so the shape is allowed to follow the facts.
+   - *Opening*: a specific, concrete line about something the posting names (a
+     product, a problem, a piece of work), not a formula and never "I am
+     applying for". The role is made clear somewhere in this paragraph. Say
+     how the role was found only if it's a referral or an event.
+   - *Evidence*: one or two paragraphs, one idea each. Map one or two of the
+     JD's must-haves to concrete results, citing at least one fact for each
+     (`cover_letter.min_facts_cited` overall), and say what was built and why it
+     mattered in plain words. Choose the facts that answer the posting rather
+     than summarising the résumé.
+   - *Close*: name one concrete thing the applicant would like to talk about,
+     then a short thanks. No summary of the letter, no grovelling.
 3. **Specific about them, honest about the applicant.** Company statements may
    come only from the JD or the company record; nothing is invented about
    funding, customers or news. Applicant statements may come only from cited,
@@ -46,6 +51,36 @@ the number of model attempts are knobs in
 7. **No machine tells.** Leak phrases (*As an AI*, *Here is your draft*,
    `[Company]`, `{name}`, fact ids) trigger a fresh retry, and a draft that
    still has them is marked `needs_review`.
+8. **A natural voice.** The letter should read like a thoughtful person wrote
+   it: short sentences mixed with longer ones, contractions where they're
+   natural, plain verbs (*built*, *cut*, *moved*), and no sentence that only
+   restates the one before it. The prompt asks for this, and the voice rules
+   apply to emails too. Only the voice is loosened: every grounding,
+   attribution, number and untrusted-text rule below is exactly as strict.
+9. **AI-tell detector.** `writing/style.py: find_ai_tells` looks for the words
+   and habits that make text read as machine-written. It covers vocabulary
+   (*delve*, *pivotal*, *robust*, *seamless*, *aligns with*, *I would welcome
+   the opportunity*, *thank you for considering my application* and similar)
+   and structure: stock sentence openers (*Furthermore*, *Moreover*, *As a
+   ...,*), *not only ... but also*, repeated three-item lists, em and en
+   dashes, heavy semicolon use, exclamation marks, most sentences starting
+   with "I", very even sentence lengths, and paragraphs that are all the same
+   size. It never rewrites anything:
+   - on a **generated** draft, the tells in the model's reply are a retry
+     reason, so the next attempt is told which tells to fix (by name, never by
+     quoting the draft). Tells that survive are shown as warnings. They don't
+     make a draft `needs_review` on their own, and when drafts are compared a
+     grounding problem always counts for more than a tell;
+   - on a letter the person **saves**, the tells are listed as flags next to
+     the other checks, and the text is stored exactly as written.
+
+   The structure thresholds are knobs in `config/writing.yaml` (`tells`).
+10. **Voice reference.** If the person has saved a writing sample (the
+    "Your writing voice" box on the Facts & answers screen, or
+    `writing.style_sample` in `answers.yaml`), cover letters and emails get it
+    as a fenced, untrusted block that may shape rhythm and tone only. It is
+    never evidence: grounding checks each sentence against the cited facts, so
+    a detail borrowed from the sample is flagged like any other invention.
 
 ## Application emails
 
@@ -95,21 +130,21 @@ generated (`refused`) and the model is never called.
 
 ## Example skeletons (original, for shape only)
 
-**Cover letter**
+**Cover letter** (four paragraphs here; three is just as good)
 
 > Dear Hiring Manager,
 >
 > The Backend Engineer posting describes moving a monolith's billing logic into
-> Go services. That is the kind of migration I have been doing for the past year.
+> Go services. That's the kind of migration I've been doing for the past year.
 >
-> At ⟨employer⟩ I built ⟨service⟩ handling ⟨metric from fact⟩, which covers the
-> posting's ⟨must-have 1⟩ and ⟨must-have 2⟩.
+> At ⟨employer⟩ I built ⟨service⟩. It handles ⟨metric from fact⟩, and it's
+> what the posting's ⟨must-have 1⟩ asks for.
 >
 > I also ⟨second fact, with its number unchanged⟩, which is close to the
-> ⟨must-have 3⟩ work your team lists.
+> ⟨must-have 2⟩ work your team lists.
 >
-> I'd be glad to talk through how I'd approach ⟨JD problem⟩. Thank you for
-> reading.
+> How your team plans to ⟨JD problem⟩ would be a good thing to talk through.
+> Thanks for reading.
 >
 > Best regards, ⟨name⟩
 

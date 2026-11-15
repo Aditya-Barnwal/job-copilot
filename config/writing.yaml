@@ -18,3 +18,17 @@ resume:
   max_rephrases: 6        # tailoring applies at most this many bullet rephrases per résumé
 
 max_attempts: 2           # model calls per draft; each is a fresh conversation
+
+# AI-tell detector (writing/style.py find_ai_tells): a retry signal for drafts and
+# a flag on letters you save; text is never rewritten. The word list lives in code.
+tells:
+  rhythm_min_sentences: 5       # sentence-length uniformity is judged from this many sentences
+  min_sentence_length_cv: 0.3   # stdev / mean of sentence lengths below this reads as monotone
+  i_start_min_sentences: 4
+  max_i_start_share: 0.5        # flag when more than this share of sentences start with "I"
+  max_three_item_lists: 1       # "A, B, and C"
+  max_semicolons: 1
+  shape_min_paragraphs: 3
+  min_paragraph_spread: 0.2     # (longest - shortest) / mean below this = every paragraph alike
+
+style_sample_max_chars: 1500    # your writing sample (voice reference only) is cut to this

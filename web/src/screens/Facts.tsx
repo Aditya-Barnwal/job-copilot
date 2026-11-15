@@ -219,7 +219,7 @@ function ProfileTab() {
         </form>
         <form className="card space-y-3 p-5" onSubmit={(e) => { e.preventDefault(); saveS.mutate(); }}>
           <h3 className="font-display text-[19px] text-ink">Your writing voice</h3>
-          <p className="text-[13px] text-muted">A short sample of how you write, for drafted emails.</p>
+          <p className="text-[13px] text-muted">A short sample of how you write. Drafted emails and cover letters copy its rhythm and tone, never its facts.</p>
           <label htmlFor="style" className="sr-only">Writing sample</label>
           <textarea id="style" rows={5} className={inputCls + " h-auto py-2"} value={s} onChange={(e) => setS(e.target.value)} />
           <Button type="submit" busy={saveS.isPending}>Save sample</Button>

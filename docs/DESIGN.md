@@ -337,6 +337,15 @@ with the same idea, on demand from the review card. The rules are in
 - Clichés are deleted sentence by sentence, the length limit is enforced
   (`config/writing.yaml`), and markdown, stray links and look-alike characters
   are rejected.
+- The voice is meant to read as a person's: three or four paragraphs at the
+  model's choice, a concrete opening rather than a formula, varied sentences.
+  An AI-tell detector (stock vocabulary and structural habits) feeds a
+  fresh retry with the tells named, never quoted, and lists any that survive
+  as warnings. A tell alone never changes the status, and a grounding problem
+  always outweighs one when attempts are compared.
+- A saved writing sample, if there is one, goes in as a fenced voice reference
+  for rhythm and tone. It is never evidence, so anything taken from it fails
+  grounding like any other invention.
 - No confirmed facts means `refused` and no model call. Any flag means
   `needs_review`. Nothing is ever sent: drafts are shown to the person.
 
@@ -349,8 +358,8 @@ as the résumé (every character escaped; text only if TeX isn't installed).
 - **The person's text gets the draft checks, unchanged.** An edited letter has
   no fact citations, so each paragraph is checked against the facts of the one
   employer or project it names (or shares the most words with); naming two
-  flags it. Clichés, metrics worded differently from the facts, length,
-  markup, links and look-alike characters are all reported. Nothing is deleted
+  flags it. Clichés, AI tells, metrics worded differently from the facts,
+  length, markup, links and look-alike characters are all reported. Nothing is deleted
   or reworded: what was saved is what gets used.
 - **Approval is its own step.** Saving never approves, and saving new text
   clears an earlier approval. Approving re-runs the checks on the stored text

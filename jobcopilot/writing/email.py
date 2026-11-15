@@ -1,11 +1,12 @@
 """Application and follow-up emails (docs/WRITING_GUIDE.md).
 
     generate_email(job, *, kind="application"|"follow_up", facts=None, answers=None,
-                   company=None, today=None) -> Draft
+                   company=None, today=None, style_sample=None) -> Draft
 
 Short (≤ 120 / ≤ 90 words), a subject line built in code from the role and
 company (the model's subject is ignored), a signature
-built from answers.yaml, the same fact-citation grounding as cover letters.
+built from answers.yaml, the same fact-citation grounding, plain voice, AI-tell
+retry and optional writing-sample voice reference as cover letters.
 A follow-up opens with the submitted date from the tracker (`submitted_at`)
 and warns when it is earlier than the guide's one-week wait. Never sends.
 
@@ -28,22 +29,26 @@ log = logging.getLogger("jobcopilot.writing.email")
 KINDS = ("application", "follow_up")
 
 SYSTEM = (
-    "You draft short job-application emails from a fixed list of applicant facts. "
+    "You draft short job-application emails from a fixed list of applicant facts. They "
+    "should read like a person wrote them, not a template. "
     "Rules: every statement about the applicant comes from <applicant_facts> and "
     "cites its fact ids; never add a skill, number, employer, title or result the "
     "cited facts don't state; never write a quantity in words or add a scope claim. Each "
     "paragraph is about exactly ONE employer or project and cites only its facts; never write "
     "the target company or role title as the applicant's past employer or title. Company "
-    "statements may only use the JD or company record. Plain text, no markdown or links. Plain and direct; no clichés ('I am writing to express', 'passionate "
-    "about', 'perfect fit'); no greeting, no sign-off, no placeholders. "
-    + style.UNTRUSTED_RULE + common.ID_RULE +
+    "statements may only use the JD or company record, in a sentence about the company or "
+    "role with no I / my / me in it. Plain text, no markdown or links. "
+    + style.VOICE_RULE + " No clichés ('I am writing to express', 'passionate about', "
+    "'perfect fit'); plain ASCII hyphens only, no em-dashes or en-dashes; no greeting, no "
+    "sign-off, no placeholders. "
+    + style.UNTRUSTED_RULE + style.SAMPLE_RULE + common.ID_RULE +
     " Return ONLY JSON: {\"paragraphs\": [{\"text\": str, \"fact_ids\": [str]}]}"
 )
 
 TASKS = {
     "application": (
         "TASK: an application email body of 3-5 sentences, at most {max_words} words, "
-        "in 2 paragraphs: (1) the role you are applying for and the single most "
+        "in 2 paragraphs: (1) which role this is about, said plainly, and the single most "
         "relevant fact; (2) one more fact tied to a JD must-have, then a one-line "
         "close saying the résumé is attached."),
     "follow_up": (
@@ -81,7 +86,7 @@ def signature(data: dict, cfg: dict, warnings: list[str]) -> str:
 
 def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
                    answers: Any = None, company: Any = None,
-                   today: Optional[dt.date] = None) -> Draft:
+                   today: Optional[dt.date] = None, style_sample: Optional[str] = None) -> Draft:
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}")
     dkind = f"email_{kind}"
@@ -110,8 +115,9 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
             if days < wait:
                 pre_warnings.append(f"only {days} day(s) since you applied; the guide suggests "
                                     f"waiting {wait}-14 days before a follow-up.")
+    sample = common.writing_sample(data, style_sample)
     user = (common.facts_block(usable, job, limit=12) + "\n\n" + common.job_block(job, rec)
-            + "\n\n" + TASKS[kind].format(max_words=max_words))
+            + common.sample_block(sample) + "\n\n" + TASKS[kind].format(max_words=max_words))
 
     def build(parsed):
         paras, _subject, problems = common.parse_paragraphs(parsed)
@@ -121,7 +127,7 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
             paras = [{"text": opener, "fact_ids": [], "fixed": True}] + paras
         built, issues = common.assemble(paras, usable, job=job, rec=rec, data=data,
                                         max_words=max_words)
-        return built, issues
+        return built, issues + common.tell_issues(common.raw_texts(parsed))
 
     built, issues, n = common.best_attempt(SYSTEM, user, build,
                                            attempts=int(cfg["max_attempts"]), max_tokens=900)
@@ -141,7 +147,8 @@ def generate_email(job: dict, *, kind: str = "application", facts: Any = None,
     body = "\n\n".join(p["text"] for p in built["paragraphs"])
     greeting = f"Hello {company_name} team," if company_name else "Hello,"
     text = f"{greeting}\n\n{body}\n\n{sig}".strip()
-    status = "ok" if not issues and built["grounding"].get("clean") else "needs_review"
+    status = ("ok" if not common.hard_issues(issues) and built["grounding"].get("clean")
+              else "needs_review")                      # AI tells alone: warnings, not a status
     log.info("email kind=%s job=%s status=%s words=%d attempts=%d",
              kind, job.get("key"), status, built["words"], n)
     return Draft(kind=dkind, status=status, text=text, subject=subject,
@@ -158,8 +165,9 @@ LEGACY_SYSTEM = (
     "stacking. One concrete specific reason for THIS company tied to the role. "
     "Plain sign-off. Do not invent any project, employer, metric, or skill that "
     "is not already in the resume. If the role asks for something the resume "
-    "cannot honestly support, omit it. "
-    + style.UNTRUSTED_RULE.replace("<untrusted_company_record>", "the company name") +
+    "cannot honestly support, omit it. " + style.VOICE_RULE + " "
+    + style.UNTRUSTED_RULE.replace("<untrusted_company_record>", "the company name")
+    + style.SAMPLE_RULE +
     " Return ONLY valid JSON, no prose, no code fences."
 )
 
@@ -209,8 +217,7 @@ def draft_from_resume_text(job: dict, *, resume_text: str, contact_email: str,
         description=style.fence((job.get("description_text") or "")[:4000],
                                 "untrusted_job_description"),
         tailored_block=_block("TAILORED RESUME (use this voice/phrasing)", tailored_text),
-        style_block=_block("USER EMAIL STYLE SAMPLE (mimic the voice, not the content)",
-                           style_sample),
+        style_block=common.sample_block(common.writing_sample(None, style_sample)),
         answers_block=_block("ANSWER PACK (use only if directly relevant)", ans_text),
     )
     try:
@@ -228,6 +235,7 @@ def draft_from_resume_text(job: dict, *, resume_text: str, contact_email: str,
                                 job_missing_keywords=job.get("missing_keywords") or [])
     warnings = [f"cliché: {c}" for c in style.find_cliches(body)]
     warnings += [f"leaked/template text: {x}" for x in style.find_leaks(body)]
+    warnings += [f"reads like AI-written text: {r}" for r in style.find_ai_tells(body)]
     # Subject lines often carry the applicant's name — log only its length.
     log.info("email(v1) key=%s grounding_clean=%s subject_len=%d",
              job.get("key"), grounding["clean"], len(subject))

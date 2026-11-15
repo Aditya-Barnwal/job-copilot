@@ -60,11 +60,27 @@ class Issue(str):
     draft); `.model` is what a retry prompt says — paragraph / sentence numbers
     and the kind of problem only, never the rejected text."""
     model: str
+    soft: bool          # a style problem (an AI tell): retried and flagged, but a draft
+                        # with fewer grounding / safety problems always wins (best_attempt)
 
-    def __new__(cls, user: str, model: Optional[str] = None) -> "Issue":
+    def __new__(cls, user: str, model: Optional[str] = None, *, soft: bool = False) -> "Issue":
         obj = super().__new__(cls, user)
         obj.model = user if model is None else model
+        obj.soft = soft
         return obj
+
+
+def hard_issues(issues: list) -> list:
+    """The issues that decide a draft's status: everything but style (soft)
+    issues. An AI tell alone never makes a draft needs_review; it is retried
+    and shown as a warning."""
+    return [i for i in issues if not getattr(i, "soft", False)]
+
+
+def _rank(issues: list) -> tuple[int, int]:
+    """(hard problems, style problems): how best_attempt compares drafts."""
+    soft = sum(1 for i in issues if getattr(i, "soft", False))
+    return len(issues) - soft, soft
 
 
 # Flag key → how a retry prompt names it (no tokens from the rejected draft).
@@ -564,6 +580,58 @@ def parse_paragraphs(parsed: Any) -> tuple[list[dict], str, list[str]]:
     return paras, subject, ([] if paras else ["model reply has no paragraph text"])
 
 
+def raw_texts(parsed: Any) -> list[str]:
+    """The model's paragraph texts before any clean-up (dashes kept, clichés
+    still in): what the AI-tell check looks at, so a retry hears about habits
+    the deterministic fixes would otherwise hide."""
+    raw = parsed.get("paragraphs") if isinstance(parsed, dict) else None
+    out = []
+    for p in raw if isinstance(raw, list) else []:
+        t = p if isinstance(p, str) else (p.get("text") if isinstance(p, dict) else "")
+        t = re.sub(r"[ \t]+", " ", unicodedata.normalize("NFKC", str(t or ""))).strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def tell_issues(texts: list[str]) -> list[Issue]:
+    """One soft Issue per AI tell found in the paragraphs `texts`. The reasons
+    are fixed labels (style.find_ai_tells), so the retry note never quotes the draft."""
+    return [Issue(f"reads like AI-written text: {r}",
+                  model=f"AI-sounding style: {r}; rewrite it in a plain, varied human voice",
+                  soft=True)
+            for r in style.find_ai_tells("\n\n".join(texts))]
+
+
+def writing_sample(data: Optional[dict] = None, sample: Optional[str] = None) -> str:
+    """The applicant's own writing, used only as a voice reference: `sample`
+    when given, else answers.yaml `writing.style_sample`, else the writing
+    sample saved on the Facts & answers screen (meta `user_email_style`).
+    Capped in length; "" when there is none or it can't be read."""
+    text = sample
+    if text is None:
+        text = str(((data or {}).get("writing") or {}).get("style_sample") or "")
+    if not str(text).strip() and sample is None:
+        try:
+            from .. import store
+            text = store.get_meta("user_email_style") or ""
+        except Exception as exc:  # noqa: BLE001 — optional: no DB means no sample
+            log.debug("no writing sample: %s", type(exc).__name__)
+            text = ""
+    text = str(text or "").strip()
+    limit = int(style.settings().get("style_sample_max_chars") or 1500)
+    return text[:limit].strip()
+
+
+def sample_block(sample: str) -> str:
+    """The fenced voice reference for a prompt ("" without a sample)."""
+    if not sample:
+        return ""
+    return ("\n\n" + style.fence(sample, "untrusted_writing_sample")
+            + "\nThe sample above shows how the applicant writes. Match its rhythm and tone "
+              "only; take no facts, names, numbers or sentences from it.")
+
+
 def application_subject(job: dict, rec: dict) -> str:
     """The subject line, built in code from the (sanitised) title and company."""
     title, company = role_names(job, rec)
@@ -579,8 +647,9 @@ def retry_note(issues: list[str]) -> str:
     contributes its model-facing form (numbers + kind of problem)."""
     if not issues:
         return ""
-    told = list(dict.fromkeys(str(getattr(i, "model", i))[:300] for i in issues))
-    return ("\n\nA previous draft was rejected for: " + "; ".join(told[:8])
+    ordered = sorted(issues, key=lambda i: bool(getattr(i, "soft", False)))   # hard problems first
+    told = list(dict.fromkeys(str(getattr(i, "model", i))[:300] for i in ordered))
+    return ("\n\nA previous draft was rejected for: " + "; ".join(told[:10])
             + ". Write a new draft that fixes every one of these and follows every rule.")
 
 
@@ -589,7 +658,8 @@ def best_attempt(system: str, user: str, build: Callable[[Any], tuple[Any, list[
                  feedback: bool = True) -> tuple[Any, list[str], int]:
     """Call the model up to `attempts` times, each a FRESH conversation (docs/DESIGN.md §9).
     `build(parsed)` → (candidate, issues). The first candidate with no issues
-    wins; otherwise the one with the fewest. With `feedback`, a retry's prompt
+    wins; otherwise the one with the fewest hard issues, then the fewest style
+    (soft) issues, so an AI tell never outweighs a grounding problem. With `feedback`, a retry's prompt
     gets the previous attempt's issues appended (retry_note), never its reply.
     Raises WritingError if no attempt produced a candidate at all."""
     best: tuple[Any, list[str]] | None = None
@@ -609,7 +679,7 @@ def best_attempt(system: str, user: str, build: Callable[[Any], tuple[Any, list[
         if cand is None:
             errors.append("; ".join(issues) or "unusable reply")
             continue
-        if best is None or len(issues) < len(best[1]):
+        if best is None or _rank(issues) < _rank(best[1]):
             best = (cand, issues)
         if not issues:
             break

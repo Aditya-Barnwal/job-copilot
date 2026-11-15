@@ -135,6 +135,30 @@ def test_flagged_text_is_reported_never_rewritten():
     assert over["status"] == "needs_review" and any("over the" in w for w in over["warnings"])
 
 
+def test_ai_tells_in_saved_text_are_flagged_never_rewritten():
+    key = seed()
+    sign = common.signoff_block(BANK.data, [])
+    ai = ("Dear Hiring Manager,\n\n"
+          "Initrode builds order pipelines in Go and PostgreSQL — pivotal work.\n\n"
+          "Moreover, at Acme Widgets Inc., I built a robust Go order service handling 200+ requests "
+          "per second behind a REST API.\n\n"
+          "At Acme Widgets Inc., I cut nightly batch runtime by 30% by moving widget pricing to "
+          "PostgreSQL; it was seamless; it ran nightly.\n\n"
+          "I would welcome the opportunity to discuss the role! Thank you for considering my "
+          "application.\n\n" + sign)
+    st = CL.save(key, ai, answers=BANK)
+    chk = st["checks"]
+    assert st["text"] == ai                                          # stored exactly as written
+    assert (artifact_dir(key, art_of(key)["version"]) / "cover_letter.txt").read_text(encoding="utf-8") == ai
+    flags = " | ".join(chk["ai_tells"])
+    for told in ('"robust"', '"pivotal"', "Moreover", "em or en dash", "semicolons", "exclamation mark",
+                 "I would welcome the opportunity"):
+        assert told in flags, flags
+    assert all(any(t in w for w in chk["warnings"]) for t in chk["ai_tells"])
+    assert chk["grounding"]["clean"] and chk["status"] == "ok"      # style flags, not a grounding problem
+    assert CL.save(key, GOOD, answers=BANK)["checks"]["ai_tells"] == []   # a plain letter has none
+
+
 def test_save_refuses_without_an_artifact_or_facts(tmp_path):
     job = Job(source="career_page", company="Initrode", company_sector="tech", external_id="n",
               title="Backend Engineer", location_text="Bengaluru", workplace_type="onsite",

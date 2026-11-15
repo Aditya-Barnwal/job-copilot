@@ -11,8 +11,8 @@ the newest version under review), in that version's directory under
 data/applications/, as text plus a PDF rendered with the résumé's LaTeX
 pipeline (text only when TeX isn't installed). The edited text goes through the
 same checks as a generated draft (grounding against confirmed facts, length,
-clichés, metric drift, markup / links / look-alike characters), but it is
-never changed: problems are reported, not fixed.
+clichés, AI tells, metric drift, markup / links / look-alike characters), but
+it is never changed: problems are reported, not fixed.
 
 Approval is separate from the résumé's. Saving always clears it; approving
 records a fingerprint of the exact text approved. Autofill uses a letter only
@@ -188,7 +188,10 @@ def check_text(text: str, job: dict, *, facts: Any = None, answers: Any = None,
                base: Optional[str] = None, company: Any = None) -> dict:
     """The generated-draft checks, run on text the person wrote, without
     changing it. Returns {status: ok | needs_review | refused, warnings,
-    word_count, max_words, grounding: {clean, flags, unsupported}}."""
+    word_count, max_words, ai_tells, grounding: {clean, flags, unsupported}}.
+    AI tells (style.find_ai_tells) are flagged in the warnings and `ai_tells`
+    but, as for a generated draft, don't change the status on their own; the
+    text is never touched."""
     from .writing import common, style
     cl = style.settings()["cover_letter"]
     max_words = int(cl["max_words"])
@@ -216,7 +219,12 @@ def check_text(text: str, job: dict, *, facts: Any = None, answers: Any = None,
         warnings.append("number(s) written differently from your facts: " + ", ".join(built["normalised"]))
     g = built.get("grounding") or {}
     status = "ok" if not warnings and g.get("clean") else "needs_review"
+    # AI tells are flagged in the warnings, never rewritten, and (as for a draft)
+    # don't change the status on their own: they're style, not grounding.
+    tells = style.find_ai_tells("\n\n".join(body))
+    warnings += [f"reads like AI-written text: {r}" for r in tells]
     return {"status": status, "warnings": warnings, "word_count": built["words"], "max_words": max_words,
+            "ai_tells": tells,
             "grounding": {"clean": bool(g.get("clean")),
                           "flags": {k: v for k, v in (g.get("flags") or {}).items() if v},
                           "unsupported": [v.get("text") for v in g.get("lines") or []

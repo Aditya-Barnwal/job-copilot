@@ -456,7 +456,7 @@ def test_unicode_hyphens_normalised(monkeypatch, facts, bank, no_company_db):
     d = generate_cover_letter(JOB, facts=facts, answers=bank)
     body = "\n".join(p["text"] for p in d.paragraphs)
     assert not any(ch in body for ch in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212")
-    assert "REST-API" in body and " - my first role - " in body
+    assert "REST-API" in body and ", my first role, " in body and " - " not in body   # prose dash -> comma, never glued
 
 
 def test_letter_prompt_structure_rules(monkeypatch, facts, bank, no_company_db):
@@ -819,3 +819,23 @@ def test_email_gets_the_voice_rules_tells_and_sample(monkeypatch, facts, bank, n
     system, user = f.calls[0]
     assert "delve" in system and "VOICE REFERENCE" in system and "<untrusted_writing_sample>" in user
     assert len(f.calls) == 2 and '"robust"' in f.calls[1][1] and d.status == "ok"
+
+
+def test_prose_dash_becomes_a_comma_and_ranges_keep_a_hyphen():
+    from jobcopilot.writing.common import ascii_hyphens as a
+    assert a("BigQuery—and validated") == "BigQuery, and validated"   # never "BigQuery-and"
+    assert a("2019–2023") == "2019-2023"
+    assert a("pre‐built") == "pre-built"
+
+
+def test_sentence_naming_the_role_title_is_about_the_role(facts, no_company_db):
+    from jobcopilot.writing.common import ground_paragraphs, resolve_facts
+    job = dict(JOB, title="Forward Deployed Engineer",
+               description_text="The Forward Deployed Engineer leads pilots and demos and is the primary technical voice for customers.")
+    g = ground_paragraphs([{"text": "The posting calls for a Forward Deployed Engineer who leads pilots and demos.",
+                            "fact_ids": []}], resolve_facts(facts, None), job=job, rec={})
+    assert g["lines"][0]["supported"], g
+    # the same words as a claim about the applicant are still flagged
+    me = ground_paragraphs([{"text": "I led pilots and demos as the primary technical voice for customers.",
+                             "fact_ids": []}], resolve_facts(facts, None), job=job, rec={})
+    assert not me["lines"][0]["supported"], me

@@ -283,9 +283,19 @@ def _fallback_check_lines(lines: list[dict], fmap: dict) -> dict:
 _HYPHENS_RE = re.compile(r"[\u2010-\u2015\u2212]")
 
 
+_RANGE_DASH_RE = re.compile(r"(?<=\d)\s*[\u2012\u2013\u2014\u2015\u2212]\s*(?=\d)")
+_PROSE_DASH_RE = re.compile(r"\s*[\u2013\u2014\u2015]\s*")
+
+
 def ascii_hyphens(text: str) -> str:
-    """U+2010–2015 and U+2212 → '-' (an em-dash flourish becomes ' - ')."""
-    return _HYPHENS_RE.sub("-", text or "")
+    """Typographic dashes → plain ASCII. A range ("2019–2023") keeps a hyphen; a dash
+    used as a pause in prose ("BigQuery—and", "role — and") becomes a comma, so words
+    are never glued together; other hyphen look-alikes become '-'."""
+    t = _RANGE_DASH_RE.sub("-", text or "")
+    t = _PROSE_DASH_RE.sub(", ", t)
+    t = re.sub(r",\s*,", ",", t)
+    t = re.sub(r",\s*([.;:!?])", r"\1", t)
+    return _HYPHENS_RE.sub("-", t)
 
 
 def fold(text: str) -> str:
@@ -395,7 +405,8 @@ _PASSIVE_RE = re.compile(r"\b(?:was|were|had\s+been|has\s+been|have\s+been|got)\
                          r"(?:(?:also|then|later|first|successfully|fully|largely|[a-z]+ly)\s+)*"
                          + _PARTICIPLE + r"\b(?P<rest>[^.;!?]*)", re.I)
 _EXPLICIT_REF_RE = re.compile(r"\b(?:(?:the|this|your)\s+(?:team|role|company|position|opening|product|"
-                              r"platform|job|mission|business)|you|your)\b", re.I)
+                              r"platform|job|mission|business|posting|listing|vacancy|requisition|"
+                              r"job description|jd)|you|your)\b", re.I)
 _PRONOUN_REF_RE = re.compile(r"\b(?:it|its|they|their|them)\b", re.I)
 _FORWARD_CUE_RE = re.compile(
     r"\b(?:apply|applying|applied|application|role|position|opening|team|join|joining|contribute|"
@@ -508,6 +519,7 @@ def ground_paragraphs(paragraphs: list[dict], usable: list, *, job: dict, rec: d
             named = named_headers(s, hinfo)
             marker = _applicant_marker(s, person=person, named=named, cited_ev=cited_ev, company=company)
             refers = bool((company and _name_re(company).search(fs)) or _EXPLICIT_REF_RE.search(fs)
+                          or (title and _name_re(title).search(fs))      # "...a Forward Deployed Engineer who..."
                           or (prev_company and _PRONOUN_REF_RE.search(fs)))
             company_sentence = refers and not marker
             prev_company = company_sentence

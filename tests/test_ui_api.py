@@ -455,3 +455,11 @@ def test_unhide_is_allowed_in_demo_like_other_status_changes():
     from jobcopilot import demo
     assert demo.refusal("POST", "/api/jobs/abc/unhide") is None
     assert demo.refusal("POST", "/api/jobs/abc/unhide/x") is not None
+
+
+def test_portals_lists_check_by_hand_companies(client):
+    d = client.get("/api/portals").json()
+    names = {m["name"]: m for m in d["manual"]}
+    assert "Snabbit" in names and "Porter (porter.in)" in names
+    assert names["Porter (porter.in)"]["url"].startswith("https://porter.in/")
+    assert all(not m["url"] or m["url"].startswith(("https://", "http://")) for m in d["manual"])

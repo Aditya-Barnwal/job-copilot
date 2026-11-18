@@ -404,10 +404,34 @@ def _portal_links() -> list[dict]:
     return sorted(out, key=lambda p: (p["portal"], str(p["name"]).lower()))
 
 
+def _manual_companies() -> list[dict]:
+    """Companies with no readable job board (connector: manual) - checked by hand.
+    Only http(s) careers links are passed through; they are shown, never fetched."""
+    import yaml
+    from jobcopilot.models import safe_url
+    out: list[dict] = []
+    for path in (config.companies_path(), config.companies_path().parent / "target_companies.yaml"):
+        try:
+            rows = (yaml.safe_load(Path(path).read_text()) or {}).get("companies") or []
+        except Exception:  # noqa: BLE001 - a missing / broken file just adds nothing
+            continue
+        for r in rows:
+            if str(r.get("connector") or "").lower() != "manual" or r.get("enabled") is False:
+                continue
+            url = safe_url(r.get("careers_url")) or ""
+            out.append({"name": str(r.get("name") or ""), "url": url, "tier": r.get("tier"),
+                        "note": str(r.get("note") or "")[:200]})
+    seen, uniq = set(), []
+    for c in sorted(out, key=lambda c: c["name"].lower()):
+        if c["name"].lower() not in seen:
+            seen.add(c["name"].lower()); uniq.append(c)
+    return uniq
+
+
 @router.get("/api/portals")
 def portals():
     from jobcopilot.autofill import session as sess
-    return {"links": _portal_links(), "available": not demo.enabled(),
+    return {"links": _portal_links(), "manual": _manual_companies(), "available": not demo.enabled(),
             "chrome": sess.chrome_executable() is not None if not demo.enabled() else False}
 
 

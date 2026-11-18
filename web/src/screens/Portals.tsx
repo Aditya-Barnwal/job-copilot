@@ -3,13 +3,14 @@ import { Copy, KeyRound, Lock, MonitorSmartphone } from "lucide-react";
 import { DEMO_ACTION_TIP, api, post } from "../lib/api";
 import { useDemo, useToast } from "../lib/app";
 import { useTitle } from "../lib/router";
+import { PostingLink } from "../components/JobCard";
 import { Badge, Button, CardSkeleton, ErrorState, PageHeader, SectionTitle } from "../components/ui";
 
 export function Portals() {
   useTitle("Sign in to portals");
   const demo = useDemo();
   const toast = useToast();
-  const data = useQuery({ queryKey: ["portals"], queryFn: () => api<{ links: { name: string; portal: string; url: string }[]; available: boolean; chrome: boolean }>("/api/portals") });
+  const data = useQuery({ queryKey: ["portals"], queryFn: () => api<{ links: { name: string; portal: string; url: string }[]; manual?: { name: string; url: string; tier?: string | null; note: string }[]; available: boolean; chrome: boolean }>("/api/portals") });
   const open = useMutation({
     mutationFn: () => post<{ profile: string }>("/api/portals/open", {}),
     onSuccess: (r) => toast.notify(`Chrome opened on ${r.profile}. Sign in there, then close the window.`, { kind: "success" }),
@@ -61,6 +62,25 @@ export function Portals() {
         </ul>
       )}
       <p className="mt-4 text-[13px] text-muted">Links are copied, not opened here: open them in the sign-in window so the session lands in the right profile.</p>
+      <SectionTitle count={data.data?.manual?.length}>Check by hand</SectionTitle>
+      <p className="-mt-2 mb-3 max-w-2xl text-[13px] leading-relaxed text-muted">
+        These companies have no job board the app can read, so their roles never reach Today. Look at their careers page every few days and apply there yourself.
+      </p>
+      {data.data?.manual?.length ? (
+        <ul className="card divide-y divide-line">
+          {data.data.manual.map((m) => (
+            <li key={m.name} className="flex flex-wrap items-center gap-3 px-5 py-3.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-[14px] font-medium text-ink">{m.name}{m.tier ? <Badge className="ml-1">{m.tier}</Badge> : null}</p>
+                <p className="mt-0.5 truncate text-[12px] text-muted">{m.url || m.note}</p>
+              </div>
+              {m.url ? (
+                <PostingLink job={{ url: m.url, apply_url: null }} label="Careers page" />
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : data.data ? <p className="text-sm text-muted">No check-by-hand companies.</p> : null}
     </>
   );
 }

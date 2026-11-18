@@ -32,3 +32,13 @@ companies:
   - { name: RevenueCat, sector: tech, connector: ashby, slug: revenuecat,
       tier: funded, tier_reason: "YC-backed in-app subscriptions platform, fully remote", yc_batch: S18, apply_channel: ats,
       verify: false, note: "all remote (Americas/APAC). Recon 2026-11-11: 10 roles" }
+  # No public ATS board (checked 2026-11-18): their careers pages are their own portals and
+  # roles otherwise appear only on aggregators, so they are check-by-hand (shown in the UI).
+  - { name: "Porter (porter.in)", sector: tech, connector: manual, website: porter.in,
+      careers_url: "https://porter.in/careers", tier: funded,
+      tier_reason: "Indian intra-city logistics unicorn, Bengaluru HQ (not porter.run)",
+      note: "own careers portal; no ATS detected" }
+  - { name: Snabbit, sector: tech, connector: manual, website: snabbit.com,
+      careers_url: "https://careers.snabbit.com/snabbit/", tier: funded,
+      tier_reason: "VC-backed 10-minute home-services startup, Bengaluru",
+      note: "own careers portal; its robots.txt was unavailable when checked, so it is never fetched" }

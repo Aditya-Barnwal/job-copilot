@@ -1,9 +1,10 @@
 """SafePage: the only handle adapters get on a browser page.
 
 Writes:  fill, select, check, upload, click (guarded), next_step (Next /
-         Continue allowlist only), goto (denylist + same-site), highlight.
-Reads:   fields, buttons, labels, text, url, title, meta, count, has_value,
-         find_next, find_submit, frame_urls.
+         Continue allowlist only), goto (denylist + same-site), highlight,
+         open_application (once per run, description page -> form; see it).
+Reads:   fields, form_fields, buttons, apply_controls, labels, text, url,
+         title, meta, count, has_value, find_next, find_submit, frame_urls.
 
 There is deliberately no submit / press / type-key / evaluate / raw-click
 method, and the raw Playwright page is never handed out. Anything
@@ -16,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -159,9 +161,29 @@ def job_dir(job_key: str) -> Path:
     return applications_root() / safe
 
 
+# --------------------------------------------------------------------------- "open the application"
+# A posting's description page often shows the form only after an "Apply"
+# control is pressed (Keka: "Apply for this job"). Apply-like words are
+# submit-like to the guarded click() on purpose, so open_application() is the one
+# narrow, explicit way past that page. The control's whole accessible name must
+# be one of these phrases ("Submit application" never matches).
+APPLY_OPEN_RE = re.compile(
+    r"^(apply|apply now|apply here|apply online|apply for (this|the) (job|position|role|opening|vacancy)|"
+    r"apply to (this|the) (job|position|role)|apply for job|apply for position|"
+    r"im interested|i am interested)$")
+# Hosts an "Apply" link may lead to besides the posting's own site: the
+# application form often lives on the ATS (a company page -> boards.greenhouse.io).
+ATS_APPLY_HOSTS = ("greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "myworkdaysite.com",
+                   "keka.com", "smartrecruiters.com", "workable.com", "recruitee.com", "teamtailor.com",
+                   "pinpointhq.com", "jobs.personio.com", "jobs.personio.de", "bamboohr.com",
+                   "rippling.com", "gem.com", "turbohire.co")
+# A search box (site header) is not an application form field.
+_SEARCH_RE = re.compile(r"\bsearch\b", re.I)
+
+
 class SafePage:
     __slots__ = ("_SafePage__page", "guard", "allowed_hosts", "allowed_uploads", "_halted",
-                 "_site", "confirmation_url_patterns")
+                 "_site", "confirmation_url_patterns", "_opened_application")
 
     def __init__(self, page: Any, *, submit_patterns: Iterable[Any] = (),
                  allow_post_patterns: Iterable[Any] = (), hosts: Iterable[str] = (),
@@ -177,6 +199,7 @@ class SafePage:
         self.allowed_hosts: list[str] = list(hosts or ())
         self.allowed_uploads: Optional[set[str]] = None
         self._site: Optional[str] = None
+        self._opened_application = False
         page.set_default_timeout(ACTION_TIMEOUT_MS)
 
     def __repr__(self) -> str:
@@ -414,6 +437,98 @@ class SafePage:
             self.__page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         self.check_site()                 # the final URL of any redirect chain, frames included
 
+    def open_application(self) -> str:
+        """Get from a posting's description page to its application form, once.
+
+        Why this exists: on many ATSs (Keka, company career pages) the form only
+        appears after pressing "Apply" / "Apply for this job". Those words are
+        submit-like, so click() and next_step() refuse them, and they must keep
+        doing so: on a form page "Apply" IS the final submit. This method is the
+        only, explicit exception, and it is narrow by construction:
+
+          * it refuses on any page that already shows form fields (a form page's
+            "Apply" may submit it); only a page with nothing to fill qualifies;
+          * it acts on exactly one visible control whose WHOLE accessible name is
+            an "open the application" phrase (APPLY_OPEN_RE), never one it is handed;
+          * an <a href> is never clicked: its URL is opened with a plain GET
+            navigation, and only to the posting's own site or a known ATS host
+            (ATS_APPLY_HOSTS / the adapter's hosts), never a do-not-automate host;
+          * anything else is clicked only when it is not an <input>, not inside a
+            <form> (nor tied to one with form=), has no type="submit" attribute and
+            no formaction: with no form owner a click can't submit anything. A
+            typeless <button> outside every form is allowed for that reason;
+          * the guard stays fully on: every non-GET request is still aborted
+            (a page that POSTs as it loads gets nowhere), the denylist is still
+            checked, and check_site() halts the session if a redirect lands on a
+            denied host; the click only opens a navigation window, like next_step;
+          * it can be used once per SafePage (one run), even if it fails.
+
+        Returns the URL the page is on afterwards. Raises SafePageError (or a
+        subclass) and does nothing when any rule isn't met."""
+        self._writable()
+        if self._opened_application:
+            raise SafePageError("open_application() is allowed once per run")
+        self._opened_application = True          # set first: a failed attempt doesn't earn a second
+        if self.form_fields():
+            raise SafePageError("this page already has form fields: nothing to open")
+        cands = self.apply_controls()
+        if len(cands) != 1:
+            raise SafePageError(f"found {len(cands)} 'Apply' controls (need exactly 1)")
+        m = cands[0]
+        here = self.__page.url
+        href = (m.get("href") or "").strip() if m.get("tag") == "a" else ""
+        if href and not href.startswith("#") and not href.lower().startswith("javascript:"):
+            url = urllib.parse.urljoin(here, href)
+            if not re.match(r"^https?://", url, re.I):
+                raise SafePageError("only http(s) links are opened")
+            entry = is_denied(url)
+            if entry:
+                raise DeniedHost(f"do-not-automate site ({entry}): link out only")
+            if not self._apply_host_ok(host_of(url), here):
+                raise OffSite(f"the Apply link leaves for {host_of(url)}: open it yourself")
+            with self.guard.allow_navigation():
+                self.__page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        else:
+            loc = self._one(m["selector"])
+            m = loc.evaluate(_JS_META)               # re-read the element we will actually click
+            if not APPLY_OPEN_RE.match(norm_name(m.get("name_text"))):
+                raise SafePageError("the control changed under us")
+            if m["tag"] not in ("button", "a") and m.get("role") != "button":
+                raise SubmitGuardViolation("open_application only presses a button or link")
+            if m.get("in_form") or m.get("form_attr"):
+                raise SubmitGuardViolation("the Apply control belongs to a form: it may submit it")
+            if m.get("formaction") or (m.get("type_attr") or "").lower() in ("submit", "image"):
+                raise SubmitGuardViolation("the Apply control is a submit button")
+            if m.get("disabled") or m.get("hidden"):
+                raise SafePageError("the Apply control is hidden or disabled")
+            with self.guard.allow_navigation():
+                loc.click()
+                self.__page.wait_for_timeout(500)
+                try:
+                    self.__page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                except Exception:  # noqa: BLE001 — a modal / SPA view loads nothing
+                    pass
+        self.check_site()                        # a redirect chain's end, frames included
+        if not self._apply_host_ok(host_of(self.__page.url), here):
+            self.halt("the Apply control left the application site")
+            raise OffSite(f"the Apply control led to {host_of(self.__page.url)}: open it yourself")
+        self.settle()
+        log.info("opened the application form (%s)", "link" if href else "button")
+        return self.__page.url
+
+    def _apply_host_ok(self, host: str, here: str) -> bool:
+        cur = host_of(here)
+        return bool(host) and (host == cur or site_of(host) == site_of(cur)
+                               or host_matches(host, self.allowed_hosts)
+                               or host_matches(host, ATS_APPLY_HOSTS))
+
+    def settle(self, timeout_ms: int = 5000) -> None:
+        """Let a client-rendered page finish loading (read-only wait; capped)."""
+        try:
+            self.__page.wait_for_load_state("networkidle", timeout=max(0, min(int(timeout_ms), 10_000)))
+        except Exception:  # noqa: BLE001 — busy pages never go idle
+            pass
+
     def highlight(self, locator: str, kind: str = "needs_you") -> bool:
         """Visible outline + a small badge. Styling only; returns False if the
         element can't be found (highlighting never raises)."""
@@ -466,6 +581,44 @@ class SafePage:
     def buttons(self) -> list[dict]:
         return self.__page.main_frame.evaluate(_JS_BUTTONS)
 
+    def form_fields(self) -> list[dict]:
+        """Fields a person could fill on this page: visible, enabled inputs,
+        selects and textareas (file inputs even when styled away), search boxes
+        excluded. Empty on a description page whose form isn't open yet."""
+        out = []
+        for f in self.fields():
+            if f.get("type") == "file":
+                out.append(f)
+                continue
+            if f.get("hidden") or f.get("offscreen") or f.get("aria_hidden") or f.get("disabled"):
+                continue
+            if f.get("type") == "search" or f.get("role") == "searchbox":
+                continue
+            hay = " ".join(str(f.get(k) or "") for k in ("label", "name", "id", "placeholder", "aria_label"))
+            if _SEARCH_RE.search(hay.replace("_", " ").replace("-", " ")):
+                continue
+            out.append(f)
+        return out
+
+    def apply_controls(self) -> list[dict]:
+        """Visible, enabled controls whose whole name is an "open the
+        application" phrase. Links to the same URL count once."""
+        out: list[dict] = []
+        seen: set[str] = set()
+        for b in self.buttons():
+            if b.get("hidden") or b.get("aria_hidden") or b.get("disabled"):
+                continue
+            if not APPLY_OPEN_RE.match(norm_name(b.get("name_text"))):
+                continue
+            href = (b.get("href") or "").strip() if b.get("tag") == "a" else ""
+            if href and not href.startswith("#") and not href.lower().startswith("javascript:"):
+                key = urllib.parse.urljoin(self.__page.url, href).split("#", 1)[0]
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(b)
+        return out
+
     def labels(self) -> list[str]:
         return [f.get("label") or f.get("group_label") or f.get("name") or "" for f in self.fields()]
 
@@ -496,6 +649,14 @@ class SafePage:
         """Selector of the single visible submit control (for highlighting
         only; nothing in this package ever clicks it)."""
         vis = [b for b in self.buttons() if not b["hidden"] and is_submit_like(b)]
+        # The description page's own "Apply for this job" (a button with no form
+        # owner, still on screen behind a modal form) opens the form; it can't
+        # submit one. Set aside when there are other candidates.
+        rest = [b for b in vis if not (APPLY_OPEN_RE.match(norm_name(b.get("name_text")))
+                                       and not b.get("in_form") and not b.get("form_attr")
+                                       and not b.get("formaction") and b["tag"] != "input"
+                                       and (b.get("type_attr") or "").lower() != "submit")]
+        vis = rest or vis
         named = [b for b in vis if SUBMIT_RE.search(b.get("name_text") or "")
                  and b["tag"] != "a"]
         for group in (named, vis):

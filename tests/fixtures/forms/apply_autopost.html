@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Auto-post</title></head><body>
+<!-- Lands here from "Apply now": the page tries to POST the moment it loads. -->
+<form id="f" action="/submit" method="post">
+  <input type="hidden" name="a" value="1">
+  <p><label for="em">Email</label> <input id="em" type="email" name="email"></p>
+  <button type="submit" id="submit">Submit application</button>
+</form>
+<script>
+  window.__attempts = 1;
+  var f = document.getElementById('f');
+  try { f.submit(); } catch (e) {}
+  try { f.requestSubmit(); } catch (e) {}
+  fetch('/beacon', {method: 'POST', body: 'x'}).catch(function () {});
+  try { navigator.sendBeacon('/beacon2', 'x'); } catch (e) {}
+</script>
+</body></html>

@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Backend Engineer</title></head><body>
+<!-- A description page whose form opens in a modal behind "Apply for this position".
+     Once open, the page tries to submit the form by itself (it must get nowhere). -->
+<h1>Backend Engineer</h1>
+<p>Build services in Python.</p>
+<button type="button" id="open-apply">Apply for this position</button>
+<div id="modal" hidden>
+  <form id="app" action="/submit" method="post">
+    <p><label for="first">First name *</label> <input id="first" name="first_name" required></p>
+    <p><label for="email">Email *</label> <input id="email" type="email" name="email" required></p>
+    <p><button type="submit" id="submit">Submit application</button></p>
+  </form>
+</div>
+<script>
+  window.__attempts = 0;
+  document.getElementById('open-apply').addEventListener('click', function () {
+    document.getElementById('modal').hidden = false;
+    setTimeout(function () {
+      window.__attempts++;
+      var f = document.getElementById('app');
+      try { f.requestSubmit(); } catch (e) {}
+      try { f.submit(); } catch (e) {}
+      fetch('/submit', {method: 'POST', body: 'x=1'}).catch(function () {});
+    }, 200);
+  });
+</script>
+</body></html>

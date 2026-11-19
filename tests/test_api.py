@@ -860,6 +860,7 @@ EXPECTED_ROUTES.update({
     ("POST", "/api/jobs/{key}/autofill"), ("GET", "/api/autofill/sessions/{session_id}"),
     ("GET", "/api/jobs/{key}/fill-plan"), ("POST", "/api/jobs/{key}/fill-plan/rebuild"),
     ("POST", "/api/autofill/sessions/{session_id}/handover"), ("GET", "/api/autofill/needs-you"),
+    ("POST", "/api/jobs/{key}/check-live"),
 })
 
 

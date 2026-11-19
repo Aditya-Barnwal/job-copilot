@@ -1,0 +1,72 @@
+# Keka careers application form (declarative adapter spec, docs/DESIGN.md §12).
+# Read by jobcopilot/autofill/adapters/keka.py. Structure observed read-only on
+# 2026-11-19 on two tenants (<slug>.keka.com): the posting page
+# /careers/jobdetails/<id> shows the description and one typeless button
+# #apply-job "Apply for this job" (outside any form); pressing it navigates (GET)
+# to /careers/applyjob/<id>, a server-rendered form #jobApplicationForm. No
+# sign-in and no email OTP were asked for; the form ends in an image CAPTCHA and
+# "Apply Now" (#jobApplicationSubmitButton). Fixture: tests/fixtures/forms/keka_apply.html.
+ats: keka
+hosts: [keka.com]
+url_patterns:
+  - '/careers/jobdetails/\d+'         # description page (the form sits behind "Apply for this job")
+  - '/careers/applyjob/\d+'           # the application form itself (autofill opens this one)
+form: '#jobApplicationForm'
+
+fields:
+  - {locator: '#firstName', question: 'First Name', kind: fill}
+  - {locator: '#middleName', question: 'Middle Name', kind: fill}
+  - {locator: '#lastName', question: 'Last Name', kind: fill}
+  - {locator: '[id="mobilePhone.number"]', question: 'Phone', kind: fill}
+  - {locator: '#email', question: 'Email', kind: fill}
+  - {locator: '#gender', question: 'Gender', kind: select}
+  - {locator: '#workExperience', question: 'Years of experience', kind: fill}
+  - {locator: '[name="workExperience.months"]', question: 'Experience (months, beyond full years)', kind: select}
+  - {locator: '#currentSalary', question: 'Current salary', kind: fill}
+  - {locator: '#expectedSalary', question: 'Expected salary', kind: fill}
+  - {locator: '#availability', question: 'Notice period (days)', kind: fill}
+  - {locator: '#locationPreference', question: 'Preferred location', kind: select}
+  - {locator: '#currentLocation', question: 'Current location', kind: fill}
+
+# Tenant questions: name="standardFields.<uuid>.answer", labelled by label[for].
+custom_questions:
+  - {locator_regex: 'standardFields\.[0-9a-f-]{36}\.answer'}
+comboboxes: []
+
+uploads: {}
+
+# Only the person does these. Keka sends a chosen résumé to its server (and
+# parses it) the moment the file is picked, and the fill guard blocks every
+# such POST, so the résumé is never attached automatically. The image CAPTCHA
+# is typed by the person.
+yours:
+  - {locator: '#resume-upload', note: 'attach your résumé on the form (Keka uploads it as soon as it is chosen; check the fields it re-fills)'}
+  - {locator: '#captcha', note: 'type the CAPTCHA shown under the form'}
+
+# Never typed: the consent box (its text sits in a span, not a label, so it is
+# named here), the country-code / currency widgets, and the repeating
+# experience-details and skills editors (structured entries, yours to add).
+never: ['#candidateConsent', '[name="candidateConsent"]', '[id="mobilePhone.countryCode"]',
+        '[id="currentSalary.currency"]', '[id="expectedSalary.currency"]', '[name^="ExperienceDetails"]',
+        '#skills', '#resume']
+honeypots: []
+
+# A sign-in wall or an email OTP step (not seen on the tenants checked) pauses
+# the run as needs_you; keka.py also looks for OTP wording in field labels.
+login_wall: ['input[type="password"]']
+
+submit:
+  - '#jobApplicationSubmitButton'
+errors: ['#validation-error:not([style*="none"])', '#invalidCaptcha:not([style*="none"])', 'label.error:not(:empty)']
+
+# The form posts to Keka's careers API; nothing was submitted to observe the
+# exact path. Every non-GET is denied by default anyway; these name the likely
+# final-submit shapes so they are aborted even if a save endpoint is ever allowed.
+submit_patterns:
+  - {method: POST, url_regex: '^https?://[\w-]+\.keka\.com/careers/api/.*(apply|application|submit)'}
+  - {method: POST, url_regex: '^https?://[\w-]+\.keka\.com/careers/applyjob/'}
+allow_post: []
+
+confirmation:
+  url_regex: ['/careers/(applied|thankyou|thank-you|success)']
+  text: ['Thank you for applying', 'Application submitted', 'successfully applied', 'Your application has been submitted']

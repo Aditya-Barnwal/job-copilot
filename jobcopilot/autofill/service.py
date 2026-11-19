@@ -119,12 +119,64 @@ def denied_host(url: str, cfg: Optional[dict] = None) -> Optional[str]:
 
 
 def target_url(job: dict) -> str:
-    """Where the application form lives: the apply link, else the posting."""
+    """Where the application FORM lives: the apply link, else the posting,
+    moved to the ATS's form page when the link is only the description
+    (form_url: Lever /apply, Ashby /application, Keka /careers/applyjob/<id>)."""
     for k in ("apply_url", "url"):
         v = (job.get(k) or "").strip()
         if v:
-            return v
+            return form_url(v)
     return ""
+
+
+_LEVER_POSTING = re.compile(r"^https://jobs(\.eu)?\.lever\.co/[\w.-]+/[0-9a-fA-F-]{36}/?$")
+_ASHBY_POSTING = re.compile(r"^https://jobs\.ashbyhq\.com/[\w.%-]+/[0-9a-fA-F-]{36}/?$")
+
+
+def form_url(url: str) -> str:
+    """A posting URL -> the URL of its application form, for the ATSs whose
+    description and form are separate pages. Pure (no I/O); any other URL,
+    including Greenhouse job pages (the form is on the page, #application-form)
+    and Workday (the flow starts from the posting), is returned unchanged."""
+    url = (url or "").strip()
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    if _LEVER_POSTING.match(base):            # jobs.lever.co/<site>/<id> -> .../apply
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + "/apply",
+                                        parts.query, ""))
+    if _ASHBY_POSTING.match(base):            # jobs.ashbyhq.com/<org>/<id> -> .../application
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + "/application",
+                                        parts.query, ""))
+    from .adapters.keka import application_url as keka_form
+    return keka_form(url)
+
+
+def application_url(job: dict, db_path: Any = None) -> str:
+    """target_url(job), plus one move that needs the companies table: an
+    employer careers page carrying ?gh_jid= shows Greenhouse's form inside an
+    iframe that autofill can't reach, so it opens Greenhouse's own embed form
+    (boards.greenhouse.io/embed/job_app?for=<board>&token=<id>) instead."""
+    url = target_url(job)
+    if "gh_jid=" not in url:
+        return url
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host.endswith("greenhouse.io"):
+        return url
+    ids = greenhouse_ids(job, url, db_path)
+    if not ids:
+        return url
+    region = ""
+    try:
+        from .. import companies as _companies
+        rec = _companies.get_company(job.get("company") or "", db_path=db_path) or {}
+        region = str(rec.get("ats_region") or "").lower()
+    except Exception:  # noqa: BLE001
+        region = ""
+    q = urllib.parse.urlencode({"for": ids[0], "token": ids[1]})
+    return f"https://boards{'.eu' if region == 'eu' else ''}.greenhouse.io/embed/job_app?{q}"
 
 
 _ATS_HOSTS = (
@@ -132,6 +184,7 @@ _ATS_HOSTS = (
     ("lever", re.compile(r"(^|\.)lever\.co$")),
     ("ashby", re.compile(r"(^|\.)ashbyhq\.com$")),
     ("workday", re.compile(r"(^|\.)(myworkdayjobs|myworkdaysite|workday)\.com$")),
+    ("keka", re.compile(r"(^|\.)keka\.com$")),
 )
 
 
@@ -477,6 +530,12 @@ class PlaywrightBackend:
       window.addEventListener('submit', (e) => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
     })();"""
 
+    def check_live(self, job: dict, db_path: Any = None) -> dict:
+        """jobcopilot/liveness.py (polite client; GET only), with a short-lived
+        cache so the review card's check and the Autofill click share one call."""
+        from .. import liveness
+        return liveness.cached_check(job, db_path=db_path)
+
     def snapshot(self, url: str, ats: str, cfg: dict, adapter: Any = None) -> Optional[dict]:
         """Load the public form headless and list its fields. No typing, no clicks;
         scripted submits are stopped in the page and every non-GET request is
@@ -511,6 +570,14 @@ class PlaywrightBackend:
                     if _safe_call(det, "login_wall", page):
                         notes.append("login_wall")
                 fields = page.evaluate(self._FIELDS_JS)
+                if not any(not f.get("hidden") for f in fields):
+                    # no form: a posting page that says it's closed means gone
+                    from ..liveness import dead_page_reason
+                    try:
+                        if dead_page_reason(page.inner_text("body", timeout=5000) or ""):
+                            return None
+                    except Exception:  # noqa: BLE001 - unreadable: not evidence
+                        pass
                 adapter_snap = None
                 sp_mod = _k_module("safepage")
                 from_html = getattr(adapter, "snapshot_from_html", None) if adapter is not None else None
@@ -671,8 +738,8 @@ def _job_or_raise(job_key: str, db_path: Any) -> dict:
     return job
 
 
-def _check_url(job: dict, cfg: dict) -> str:
-    url = target_url(job)
+def _check_url(job: dict, cfg: dict, db_path: Any = None) -> str:
+    url = application_url(job, db_path)
     if not url:
         raise AutofillRefused("no_url", "this job has no application link", http=400)
     entry = denied_host(url, cfg)
@@ -735,7 +802,7 @@ def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = Non
     Raises AutofillRefused (not_found | denylisted | gone | no_url)."""
     cfg = cfg or settings()
     job = _job_or_raise(job_key, db_path)
-    url = _check_url(job, cfg)
+    url = _check_url(job, cfg, db_path)
     if job.get("gone_at"):
         raise AutofillRefused("gone", "the posting is no longer listed", http=409)
     ats = detect_ats(url, job)
@@ -766,6 +833,8 @@ def plan_for_job(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = Non
 
 
 def _gone(job_key: str, db_path: Any) -> None:
+    from .. import liveness
+    liveness.mark_gone(job_key, {"via": "planner"}, db_path)     # gone_at + fill_status 'gone'
     store.set_fill_status(job_key, "gone", db_path)
     raise AutofillRefused("gone", "the posting is gone (404) — nothing to fill", http=409)
 
@@ -858,7 +927,7 @@ def _fresh_plan(job: dict, cfg: dict, db_path: Any) -> Optional[FillPlan]:
     snap = d.get("snapshot")
     if d.get("format") != PLAN_FORMAT or not isinstance(snap, dict):
         return None
-    url = target_url(job)
+    url = application_url(job, db_path)
     if not url or d.get("target_url") != url:
         return None                     # the job's link changed since: re-check the live form
     ats = d.get("ats") or detect_ats(url, job)
@@ -905,17 +974,24 @@ def launch_fill(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = None
     """Start a headed fill for the job; returns the session id at once (the work runs
     in a background thread that outlives the request). Refuses (AutofillRefused):
     demo mode 403, unknown job 404, denylisted host 400 + link_out, an open session
-    409, an already-submitted job 409, a gone posting 409."""
+    409, an already-submitted job 409, a gone posting 409 (also when the live
+    check finds the posting closed, before any browser opens: code 'gone')."""
     from .. import demo
     if demo.enabled():
         raise AutofillRefused("demo", "autofill is off in the public demo", http=403)
     cfg = cfg or settings()
     job = _job_or_raise(job_key, db_path)
-    _check_url(job, cfg)
+    _check_url(job, cfg, db_path)
     if store.is_submitted_or_later(job.get("status")):
         raise AutofillRefused("submitted", "already submitted", http=409)
     if job.get("gone_at"):
         raise AutofillRefused("gone", "the posting is no longer listed", http=409)
+    verdict = check_live(job, db_path)
+    if verdict is not None and verdict.get("live") is False:
+        from .. import liveness
+        liveness.mark_gone(job_key, verdict, db_path)
+        raise AutofillRefused("gone", f"this posting is closed: {verdict.get('reason') or 'it is gone'}",
+                              http=409)
     with _LIVE_LOCK:
         sid, open_row = store.claim_autofill_session(job_key, db_path)
         if sid is None:
@@ -930,6 +1006,30 @@ def launch_fill(job_key: str, *, db_path: Any = None, cfg: Optional[dict] = None
     else:
         _worker(live)
     return sid
+
+
+def check_live(job: dict, db_path: Any = None) -> Optional[dict]:
+    """Is the posting still open? (jobcopilot/liveness.py through the backend,
+    so tests' fake backends never touch the network.) None = no check made;
+    a verdict's live None = unknown, which never stops a fill."""
+    fn = getattr(BACKEND, "check_live", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(job, db_path)
+    except Exception as exc:  # noqa: BLE001 — a failed check is "unknown", not "closed"
+        log.info("liveness check failed job=%s: %s", job.get("key"), type(exc).__name__)
+        return None
+
+
+def ready_needs_a_fill(od: dict) -> dict:
+    """The outcome rule whatever the adapter said: 'ready' needs at least one
+    filled field or attached file; zero is needs_you (likely a description
+    page, not the form)."""
+    from .plan import NO_FORM_REASON
+    if od.get("status") == "ready" and not int(od.get("filled") or 0):
+        od = dict(od, status="needs_you", reason=NO_FORM_REASON)
+    return od
 
 
 _SESSION_FOR_OUTCOME = {"ready": "ready_to_submit", "needs_you": "needs_you", "blocked": "blocked"}
@@ -955,7 +1055,7 @@ def _worker(live: LiveSession) -> None:
         shots = _shots_dir(key, db)
         outcome = BACKEND.execute(live.handle, adapter_for(plan.url, plan.ats), plan,
                                   plan_context(job, plan.url, plan.files, cfg=cfg, cover_text=cover), cfg)
-        od = _outcome_dict(outcome)
+        od = ready_needs_a_fill(_outcome_dict(outcome))
         status = _SESSION_FOR_OUTCOME.get(od.get("status") or "", "error")
         shot = od.get("screenshot") or BACKEND.screenshot(
             live.handle, shots / f"autofill-{live.id}-{int(time.time())}.png")

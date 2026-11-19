@@ -34,7 +34,7 @@ SPEC_DIR = Path(__file__).resolve().parent / "specs"
 DEFAULT_MIN_CONFIDENCE = 0.8
 _SPEC_KEYS = {"ats", "hosts", "url_patterns", "form", "fields", "custom_questions", "comboboxes",
               "uploads", "cover_letter_text", "never", "honeypots", "invisible_captcha", "submit", "errors",
-              "submit_patterns", "allow_post", "confirmation", "steps", "login_wall"}
+              "submit_patterns", "allow_post", "confirmation", "steps", "login_wall", "yours"}
 _TEXTLIKE = {"text", "textarea", "email", "tel", "url", "number", "date", "search", ""}
 _ANS_TYPE = {"textarea": "textarea", "number": "number", "date": "date", "select": "select",
              "combobox": "select", "radio": "radio", "checkbox": "checkbox", "multi": "checkbox"}
@@ -235,9 +235,11 @@ class _Run:
         self.highlighted: list[str] = []
         self.missing: list[str] = []          # required, no approved value
         self.consent: list[str] = []          # yours to tick
+        self.yours: list[str] = []            # spec `yours`: steps only the person can do (a CAPTCHA...)
         self.problems: list[str] = []
         self.seen: set[str] = set()           # normalised labels / ids / names already handled
         self.halted: Optional[str] = None
+        self.open_detail = ""                 # why a description page's form wasn't opened
 
     def mark(self, *keys: str) -> None:
         for k in keys:
@@ -317,6 +319,14 @@ class SpecAdapter(Adapter):
                 return True
         return False
 
+    def _yours_note(self, f: dict) -> Optional[str]:
+        """The spec's note when this field is one only the person fills
+        (spec key `yours`: [{locator, note}]), else None."""
+        for y in self.spec.get("yours") or []:
+            if self._matches_any(f, [y.get("locator", "")]):
+                return str(y.get("note") or "yours to fill")
+        return None
+
     def _upload_key(self, f: dict) -> Optional[str]:
         for key, u in (self.spec.get("uploads") or {}).items():
             if self._matches_any(f, [u.get("locator", "")]):
@@ -336,6 +346,11 @@ class SpecAdapter(Adapter):
         from ... import answers as A
         if self._matches_any(f, self.honeypot_selectors) or _is_honeypot(f):
             return None
+        yours = self._yours_note(f)
+        if yours is not None:          # the person's own step (CAPTCHA, an upload that posts at once)
+            return FieldAction(f.get("locator") or "", f.get("label") or f.get("name") or "",
+                               _KIND.get(f.get("type") or "text", "fill"), None, "yours", 0.0, True,
+                               yours, bool(f.get("required")))
         typ = f.get("type") or "text"
         entry = self._spec_entry(f, step)
         if entry and entry.get("kind") == "combobox" or f.get("role") == "combobox":
@@ -486,10 +501,35 @@ class SpecAdapter(Adapter):
             return Outcome("needs_you", block, step_reached=self._step_name(safe) or "start")
         if self.multi_step:
             return self._run_steps(safe, plan, ctx, st)
-        self._fill(safe, plan.steps[0] if plan.steps else [], plan, st)
+        actions = plan.steps[0] if plan.steps else []
+        from ..executor import open_form
+        try:
+            opened, st.open_detail = open_form(safe)      # a description page: its one "Apply" control
+        except Halted as exc:                            # incl. a redirect onto a do-not-automate host
+            return Outcome("blocked" if "do-not-automate" in str(exc) else "needs_you", f"stopped: {exc}",
+                           step_reached="start")
+        if opened:
+            block = self._blocker(safe)                  # the form page gets the same checks
+            if block:
+                safe.halt(block)
+                return Outcome("needs_you", block, step_reached="application form")
+            actions = self._replan_live(safe, ctx)
+        self._fill(safe, actions, plan, st)
         if not st.halted:
             self._live(safe, st, ctx)
         return self._finish(safe, plan, st, "application form")
+
+    def _replan_live(self, safe: Any, ctx: Any) -> list[FieldAction]:
+        """Actions for a form opened during the run (same answers rules); none
+        without a planning context: its fields are then highlighted for you."""
+        if ctx is None:
+            return []
+        try:
+            plan = self.build_plan(self.snapshot(safe), ctx)
+        except Exception as exc:  # noqa: BLE001
+            log.info("live plan failed: %s", type(exc).__name__)
+            return []
+        return plan.steps[0] if plan.steps else []
 
     # -- checks
     def _blocker(self, safe: Any) -> Optional[str]:
@@ -618,6 +658,9 @@ class SpecAdapter(Adapter):
             st.highlighted.append(a.label)
         if a.source == "consent":
             st.consent.append(a.label)
+        elif a.source == "yours":
+            if a.note and a.note not in st.yours:
+                st.yours.append(a.note)
         elif a.required:
             st.missing.append(a.label)
         loc = a.locator
@@ -687,8 +730,16 @@ class SpecAdapter(Adapter):
             status, reason = "blocked", "required fields without an approved answer: " + "; ".join(st.missing[:8])
         elif submit is None:
             status, reason = "blocked", "no single Submit control found; review the page yourself"
+        elif st.yours:
+            status, reason = "needs_you", "filled what it could; still yours: " + "; ".join(st.yours[:4])
         else:
             status, reason = "ready", "filled; review the page and press Submit yourself"
+        if not st.halted:
+            from ..executor import apply_zero_fill_rule, form_field_count
+            status, reason = apply_zero_fill_rule(status, reason, st.filled, form_field_count(safe),
+                                                  st.open_detail if st.open_detail not in ("", "-") else "")
+        if st.yours and status == "blocked":
+            reason += "; also yours: " + "; ".join(st.yours[:4])
         if st.consent:
             reason += "; tick yourself if you agree: " + "; ".join(st.consent[:4])
         if errors:

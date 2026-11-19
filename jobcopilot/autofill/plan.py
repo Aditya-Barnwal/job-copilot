@@ -20,6 +20,17 @@ from typing import Any, Optional
 KINDS = ("fill", "select", "check", "upload", "radio")
 STATUSES = ("ready", "blocked", "needs_you", "error")
 
+# The outcome rule every adapter shares: "ready" needs at least one filled field
+# or attached file. A run that filled nothing is never ready (it was probably
+# looking at a job description, not the form).
+NO_FORM_REASON = "no application form found on this page — open it from the posting's Apply button"
+NOTHING_FILLED_REASON = "nothing was filled automatically: every field on this form needs you"
+
+
+def zero_fill_reason(form_field_count: int) -> str:
+    """Why a run that filled nothing is needs_you, not ready."""
+    return NO_FORM_REASON if not form_field_count else NOTHING_FILLED_REASON
+
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
@@ -140,4 +151,5 @@ def is_cover_letter_text_field(label: str, name: str = "", field_type: str = "te
 
 
 __all__ = ["FieldAction", "FillPlan", "Outcome", "KINDS", "STATUSES", "COVER_TEXT_SOURCE",
+           "NO_FORM_REASON", "NOTHING_FILLED_REASON", "zero_fill_reason",
            "is_cover_letter_text_field"]

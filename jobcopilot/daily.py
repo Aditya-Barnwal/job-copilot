@@ -4,10 +4,12 @@
   detection, India probe capped per run)  ->  ingest (boards + company ATS;
   eligibility on every job, excluded ones stored with reasons; fit scores)
   ->  evaluate (catch-up for rows without a decision)  ->  score (catch-up)
-  ->  queue (today's best)  ->  tailor (a tailored résumé, for review, for
+  ->  queue (today's best)  ->  liveness (every queued posting checked; closed
+  ones retired and the queue refilled)  ->  tailor (a tailored résumé, for review, for
   today's main-queue jobs without one, once facts are confirmed)  ->  fill plan
   (read-only, for jobs with an APPROVED résumé; nothing is typed or submitted).
-  Fixture mode (--no-network) skips the last two: no LLM, no browser.
+  Fixture mode (--no-network) skips the last three: no network, no LLM, no browser.
+  A --scheduled run on macOS ends with a notification (config/schedule.yaml notify).
 
 Every step is failure-isolated and recorded in the `runs` table as it
 finishes, so the app can show progress. Exit code is non-zero only when every
@@ -192,6 +194,29 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
         results["queue"]["result"] = {k: built[k] for k in ("day", "counts", "shortfall", "target")}
         store.update_run(run_id, summary=summary, db_path=db_path)
 
+    # 5b. Is every queued posting still open? (jobcopilot/liveness.py: the ATS's own API,
+    # else the page; GET only, polite client.) Closed ones get gone_at and leave the
+    # queue, which is refilled from the next ranked jobs; those are checked too.
+    # Runs before tailoring so no résumé is drafted for a dead posting.
+    def _liveness_today() -> dict:
+        from . import liveness
+        out = liveness.check_queue(day=(built or {}).get("day") or day, db_path=db_path)
+        return {k: out[k] for k in ("day", "checked", "gone", "unknown", "refills", "gone_keys")} | {
+            "queue": out["queue"]}
+
+    if no_network:
+        step("liveness", None, noop="fixture mode: no network")
+    elif built is None:
+        step("liveness", None, noop="no queue was built")
+    else:
+        checked = step("liveness", _liveness_today)
+        if checked and checked.get("queue"):
+            built = checked["queue"]                  # the refilled queue
+            results["queue"]["result"] = {k: built[k] for k in ("day", "counts", "shortfall", "target")}
+        if results["liveness"]["status"] == "ok":
+            results["liveness"]["result"] = {k: v for k, v in (checked or {}).items() if k != "queue"}
+        store.update_run(run_id, summary=summary, db_path=db_path)
+
     # 6-7. Phase 3 / 4 hooks
     def _tailor_today() -> dict:
         # Draft a tailored résumé for today's main-queue jobs (nothing is ever sent or
@@ -200,18 +225,19 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
         from . import tailor_v2
         limit = int((_config.schedule() or {}).get("tailor_limit", 25))
         out = tailor_v2.tailor_queue(day=day, limit=limit, db_path=db_path)
-        res = out.get("results") or []
-        by: dict[str, int] = {}
-        for r in res:
-            st = (r.get("status") if isinstance(r, dict) else getattr(r, "status", None)) or "unknown"
-            by[st] = by.get(st, 0) + 1
-        return {"tailored": out.get("tailored", len(res)), "by_status": by,
-                "skipped": out.get("skipped"), "reason": out.get("reason")}
+        return summarize_tailor(out)
 
     if no_network:
         step("tailor", None, noop="fixture mode: no LLM calls")
     else:
-        step("tailor", _tailor_today)
+        tailored = step("tailor", _tailor_today)
+        if tailored and tailored.get("stopped"):
+            # tailor_queue stops at the first model failure and stores nothing for the
+            # rest: that is not a clean run, so the step shows as an error on Runs.
+            rec = results["tailor"]
+            rec.update(status="error", error=f"tailor: stopped, {tailored['stopped']}"
+                       + (f" ({tailored['reason']})" if tailored.get("reason") else ""))
+            store.update_run(run_id, summary=summary, db_path=db_path)
     # Fill plans (docs/DESIGN.md §12): read-only, for today's main-queue jobs with an APPROVED résumé.
     # Nothing is typed or submitted; the fill itself only runs when you click.
     # Limit: config/autofill.yaml nightly_limit. Each job is failure-isolated.
@@ -235,6 +261,23 @@ def _run_steps(run_id: int, *, skip_discovery: bool, no_network: bool,
                                       if r["status"] == "error") or None))
     return {"run_id": run_id, "status": status, "all_sources_failed": failed_all,
             "steps": summary["steps"], "queue": built}
+
+
+def summarize_tailor(out: dict[str, Any]) -> dict[str, Any]:
+    """tailor_v2.tailor_queue's answer -> the step's result. `results` is
+    {job_key: status} (older shapes: a list of results with a status)."""
+    res = out.get("results") or {}
+    statuses = (list(res.values()) if isinstance(res, dict) else
+                [(r.get("status") if isinstance(r, dict) else getattr(r, "status", None)) for r in res])
+    by: dict[str, int] = {}
+    for st in statuses:
+        st = str(st or "unknown")
+        by[st] = by.get(st, 0) + 1
+    summary = {"tailored": out.get("tailored", len(statuses)), "by_status": by,
+               "skipped": out.get("skipped"), "reason": out.get("reason")}
+    if out.get("stopped"):
+        summary["stopped"] = str(out["stopped"])
+    return summary
 
 
 def print_summary(result: dict[str, Any], out: Any = None) -> None:
@@ -302,7 +345,46 @@ def main(argv: Optional[list[str]] = None) -> int:
     result = run(skip_discovery=args.skip_discovery, no_network=args.no_network,
                  fixtures_dir=args.fixtures, day=args.day, db_path=db_path, run_id=run_id)
     print_summary(result)
+    if args.scheduled:
+        notify_done(result)
     return 1 if result["all_sources_failed"] else 0
+
+
+# --- the end-of-run notification (macOS) ---------------------------------------
+
+APP_URL = "http://127.0.0.1:8000"
+
+
+def notification_text(result: dict[str, Any]) -> str:
+    """Built here from a count only: no job titles, companies or other page text."""
+    q = result.get("queue") or {}
+    n = int(((q.get("counts") or {}).get("main")) or 0)
+    return f"Job-Copilot: {n} role{'' if n == 1 else 's'} on today's list — open {APP_URL}"
+
+
+def notify_done(result: dict[str, Any], *, runner: Optional[Callable[..., Any]] = None,
+                platform: Optional[str] = None) -> bool:
+    """macOS only, when config/schedule.yaml `notify` is on (default): a
+    Notification Center message via osascript. Any failure is ignored.
+    True when the notification was handed to osascript."""
+    try:
+        if (platform or sys.platform) != "darwin":
+            return False
+        if not bool(schedule_config().get("notify", True)):
+            return False
+        import shutil
+        import subprocess
+        exe = shutil.which("osascript") or "/usr/bin/osascript"
+        # The text is ours (a number and a fixed URL); quotes/backslashes escaped anyway.
+        text = notification_text(result).replace("\\", "\\\\").replace('"', '\\"')
+        script = f'display notification "{text}" with title "Job-Copilot"'
+        (runner or subprocess.run)([exe, "-e", script], check=False, timeout=15,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+        return True
+    except Exception as exc:  # noqa: BLE001 — a notification never fails the run
+        log.info("notification skipped: %s", type(exc).__name__)
+        return False
 
 
 def _real_db_paths() -> list[Path]:

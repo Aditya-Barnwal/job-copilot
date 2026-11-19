@@ -64,6 +64,23 @@ def get_job_endpoint(key: str):
     return enrich([job])[0]
 
 
+@router.post("/api/jobs/{key}/check-live")
+def check_live_endpoint(key: str):
+    """Is this posting still open? Read-only GETs through the polite client
+    (jobcopilot/liveness.py). Returns {live, reason, checked_at}: live is
+    true / false / null (null = couldn't tell, never treated as closed). A
+    closed posting is marked gone, so it leaves the queue."""
+    from jobcopilot import demo, liveness
+    if demo.enabled():
+        raise HTTPException(status_code=403, detail="live checks are off in the public demo")
+    if not store.get_job(key):
+        raise HTTPException(status_code=404, detail="not found")
+    v = liveness.check_and_mark(key, use_cache=True)
+    if v is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"live": v.get("live"), "reason": v.get("reason") or "", "checked_at": v.get("checked_at")}
+
+
 # POST /api/jobs/{key}/status lives in routers/queue.py (tracker statuses + history);
 # it accepts the old request body unchanged.
 

@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Fake Apply</title></head><body>
+<!-- No fields to fill, but "Apply" is a real submit button inside a form: pressing it
+     would submit. open_application must refuse it. -->
+<h1>Data Engineer</h1>
+<form id="f" action="/submit" method="post">
+  <input type="hidden" name="job" value="1">
+  <button type="submit" id="fake">Apply</button>
+</form>
+</body></html>

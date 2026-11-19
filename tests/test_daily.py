@@ -45,7 +45,7 @@ def test_steps_are_isolated_and_recorded(monkeypatch):
     res = daily.run(discovery={"yc": broken, "tiers": lambda: {"brand": 3}})
     names = [s["name"] for s in res["steps"]]
     assert names == ["discovery.yc", "discovery.tiers", "ingest", "retire", "evaluate", "score", "queue",
-                     "tailor", "fill_plan"]
+                     "liveness", "tailor", "fill_plan"]
     by = {s["name"]: s for s in res["steps"]}
     assert by["discovery.yc"]["status"] == "error" and "yc down" in by["discovery.yc"]["error"]
     assert by["discovery.tiers"]["status"] == "ok"

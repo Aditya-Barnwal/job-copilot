@@ -4,3 +4,7 @@ daily_run: "19:00"     # discover -> filter -> score -> tailor -> fill-plan; rea
 rss_poll_hours: 2      # short RSS feeds (Jobspresso) that only hold the last ~10 posts
 daily_probe_limit: 1000   # India-probe boards per nightly run (platform caps still apply)
 tailor_limit: 25          # tailored résumé drafts per nightly run (main lane); drafts wait for your approval
+
+# End of a scheduled run (macOS only): a Notification Center message with the
+# number of roles on today's list and the app link. Nothing from the jobs is shown.
+notify: true

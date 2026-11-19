@@ -9,8 +9,10 @@ and highlighted ("needs you") → press Next only through SafePage.next_step.
 On the last page it highlights the single Submit control (never clicks it),
 takes a screenshot under data/applications/<job>/ and returns:
 
-    ready      every required field filled, exactly one Submit found
-    needs_you  CAPTCHA / login wall / uncertain required answers / no unique Submit
+    ready      every required field filled, exactly one Submit found, and at
+               least one field filled or file attached (zero is never ready)
+    needs_you  CAPTCHA / login wall / uncertain required answers / no unique Submit /
+               nothing filled (e.g. a description page with no form)
     blocked    do-not-automate or off-site URL, required data missing (missing data ⇒ blocked)
     error      something broke (type name only; no values)
 
@@ -26,7 +28,7 @@ from typing import Any, Optional
 
 from .guard import (ConsentRefused, DeniedHost, Halted, HoneypotRefused, OffSite, SafePageError,
                     SubmitGuardViolation)
-from .plan import FieldAction, FillPlan, Outcome
+from .plan import NO_FORM_REASON, FieldAction, FillPlan, Outcome, zero_fill_reason
 from .safepage import SafePage, job_dir
 
 log = logging.getLogger("jobcopilot.autofill.executor")
@@ -101,6 +103,51 @@ def _signature(safe: SafePage) -> tuple:
         return (_strip(safe.url),)
 
 
+def form_field_count(safe: Any) -> int:
+    """Fillable fields on the page now; -1 when the page can't say."""
+    fn = getattr(safe, "form_fields", None)
+    if not callable(fn):
+        return -1
+    try:
+        return len(fn())
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def open_form(safe: Any) -> tuple[bool, str]:
+    """On a page with no fields (a posting's description), press its single
+    "Apply" control through SafePage.open_application (once per run; see its
+    rules). (opened, why-not). A do-not-automate landing or a halt propagates."""
+    fn = getattr(safe, "open_application", None)
+    if not callable(fn) or form_field_count(safe) != 0:
+        return False, ""
+    try:
+        fn()
+        return True, ""
+    except (DeniedHost, Halted):
+        raise
+    except SafePageError as exc:
+        log.info("no application form opened: %s", exc)
+        return False, str(exc)
+    except Exception as exc:  # noqa: BLE001 — a timeout etc.: nothing was opened
+        log.info("no application form opened: %s", type(exc).__name__)
+        return False, type(exc).__name__
+
+
+def apply_zero_fill_rule(status: str, reason: str, filled: int, form_fields: int,
+                         detail: str = "") -> tuple[str, str]:
+    """ready needs >= 1 filled field or attached file. With nothing filled: no form
+    on the page -> needs_you (NO_FORM_REASON) whatever else was decided; a form
+    whose every field needs you -> needs_you instead of ready."""
+    if filled > 0:
+        return status, reason
+    if form_fields == 0:
+        return "needs_you", NO_FORM_REASON + (f" ({detail})" if detail else "")
+    if status == "ready":
+        return "needs_you", zero_fill_reason(form_fields)
+    return status, reason
+
+
 def _screenshot(safe: SafePage, plan: FillPlan, status: str, screenshot_dir: Any) -> Optional[str]:
     name = f"autofill-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{status}.png"
     for d in ([Path(screenshot_dir)] if screenshot_dir else []) + [job_dir(plan.job_key)]:
@@ -129,6 +176,7 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
                             if p and Path(p).expanduser().is_file()}
     run = _Run(safe, plan, adapter, min_confidence)
     step_reached = None
+    opened, open_detail = False, ""
     try:
         if plan.url and _strip(safe.url) != _strip(plan.url):
             try:
@@ -158,7 +206,14 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
                 return _outcome("needs_you", "sign-in / account wall: sign in yourself (no passwords are typed)",
                                 run, screenshot=_screenshot(safe, plan, "needs_you", screenshot_dir),
                                 step_reached=step_reached)
-            if i < len(plan.steps):
+            if i == 0 and not opened and not open_detail:
+                # a description page: open the form behind its single "Apply" control,
+                # then re-run the page checks above on the form and plan it live
+                opened, open_detail = open_form(safe)
+                if opened:
+                    continue
+                open_detail = open_detail or "-"
+            if i < len(plan.steps) and not (i == 0 and opened):
                 actions = plan.steps[i]
             else:
                 actions = adapter.replan(safe, i, ctx) if hasattr(adapter, "replan") else None
@@ -230,6 +285,8 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
             status, reason = "needs_you", "couldn't find exactly one Submit button"
         else:
             status, reason = "ready", "filled; review and press Submit yourself"
+        status, reason = apply_zero_fill_rule(status, reason, run.filled, form_field_count(safe),
+                                              "" if open_detail in ("", "-") else open_detail)
         log.info("autofill %s: filled=%d left_empty=%d highlighted=%d", status, run.filled,
                  run.left_empty, len(run.highlighted))
         return _outcome(status, reason, run, submit_selector=submit,

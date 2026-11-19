@@ -999,3 +999,10 @@ def test_ui_sends_the_csrf_header():
             assert not re.search(r"\bfetch\(|XMLHttpRequest|sendBeacon", src), name
 
 
+
+
+# Review-flow fixes: "Tailor again" in the background, and Today's "Earlier days".
+EXPECTED_ROUTES.update({
+    ("POST", "/api/jobs/{key}/tailor/v2/start"), ("GET", "/api/jobs/{key}/tailor/v2/status"),
+    ("GET", "/api/queue/earlier"),
+})

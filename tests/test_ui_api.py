@@ -298,8 +298,11 @@ def test_artifact_edit_bad_input(client, profile, body):
 def test_artifact_reject(client, profile):
     key = seed()
     aid = _artifact(key)
-    assert client.post(f"/api/jobs/{key}/artifacts/{aid}/reject").json()["status"] == "rejected"
+    # retailor: false = reject only (the re-tailor flow is in tests/test_review_flow.py)
+    assert client.post(f"/api/jobs/{key}/artifacts/{aid}/reject",
+                       json={"retailor": False}).json()["status"] == "rejected"
     assert store.get_artifact(aid)["status"] == "rejected"
+    assert tailor_v2.background_state(key)["state"] == "idle"
     store.update_artifact(aid, status="approved")
     assert client.post(f"/api/jobs/{key}/artifacts/{aid}/reject").status_code == 409
     other = seed(ext="2")

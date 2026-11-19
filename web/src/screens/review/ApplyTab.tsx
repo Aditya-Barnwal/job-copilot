@@ -7,7 +7,7 @@ import { fmtDateTime, plural } from "../../lib/format";
 import { Link, setParams } from "../../lib/router";
 import type { AutofillSession, JobDetail } from "../../lib/types";
 import { Badge, Button, cx } from "../../components/ui";
-import { useArtifacts } from "./ReviewDrawer";
+import { CLOSED_TIP, useArtifacts } from "./ReviewDrawer";
 import { useFillPlan } from "./AnswersTab";
 
 const POLL_WHILE = new Set(["starting", "filling", "ready_to_submit", "needs_you", "blocked"]);
@@ -43,7 +43,7 @@ function Step({ n, title, children, state, last }: { n: number; title: string; c
   );
 }
 
-export function ApplyTab({ job }: { job: JobDetail }) {
+export function ApplyTab({ job, closed = null }: { job: JobDetail; closed?: string | null }) {
   const demo = useDemo();
   const toast = useToast();
   const qc = useQueryClient();
@@ -162,7 +162,7 @@ export function ApplyTab({ job }: { job: JobDetail }) {
           <div className="flex flex-wrap items-center gap-2 border-t border-line px-6 py-4">
             {!submitted && (!s || !open) && (
               <Button variant="primary" size="lg" icon={<Play className="size-4" />} busy={start.isPending}
-                disabled={demo || !approved} reason={demo ? "Autofill is off in the public demo — it drives a real browser on your computer" : !approved ? "Approve a tailored résumé first" : undefined}
+                disabled={demo || !approved || !!closed} reason={demo ? "Autofill is off in the public demo — it drives a real browser on your computer" : closed ? CLOSED_TIP : !approved ? "Approve a tailored résumé first" : undefined}
                 onClick={() => start.mutate()}>
                 {s ? "Open & fill again" : "Open & fill the form"}
               </Button>

@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookmarkCheck, Hand, PartyPopper, Save } from "lucide-react";
+import { BookmarkCheck, FileText, Hand, Paperclip, PartyPopper, Save } from "lucide-react";
 import { DEMO_ACTION_TIP, api, post } from "../lib/api";
 import { useDemo, useToast } from "../lib/app";
 import { fmtDateTime, plural } from "../lib/format";
 import { useTitle } from "../lib/router";
-import type { AutofillSession, UnansweredQuestion } from "../lib/types";
+import type { AutofillSession, NeedsAction, UnansweredQuestion } from "../lib/types";
 import { openReview } from "../components/JobCard";
 import { Badge, Button, CardSkeleton, EmptyState, ErrorState, PageHeader, SectionTitle, cx } from "../components/ui";
 
@@ -64,6 +64,35 @@ function QuestionCard({ q, i }: { q: UnansweredQuestion; i: number }) {
   );
 }
 
+const ACTION_BUTTON: Record<NeedsAction["kind"], string> = { resume: "Review", cover_letter: "Review", file: "Open" };
+
+/** A file the form needs (résumé, cover letter, other upload): an action on the job, not a question. */
+function ActionRow({ a }: { a: NeedsAction }) {
+  const who = a.job.company || "This job";
+  return (
+    <li className="card flex flex-wrap items-center gap-4 p-4">
+      <span className="grid size-9 place-items-center rounded-full bg-accent-soft text-accent-ink">
+        {a.kind === "file" ? <Paperclip className="size-4" aria-hidden /> : <FileText className="size-4" aria-hidden />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-ink">
+          {who} {a.text}
+          {a.kind === "file" && <span className="font-normal text-muted"> ({a.label})</span>}
+        </p>
+        <p className="mt-0.5 text-[13px] text-muted">
+          {a.job.title}
+          {a.kind === "resume" && " · approve a tailored résumé (or your base as is) and autofill attaches it"}
+          {a.kind === "cover_letter" && " · write or approve a cover letter and autofill uses it"}
+          {a.kind === "file" && " · autofill never attaches other files; add it in the form yourself"}
+        </p>
+      </div>
+      <Button size="sm" variant="secondary" aria-label={`${ACTION_BUTTON[a.kind]}: ${who} ${a.text}`} onClick={() => openReview(a.job.key, a.tab)}>
+        {ACTION_BUTTON[a.kind]}
+      </Button>
+    </li>
+  );
+}
+
 function SessionRow({ s }: { s: AutofillSession }) {
   const o = s.outcome || {};
   return (
@@ -85,13 +114,14 @@ function SessionRow({ s }: { s: AutofillSession }) {
 export function NeedsYou() {
   useTitle("Needs you");
   const sessions = useQuery({ queryKey: ["needs-you"], queryFn: () => api<{ sessions: AutofillSession[] }>("/api/autofill/needs-you"), refetchInterval: 10000 });
-  const qs = useQuery({ queryKey: ["unanswered"], queryFn: () => api<{ questions: UnansweredQuestion[]; bank_available: boolean }>("/api/answers/unanswered") });
+  const qs = useQuery({ queryKey: ["unanswered"], queryFn: () => api<{ questions: UnansweredQuestion[]; actions?: NeedsAction[]; bank_available: boolean }>("/api/answers/unanswered") });
   const loading = sessions.isLoading || qs.isLoading;
-  const nothing = !loading && !sessions.data?.sessions.length && !qs.data?.questions.length;
+  const actions = qs.data?.actions || [];
+  const nothing = !loading && !sessions.data?.sessions.length && !qs.data?.questions.length && !actions.length;
   return (
     <>
       <PageHeader eyebrow="Daily" title="Needs you">
-        Questions only you can answer, and fill windows waiting on you. Answer a question once and save it: the next form that asks it fills itself.
+        Questions only you can answer, files to approve, and fill windows waiting on you. Answer a question once and save it: the next form that asks it fills itself.
       </PageHeader>
       {loading ? <CardSkeleton rows={3} /> : sessions.error || qs.error ? (
         <ErrorState error={sessions.error || qs.error} onRetry={() => { sessions.refetch(); qs.refetch(); }} />
@@ -105,6 +135,12 @@ export function NeedsYou() {
             <>
               <SectionTitle count={sessions.data!.sessions.length}>Waiting in the browser</SectionTitle>
               <ul className="space-y-3">{sessions.data!.sessions.map((s) => <SessionRow key={s.id} s={s} />)}</ul>
+            </>
+          )}
+          {actions.length > 0 && (
+            <>
+              <SectionTitle count={actions.length}>Files to approve</SectionTitle>
+              <ul className="space-y-3">{actions.map((a) => <ActionRow key={`${a.job.key}:${a.kind}:${a.label}`} a={a} />)}</ul>
             </>
           )}
           {(qs.data?.questions.length || 0) > 0 && (

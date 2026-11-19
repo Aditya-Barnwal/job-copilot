@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 
-from jobcopilot import email_draft, scoring, store
+from jobcopilot import demo, email_draft, scoring, store
 from jobcopilot import tailor as tailor_mod
 from jobcopilot import tailor_v2
 from jobcopilot import versions as versions_mod
@@ -266,6 +266,52 @@ def tailor_v2_endpoint(key: str, body: Optional[dict] = Body(default=None)):
     return out
 
 
+def start_retailor(key: str, *, guidance=None, base=None, from_artifact_id=None) -> dict:
+    """Start a background re-tailoring for a job (shared by "Tailor again" and
+    rejecting a version). Returns the tailoring state; {"state": "skipped", ...}
+    when the posting is closed, so no LLM call is spent on it."""
+    if guidance is not None and not isinstance(guidance, str):
+        raise HTTPException(status_code=400, detail="guidance must be text")
+    if base is not None and not isinstance(base, str):
+        raise HTTPException(status_code=400, detail="base must be a string")
+    job = store.get_job(key)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.get("gone_at"):
+        return {"state": "skipped", "detail": "This posting is closed, so it wasn't tailored again."}
+    if not tailor_v2.has_confirmed_facts():
+        return {"state": "failed", "code": "no_confirmed_facts", "detail": tailor_v2.CONFIRM_FACTS_MSG}
+    _started, state = tailor_v2.start_background(key, guidance=guidance, base=base,
+                                                 from_artifact_id=from_artifact_id)
+    return state
+
+
+@router.post("/api/jobs/{key}/tailor/v2/start")
+def tailor_v2_start(key: str, body: Optional[dict] = Body(default=None)):
+    """"Tailor again": a new version in the background, with optional guidance
+    (an opinion for the model, never a fact). Poll /tailor/v2/status."""
+    body = body or {}
+    if demo.enabled():
+        raise HTTPException(status_code=403, detail="tailoring is off in the public demo")
+    aid = body.get("from_artifact_id")
+    aid = None if aid is None else _parse_int(aid, "from_artifact_id")
+    if tailor_v2.background_state(key).get("state") == "running":
+        return JSONResponse(status_code=409, content={"detail": "a new version is already being tailored",
+                                                      "tailoring": tailor_v2.background_state(key)})
+    state = start_retailor(key, guidance=body.get("guidance"), base=body.get("base"), from_artifact_id=aid)
+    if state.get("state") == "skipped":
+        return JSONResponse(status_code=409, content={"detail": state["detail"], "tailoring": state})
+    if state.get("state") == "failed":
+        return JSONResponse(status_code=409, content={"detail": state["detail"], "tailoring": state})
+    return {"ok": True, "tailoring": state}
+
+
+@router.get("/api/jobs/{key}/tailor/v2/status")
+def tailor_v2_status(key: str):
+    """The job's background tailoring: {state: idle | running | done | failed, ...}."""
+    return tailor_v2.background_state(key)
+
+
 @router.post("/api/jobs/{key}/artifacts/{artifact_id}/approve")
 def approve_artifact(key: str, artifact_id: int, body: Optional[dict] = Body(default=None)):
     body = body or {}
@@ -282,12 +328,21 @@ def approve_artifact(key: str, artifact_id: int, body: Optional[dict] = Body(def
     return out
 
 
+def _unchanged(plan) -> bool:
+    """True when the version is the base résumé unchanged (recorded, or an empty
+    plan stored before the reason was recorded)."""
+    if not isinstance(plan, dict):
+        return False
+    return bool(plan.get("unchanged")) or not (tailor_v2._plan_has_edits(plan) or plan.get("one_page_dropped"))
+
+
 def _artifact_summary(a: dict) -> dict:
     g = a.get("grounding") or {}
     return {"id": a["id"], "job_key": a["job_key"], "version": a["version"], "base": a.get("base"),
             "status": a.get("status"), "pages": a.get("pages"), "created_at": a.get("created_at"),
             "approved_at": a.get("approved_at"), "grounding_clean": g.get("clean"),
             "flags": g.get("flags"), "edit_plan": a.get("edit_plan"),
+            "unchanged": _unchanged(a.get("edit_plan")),
             "pdf_url": f"/api/artifacts/{a['id']}/pdf" if a.get("pdf_path") else None}
 
 

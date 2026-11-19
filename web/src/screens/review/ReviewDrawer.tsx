@@ -1,11 +1,11 @@
-import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, EyeOff, Undo2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronUp, CircleSlash, EyeOff, Undo2, X } from "lucide-react";
 import { api, enc, post } from "../../lib/api";
-import { pushOverlay, useToast } from "../../lib/app";
-import { STATUS_LABEL, workplace } from "../../lib/format";
+import { pushOverlay, useDemo, useToast } from "../../lib/app";
+import { STATUS_LABEL, fmtDateTime, workplace } from "../../lib/format";
 import { setParams, useLocation } from "../../lib/router";
-import type { ArtifactSummary, JobCard, JobDetail } from "../../lib/types";
+import type { ArtifactSummary, JobCard, JobDetail, LiveCheck } from "../../lib/types";
 import { currentListKeys, hide, PostingLink, TierBadge, useStatusChange, Via } from "../../components/JobCard";
 import { trapTab } from "../../components/Shell";
 import { Badge, Button, ErrorState, IconButton, Kbd, ScoreRing, Segmented, Skeleton } from "../../components/ui";
@@ -33,6 +33,57 @@ export function useArtifacts(key: string) {
   return useQuery({ queryKey: ["artifacts", key], queryFn: () => api<{ artifacts: ArtifactSummary[] }>(`/api/jobs/${enc(key)}/artifacts`) });
 }
 
+// Each job's posting is checked at most once per app session (POST check-live
+// marks a dead posting gone on the server). Errors (endpoint missing, offline)
+// count as "not known": nothing is shown and the check isn't retried.
+const liveChecks = new Map<string, Promise<LiveCheck | null>>();
+
+export function useLiveCheck(key: string, enabled: boolean, qc: QueryClient): LiveCheck | null {
+  const [res, setRes] = useState<LiveCheck | null>(null);
+  useEffect(() => {
+    setRes(null);
+    if (!enabled) return;
+    let p = liveChecks.get(key);
+    if (!p) {
+      p = post<LiveCheck>(`/api/jobs/${enc(key)}/check-live`).then(
+        (r) => {
+          if (r && r.live === false) {
+            // closed: the job leaves Today, the lanes and Earlier days; the tracker marks it
+            for (const k of [["job", key], ["queue"], ["earlier"], ["matches"], ["tracker"], ["unanswered"]]) {
+              qc.invalidateQueries({ queryKey: k });
+            }
+          }
+          return r && typeof r.live === "boolean" ? r : null;
+        },
+        () => null,
+      );
+      liveChecks.set(key, p);
+    }
+    let alive = true;
+    p.then((r) => { if (alive) setRes(r); });
+    return () => { alive = false; };
+  }, [key, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  return res;
+}
+
+/** Why the posting is closed, or null while it is (as far as we know) open. */
+export function closedReason(job: JobDetail | undefined, live: LiveCheck | null): string | null {
+  if (live?.live === false) return live.reason || "The posting is no longer accepting applications.";
+  if (job?.gone_at) return "No job board lists this posting any more.";
+  return null;
+}
+
+export const CLOSED_TIP = "This posting is closed";
+
+function checkedAt(live: LiveCheck | null): string | null {
+  const t = live?.checked_at;
+  if (typeof t === "number") return fmtDateTime(t > 1e12 ? t / 1000 : t);
+  if (typeof t === "string" && !Number.isNaN(Date.parse(t))) {
+    return new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  return null;
+}
+
 export function ReviewDrawer() {
   const { search } = useLocation();
   const key = search.get("job");
@@ -47,6 +98,9 @@ function Drawer({ jobKey, tab }: { jobKey: string; tab: Tab }) {
   const qc = useQueryClient();
   const toast = useToast();
   const change = useStatusChange();
+  const demo = useDemo();
+  const live = useLiveCheck(jobKey, !demo, qc);
+  const closed = closedReason(job.data, live);
   const close = () => setParams({ job: null, tab: null });
   const go = (d: number) => {
     const keys = currentListKeys();
@@ -139,6 +193,16 @@ function Drawer({ jobKey, tab }: { jobKey: string; tab: Tab }) {
               <IconButton label="Close (Esc)" onClick={close}><X className="size-4" /></IconButton>
             </div>
           </div>
+          {closed && (
+            <div role="status" className="mt-4 flex items-start gap-3 rounded-[12px] border border-bad/30 bg-bad-soft px-4 py-3 text-sm text-bad">
+              <CircleSlash className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span className="flex-1">
+                <span className="font-semibold">This posting is closed.</span> {closed}
+                {" "}Approving a résumé and Open &amp; fill are off for it. It stays on the tracker, marked closed.
+                {checkedAt(live) && <span className="text-bad/80"> Checked {checkedAt(live)}.</span>}
+              </span>
+            </div>
+          )}
           <div className="mt-5 flex items-center justify-between gap-4">
             <Segmented<Tab>
               label="Review sections"
@@ -163,13 +227,13 @@ function Drawer({ jobKey, tab }: { jobKey: string; tab: Tab }) {
           ) : !j ? (
             <div className="grid gap-6 lg:grid-cols-2"><Skeleton className="h-96" /><Skeleton className="h-96" /></div>
           ) : tab === "resume" ? (
-            <ResumeTab job={j} fit={fit.data} />
+            <ResumeTab job={j} fit={fit.data} closed={closed} />
           ) : tab === "letter" ? (
             <CoverLetterTab job={j} />
           ) : tab === "answers" ? (
             <AnswersTab job={j} />
           ) : (
-            <ApplyTab job={j} />
+            <ApplyTab job={j} closed={closed} />
           )}
         </div>
       </div>

@@ -19,8 +19,8 @@ export interface NavItem {
 
 function useNeedsYouCount() {
   const s = useQuery({ queryKey: ["needs-you"], queryFn: () => api<{ sessions: AutofillSession[] }>("/api/autofill/needs-you"), refetchInterval: 20000 });
-  const q = useQuery({ queryKey: ["unanswered"], queryFn: () => api<{ questions: UnansweredQuestion[] }>("/api/answers/unanswered"), refetchInterval: 60000 });
-  return (s.data?.sessions.length || 0) + (q.data?.questions.length || 0);
+  const q = useQuery({ queryKey: ["unanswered"], queryFn: () => api<{ questions: UnansweredQuestion[]; actions?: unknown[] }>("/api/answers/unanswered"), refetchInterval: 60000 });
+  return (s.data?.sessions.length || 0) + (q.data?.questions.length || 0) + (q.data?.actions?.length || 0);
 }
 
 export const NAV_GROUPS: { title: string; items: Omit<NavItem, "badge">[] }[] = [

@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { diffWords } from "diff";
-import { Check, CircleAlert, FileDown, Pencil, RotateCcw, ShieldCheck, Sparkles, Wand2, X } from "lucide-react";
+import { Check, CircleAlert, Copy, FileDown, Pencil, RotateCcw, RotateCw, ShieldCheck, Sparkles, Wand2, X } from "lucide-react";
 import { ApiError, DEMO_TAILOR_TIP, api, enc, post } from "../../lib/api";
 import { useDemo, useToast } from "../../lib/app";
 import { fmtDateTime, plural } from "../../lib/format";
-import type { ArtifactReview, ArtifactSummary, DiffRow, Grounding, JobDetail, Line } from "../../lib/types";
+import type { ArtifactReview, ArtifactSummary, DiffRow, Grounding, JobDetail, Line, TailorState } from "../../lib/types";
 import { Badge, Button, EmptyState, ErrorState, LinkButton, Meter, Skeleton, cx } from "../../components/ui";
-import { useArtifacts, type FitInfo } from "./ReviewDrawer";
+import { CLOSED_TIP, useArtifacts, type FitInfo } from "./ReviewDrawer";
 
 const VERSION_LABEL: Record<string, string> = { ok: "ready", needs_review: "needs review", approved: "approved", rejected: "rejected" };
+const SAME_AS_BASE = "Same as your base résumé";
 const SECTION_LABEL: Record<string, string> = {
   education: "Education", skills: "Skills", experience: "Experience", projects: "Projects",
   research: "Research", hackathons: "Hackathons",
@@ -178,9 +179,123 @@ function ResumeRow({ line, diff, verdict, editable, draft, onDraft, showChanges,
   );
 }
 
+// ---------------------------------------------------------------- tailoring in the background
+
+interface Preview {
+  status: string;
+  base?: string;
+  available_bases?: string[];
+  keywords?: { supported: string[]; missing: string[]; missing_must: string[] };
+  reasons?: string[];
+}
+
+function useTailorPreview(jobKey: string, enabled = true) {
+  const demo = useDemo();
+  return useQuery({
+    queryKey: ["kw", jobKey],
+    enabled: !demo && enabled,
+    retry: false,
+    queryFn: () => api<Preview>(`/api/jobs/${enc(jobKey)}/tailor/v2/keywords`),
+  });
+}
+
+/** The job's background tailoring (reject -> new version, "Tailor again"); polled while it runs. */
+function useTailorState(jobKey: string) {
+  const demo = useDemo();
+  return useQuery({
+    queryKey: ["tailor-bg", jobKey],
+    enabled: !demo,
+    retry: false,
+    queryFn: () => api<TailorState>(`/api/jobs/${enc(jobKey)}/tailor/v2/status`),
+    refetchInterval: (q) => (q.state.data?.state === "running" ? 1500 : false),
+  });
+}
+
+function TailoringBanner({ state }: { state: TailorState }) {
+  return (
+    <div role="status" aria-live="polite" className="mb-5 flex items-start gap-3 rounded-[12px] border border-accent-line bg-accent-soft/60 px-4 py-3 text-sm text-ink">
+      <RotateCw className="mt-0.5 size-4 shrink-0 animate-spin text-accent" aria-hidden />
+      <span>
+        <span className="font-medium">Tailoring a new version…</span>
+        <span className="text-ink-2"> It opens here when it's done (up to a minute).</span>
+        {state.guidance && <span className="block text-[13px] text-muted">Your note for it: “{state.guidance}”. It steers which confirmed facts are picked; it is never added as a fact.</span>}
+      </span>
+    </div>
+  );
+}
+
+type FormMode = "reject" | "again";
+
+function GuidanceForm({ mode, jobKey, current, closed, onCancel, onStarted }:
+  { mode: FormMode; jobKey: string; current: ArtifactSummary; closed: string | null; onCancel: () => void; onStarted: (t: TailorState | null) => void }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const preview = useTailorPreview(jobKey);
+  const [note, setNote] = useState("");
+  const [base, setBase] = useState("");
+  const bases = preview.data?.available_bases || [];
+  const retailor = !closed;
+  const submit = useMutation({
+    mutationFn: () => mode === "reject"
+      ? post<{ tailoring?: TailorState | null }>(`/api/jobs/${enc(jobKey)}/artifacts/${current.id}/reject`, {
+        reason: note.trim() || null, base: base || null, retailor,
+      })
+      : post<{ tailoring?: TailorState | null }>(`/api/jobs/${enc(jobKey)}/tailor/v2/start`, {
+        guidance: note.trim() || null, base: base || null, from_artifact_id: current.id,
+      }),
+    onSuccess: (r) => {
+      if (mode === "reject") {
+        toast.notify(retailor ? `Version ${current.version} rejected. Tailoring a new version…` : `Version ${current.version} rejected. It won't be used.`);
+        qc.invalidateQueries({ queryKey: ["artifacts", jobKey] });
+        qc.invalidateQueries({ queryKey: ["review", current.id] });
+        qc.invalidateQueries({ queryKey: ["job", jobKey] });
+      }
+      onStarted(r.tailoring || null);
+    },
+    onError: toast.error,
+  });
+  const id = `guidance-${mode}`;
+  return (
+    <form className="space-y-3 rounded-[14px] border border-line bg-surface-2 p-4" aria-label={mode === "reject" ? "Reject this version" : "Tailor again"}
+      onSubmit={(e) => { e.preventDefault(); submit.mutate(); }}>
+      <div>
+        <label htmlFor={id} className="text-sm font-medium text-ink">
+          {mode === "reject" ? "What's wrong with it?" : "What should the new version do differently?"} <span className="font-normal text-muted">(optional)</span>
+        </label>
+        <input id={id} autoFocus value={note} maxLength={300} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. doesn't emphasise CV work, too generic"
+          className="mt-1.5 h-10 w-full rounded-[10px] border border-line-2 bg-surface px-3 text-sm text-ink outline-none placeholder:text-faint focus:border-accent-line focus:ring-2 focus:ring-accent/20" />
+        <p className="mt-1 text-[12px] text-muted">
+          {retailor
+            ? "A new version is tailored with your note as guidance: it can change which confirmed facts are picked, emphasised or reordered, and the base. It is never added as a fact, and every line is still checked against your facts."
+            : "This posting is closed, so no new version is tailored."}
+        </p>
+      </div>
+      {retailor && bases.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label htmlFor={`${id}-base`} className="text-ink-2">Base résumé</label>
+          <select id={`${id}-base`} value={base} onChange={(e) => setBase(e.target.value)}
+            className="h-8 rounded-[8px] border border-line-2 bg-surface px-2 text-[13px] text-ink">
+            <option value="">Keep {current.base?.replace(/_/g, " ") || "the same"} (or the one your note names)</option>
+            {bases.filter((b) => b !== current.base).map((b) => <option key={b} value={b}>{b.replace(/_/g, " ")}</option>)}
+          </select>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" variant={mode === "reject" ? "danger" : "primary"} busy={submit.isPending}
+          icon={mode === "reject" ? <X className="size-4" /> : <Sparkles className="size-4" />}>
+          {mode === "reject" ? (retailor ? "Reject and tailor again" : "Reject") : "Tailor again"}
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
+
 // ---------------------------------------------------------------- approve panel
 
-function ApprovePanel({ review, jobKey, onApproved }: { review: ArtifactReview; jobKey: string; onApproved: () => void }) {
+function ApprovePanel({ review, jobKey, onApproved, onReject, onAgain, closed, busy }:
+  { review: ArtifactReview; jobKey: string; onApproved: () => void; onReject: () => void; onAgain: () => void; closed: string | null; busy: boolean }) {
   const demo = useDemo();
   const toast = useToast();
   const qc = useQueryClient();
@@ -191,17 +306,16 @@ function ApprovePanel({ review, jobKey, onApproved }: { review: ArtifactReview; 
   const confirmable = flags.filter(([k]) => k !== "unknown_facts");
   const blocked = flags.some(([k]) => k === "unknown_facts");
   const allChecked = confirmable.every(([k, items]) => items.every((t) => ok[k]?.has(t)));
+  const same = !!review.unchanged;
   const approve = useMutation({
     mutationFn: () => post(`/api/jobs/${enc(jobKey)}/artifacts/${review.artifact_id}/approve`, {
       confirmed_flags: Object.fromEntries(Object.entries(ok).map(([k, s]) => [k, [...s]])),
     }),
-    onSuccess: () => { toast.notify(`Version ${review.version} approved — the job is ready to submit.`, { kind: "success" }); qc.invalidateQueries(); onApproved(); },
+    onSuccess: () => {
+      toast.notify(same ? "Your base résumé is approved as is — the job is ready to submit." : `Version ${review.version} approved — the job is ready to submit.`, { kind: "success" });
+      qc.invalidateQueries(); onApproved();
+    },
     onError: (e) => toast.error(e instanceof ApiError && e.status === 409 && typeof (e.payload as { detail?: string })?.detail === "string" ? new Error((e.payload as { detail: string }).detail) : e),
-  });
-  const reject = useMutation({
-    mutationFn: () => post(`/api/jobs/${enc(jobKey)}/artifacts/${review.artifact_id}/reject`, {}),
-    onSuccess: () => { toast.notify(`Version ${review.version} rejected. It won't be used.`); qc.invalidateQueries(); },
-    onError: toast.error,
   });
   if (review.status === "approved") {
     return (
@@ -212,7 +326,17 @@ function ApprovePanel({ review, jobKey, onApproved }: { review: ArtifactReview; 
     );
   }
   if (review.status === "rejected") {
-    return <p className="rounded-[12px] bg-paper-2 px-4 py-3 text-sm text-muted">You rejected this version. Pick another, edit it into a new version, or tailor again.</p>;
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded-[12px] bg-paper-2 px-4 py-3 text-sm text-muted">
+        <span className="flex-1">
+          You rejected this version{review.rejection?.reason ? <> (“{review.rejection.reason}”)</> : null}. Pick another, edit it into a new version, or tailor again.
+        </span>
+        <Button size="sm" variant="secondary" icon={<Sparkles className="size-3.5" />} disabled={demo || !!closed || busy}
+          reason={demo ? DEMO_TAILOR_TIP : closed ? CLOSED_TIP : busy ? "A new version is being tailored" : undefined} onClick={onAgain}>
+          Tailor again
+        </Button>
+      </div>
+    );
   }
   return (
     <div className="space-y-4 rounded-[14px] border border-line bg-surface-2 p-4">
@@ -250,14 +374,14 @@ function ApprovePanel({ review, jobKey, onApproved }: { review: ArtifactReview; 
       )}
       {review.stale && <p className="text-[13px] text-warn">Your confirmed facts changed since this version was made, so it can't be approved. Tailor again.</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" icon={<Check className="size-4" />} busy={approve.isPending}
-          disabled={demo || review.stale || blocked || (!g?.clean && !allChecked)}
-          reason={demo ? DEMO_TAILOR_TIP : review.stale ? "Facts changed since tailoring" : blocked ? "A line cites an unconfirmed fact" : !g?.clean && !allChecked ? "Settle every flag first" : undefined}
+        <Button variant="primary" icon={same ? <Copy className="size-4" /> : <Check className="size-4" />} busy={approve.isPending}
+          disabled={demo || !!closed || review.stale || blocked || (!g?.clean && !allChecked)}
+          reason={demo ? DEMO_TAILOR_TIP : closed ? CLOSED_TIP : review.stale ? "Facts changed since tailoring" : blocked ? "A line cites an unconfirmed fact" : !g?.clean && !allChecked ? "Settle every flag first" : undefined}
           onClick={() => approve.mutate()}>
-          Approve version {review.version}
+          {same ? "Use the base résumé as is" : `Approve version ${review.version}`}
         </Button>
-        <Button variant="ghost" icon={<X className="size-4" />} busy={reject.isPending} disabled={demo} reason={demo ? DEMO_TAILOR_TIP : undefined}
-          onClick={() => reject.mutate()}>
+        <Button variant="ghost" icon={<X className="size-4" />} disabled={demo || busy}
+          reason={demo ? DEMO_TAILOR_TIP : busy ? "A new version is being tailored" : undefined} onClick={onReject}>
           Reject
         </Button>
       </div>
@@ -267,16 +391,11 @@ function ApprovePanel({ review, jobKey, onApproved }: { review: ArtifactReview; 
 
 // ---------------------------------------------------------------- tailor (no version yet)
 
-function TailorStart({ job }: { job: JobDetail }) {
+function TailorStart({ job, closed }: { job: JobDetail; closed: string | null }) {
   const demo = useDemo();
   const toast = useToast();
   const qc = useQueryClient();
-  const preview = useQuery({
-    queryKey: ["kw", job.key],
-    enabled: !demo,
-    retry: false,
-    queryFn: () => api<{ status: string; base?: string; keywords?: { supported: string[]; missing: string[]; missing_must: string[] }; reasons?: string[] }>(`/api/jobs/${enc(job.key)}/tailor/v2/keywords`),
-  });
+  const preview = useTailorPreview(job.key);
   const [attest, setAttest] = useState<Set<string>>(new Set());
   const [strike, setStrike] = useState<Set<string>>(new Set());
   const tailor = useMutation({
@@ -331,7 +450,7 @@ function TailorStart({ job }: { job: JobDetail }) {
       ) : null}
       <div className="mt-6 flex justify-center">
         <Button variant="primary" size="lg" icon={<Sparkles className="size-4" />} busy={tailor.isPending}
-          disabled={demo || preview.data?.status === "refused"} reason={demo ? DEMO_TAILOR_TIP : undefined} onClick={() => tailor.mutate()}>
+          disabled={demo || !!closed || preview.data?.status === "refused"} reason={demo ? DEMO_TAILOR_TIP : closed ? CLOSED_TIP : undefined} onClick={() => tailor.mutate()}>
           {tailor.isPending ? "Tailoring… (up to a minute)" : "Tailor résumé"}
         </Button>
       </div>
@@ -341,8 +460,11 @@ function TailorStart({ job }: { job: JobDetail }) {
 
 // ---------------------------------------------------------------- the tab
 
-export function ResumeTab({ job, fit }: { job: JobDetail; fit?: FitInfo }) {
+export function ResumeTab({ job, fit, closed = null }: { job: JobDetail; fit?: FitInfo; closed?: string | null }) {
   const arts = useArtifacts(job.key);
+  const qc = useQueryClient();
+  const toast = useToast();
+  const bg = useTailorState(job.key);
   const list = arts.data?.artifacts || [];
   const usable = list.filter((a) => !["failed", "pending"].includes(a.status)).sort((a, b) => b.version - a.version);
   const preferred = usable.find((a) => a.id === job.artifact_id) || usable.find((a) => a.status !== "rejected") || usable[0];
@@ -350,33 +472,60 @@ export function ResumeTab({ job, fit }: { job: JobDetail; fit?: FitInfo }) {
   useEffect(() => setPicked(null), [job.key]);
   const current: ArtifactSummary | undefined = usable.find((a) => a.id === picked) || preferred;
 
+  // a background run that finishes switches the card to the new version
+  const done = (t: TailorState) => {
+    qc.invalidateQueries({ queryKey: ["job", job.key] });
+    qc.invalidateQueries({ queryKey: ["artifacts", job.key] }).then(() => { if (t.artifact_id) setPicked(t.artifact_id); });
+    toast.notify(t.unchanged
+      ? `Version ${t.version} is ready. It is the same as your base résumé — the card says why.`
+      : `Version ${t.version} is ready${t.status === "needs_review" ? " — it needs your review" : ""}.`, { kind: "success" });
+  };
+  const last = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const t = bg.data;
+    if (last.current === "running" && t?.state === "done") done(t);
+    if (last.current === "running" && t?.state === "failed") toast.error(new Error(`Tailoring the new version failed: ${t.detail || "unknown error"}`));
+    last.current = t?.state;
+  }, [bg.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const follow = (t: TailorState | null) => {
+    if (!t) return;
+    if (t.state === "running") { last.current = "running"; qc.setQueryData(["tailor-bg", job.key], t); }
+    else if (t.state === "done") done(t);
+    else if (t.detail) toast.error(new Error(t.detail));
+  };
+  const running = bg.data?.state === "running";
+
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <JobDescription job={job} fit={fit} />
       <div className="min-w-0">
+        {running && <TailoringBanner state={bg.data!} />}
         {arts.isLoading ? (
           <Skeleton className="h-96" />
         ) : arts.error ? (
           <ErrorState error={arts.error} onRetry={() => arts.refetch()} />
         ) : !current ? (
-          <TailorStart job={job} />
+          running ? null : <TailorStart job={job} closed={closed} />
         ) : (
-          <VersionView jobKey={job.key} versions={usable} current={current} onPick={setPicked} />
+          <VersionView jobKey={job.key} versions={usable} current={current} onPick={setPicked}
+            closed={closed} running={running} lastRun={bg.data} onStarted={follow} />
         )}
       </div>
     </div>
   );
 }
 
-function VersionView({ jobKey, versions, current, onPick }:
-  { jobKey: string; versions: ArtifactSummary[]; current: ArtifactSummary; onPick: (id: number) => void }) {
+function VersionView({ jobKey, versions, current, onPick, closed, running, lastRun, onStarted }:
+  { jobKey: string; versions: ArtifactSummary[]; current: ArtifactSummary; onPick: (id: number) => void;
+    closed: string | null; running: boolean; lastRun?: TailorState; onStarted: (t: TailorState | null) => void }) {
   const demo = useDemo();
   const toast = useToast();
   const qc = useQueryClient();
   const review = useQuery({ queryKey: ["review", current.id], queryFn: () => api<ArtifactReview>(`/api/artifacts/${current.id}/review`) });
   const [showChanges, setShowChanges] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  useEffect(() => setDrafts({}), [current.id]);
+  const [form, setForm] = useState<FormMode | null>(null);
+  useEffect(() => { setDrafts({}); setForm(null); }, [current.id]);
   const save = useMutation({
     mutationFn: () => post<{ artifact_id: number; version: number; status: string }>(`/api/jobs/${enc(jobKey)}/artifacts/${current.id}/edit`, { rephrase: drafts }),
     onSuccess: (r) => {
@@ -398,6 +547,13 @@ function VersionView({ jobKey, versions, current, onPick }:
   });
   const changedCount = (r?.diff || []).filter((d) => d.op !== "same").length;
   const nDrafts = Object.keys(drafts).length;
+  const againOff = demo || !!closed || running;
+  const againWhy = demo ? DEMO_TAILOR_TIP : closed ? CLOSED_TIP : running ? "A new version is being tailored" : undefined;
+  const started = (t: TailorState | null) => {
+    if (form === "reject") onPick(current.id);        // stay on the rejected version until the new one is ready
+    setForm(null);
+    onStarted(t);
+  };
 
   return (
     <section aria-label="Tailored résumé" className="card">
@@ -407,20 +563,35 @@ function VersionView({ jobKey, versions, current, onPick }:
         <select id="version-pick" value={current.id} onChange={(e) => onPick(Number(e.target.value))}
           className="h-8 rounded-[8px] border border-line-2 bg-surface px-2 text-[13px] text-ink">
           {versions.map((v) => (
-            <option key={v.id} value={v.id}>Version {v.version} · {v.base?.replace(/_/g, " ")} · {VERSION_LABEL[v.status] || v.status}</option>
+            <option key={v.id} value={v.id}>Version {v.version} · {v.base?.replace(/_/g, " ")} · {VERSION_LABEL[v.status] || v.status}{v.unchanged ? " · same as base" : ""}</option>
           ))}
         </select>
         <Badge tone={current.status === "approved" ? "good" : current.status === "needs_review" ? "warn" : current.status === "rejected" ? "neutral" : "accent"}>
           {current.status === "needs_review" ? "Needs review" : current.status === "ok" ? "Ready to approve" : current.status}
         </Badge>
+        {r?.unchanged && <Badge tone="warn">{SAME_AS_BASE}</Badge>}
         <span className="flex-1" />
         <label className="inline-flex items-center gap-2 text-[13px] text-muted">
           <input type="checkbox" className="accent-[var(--accent)]" checked={showChanges} onChange={(e) => setShowChanges(e.target.checked)} />
           Show changes vs base
         </label>
+        <Button size="sm" variant="secondary" icon={<Sparkles className="size-3.5" />} disabled={againOff} reason={againWhy}
+          onClick={() => setForm(form === "again" ? null : "again")}>
+          Tailor again
+        </Button>
         {current.pdf_url && <LinkButton size="sm" href={current.pdf_url} icon={<FileDown className="size-3.5" />}>PDF</LinkButton>}
       </div>
       <div className="px-5 py-5">
+        {form === "again" && (
+          <div className="mb-5">
+            <GuidanceForm mode="again" jobKey={jobKey} current={current} closed={closed} onCancel={() => setForm(null)} onStarted={started} />
+          </div>
+        )}
+        {!running && lastRun?.state === "failed" && lastRun.detail && (
+          <p className="mb-4 flex items-start gap-2 rounded-[10px] bg-warn-soft px-3 py-2 text-[13px] text-warn">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />The last “Tailor again” didn't finish: {lastRun.detail}
+          </p>
+        )}
         {review.isLoading ? (
           <div className="space-y-3"><Skeleton className="h-4 w-1/3" /><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-5/6" /><Skeleton className="h-4 w-2/3" /></div>
         ) : review.error ? (
@@ -429,9 +600,24 @@ function VersionView({ jobKey, versions, current, onPick }:
           <p className="text-sm text-warn">{r.problem}</p>
         ) : r ? (
           <>
+            {r.unchanged && (
+              <div role="note" aria-label={SAME_AS_BASE} className="mb-5 rounded-[12px] border border-warn/30 bg-warn-soft/60 px-4 py-3.5">
+                <p className="flex items-center gap-2 font-medium text-ink"><Copy className="size-4 text-warn" aria-hidden />{SAME_AS_BASE}</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{r.unchanged.reason}</p>
+                <p className="mt-1 text-[13px] text-muted">
+                  {current.status === "rejected" ? "Tailor again with a note on what to change." : "Tailor again with a note on what to change, or approve it below with “Use the base résumé as is”: nothing is added to your base."}
+                </p>
+                <div className="mt-3">
+                  <Button size="sm" variant="secondary" icon={<Sparkles className="size-3.5" />} disabled={againOff} reason={againWhy} onClick={() => setForm("again")}>
+                    Tailor again
+                  </Button>
+                </div>
+              </div>
+            )}
             <p className="mb-5 text-[13px] text-muted">
               Base <span className="font-medium text-ink-2">{r.base}</span> · {changedCount ? plural(changedCount, "change") : "no changes"} from it
               {r.pages ? ` · ${plural(r.pages, "page")}` : ""} · made {fmtDateTime(r.created_at)}
+              {r.guidance && <> · tailored again{r.from_version ? ` after version ${r.from_version}` : ""} with your note “{r.guidance}”</>}
             </p>
             <div className="space-y-6">
               {sections.map((s) => (
@@ -475,8 +661,13 @@ function VersionView({ jobKey, versions, current, onPick }:
                 </span>
               </div>
             )}
-            <div className="mt-6">
-              <ApprovePanel review={r} jobKey={jobKey} onApproved={() => {}} />
+            <div className="mt-6 space-y-4">
+              {form === "reject" ? (
+                <GuidanceForm mode="reject" jobKey={jobKey} current={current} closed={closed} onCancel={() => setForm(null)} onStarted={started} />
+              ) : (
+                <ApprovePanel review={r} jobKey={jobKey} onApproved={() => {}} closed={closed} busy={running}
+                  onReject={() => setForm("reject")} onAgain={() => setForm("again")} />
+              )}
             </div>
           </>
         ) : null}

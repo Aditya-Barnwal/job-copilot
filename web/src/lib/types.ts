@@ -62,6 +62,20 @@ export interface QueueResponse {
   count: number;
 }
 
+// GET /api/queue/earlier: previous queue days below today's list.
+export interface EarlierDay {
+  day: string;
+  count: number;
+  items: (JobCard & { queue_lane?: string; queue_day?: string })[];
+}
+
+export interface EarlierResponse {
+  today: string | null;
+  days: EarlierDay[];
+  has_more: boolean;
+  total_days: number;
+}
+
 export interface Paged<T> {
   total: number;
   limit: number;
@@ -85,6 +99,7 @@ export interface JobDetail extends Record<string, unknown> {
   tz_requirement_text: string | null;
   artifact_id: number | null;
   fill_status: string | null;
+  gone_at?: number | null;
   submitted_at: number | null;
   submit_proof_path: string | null;
   sources: { source: string; url: string | null }[];
@@ -142,6 +157,34 @@ export interface ArtifactSummary {
   approved_at: number | null;
   grounding_clean: boolean | null;
   pdf_url: string | null;
+  unchanged?: boolean;
+}
+
+// Why a version is the base résumé unchanged (tailor_v2.unchanged_reason).
+export interface Unchanged {
+  code: string;
+  reason: string;
+}
+
+// GET /api/jobs/{key}/tailor/v2/status: background tailoring ("Tailor again", reject).
+export interface TailorState {
+  state: "idle" | "running" | "done" | "failed" | "skipped";
+  started_at?: number;
+  finished_at?: number;
+  artifact_id?: number | null;
+  version?: number | null;
+  status?: string;
+  unchanged?: Unchanged | null;
+  detail?: string;
+  code?: string;
+  guidance?: string | null;
+}
+
+// POST /api/jobs/{key}/check-live
+export interface LiveCheck {
+  live: boolean;
+  reason?: string | null;
+  checked_at?: number | string | null;
 }
 
 export interface Line {
@@ -199,6 +242,12 @@ export interface ArtifactReview {
   user_edited: string[];
   editable?: string[];
   keywords: { surfaced: string[]; attested: string[]; struck: string[] };
+  unchanged: Unchanged | null;
+  unchanged_label: string | null;
+  reasons: string[];
+  guidance: string | null;
+  from_version: number | null;
+  rejection: { reason: string | null; at: number } | null;
 }
 
 export interface FillAction {
@@ -249,6 +298,16 @@ export interface AutofillSession {
   live?: boolean;
   has_screenshot?: boolean;
   screenshot_path?: string | null;
+}
+
+// A file field (résumé, cover letter, other upload) a fill plan needs: an action, never a question.
+export interface NeedsAction {
+  kind: "resume" | "cover_letter" | "file";
+  label: string;
+  text: string;
+  tab: "resume" | "letter" | "apply";
+  required: boolean;
+  job: { key: string; title: string | null; company: string | null };
 }
 
 export interface UnansweredQuestion {

@@ -168,7 +168,7 @@ export function JobCard({ job, selected, onSelect, index, excluded = false, comp
             <span className="text-[13px] font-semibold tracking-wide text-ink-2">{job.company || "Unknown company"}</span>
             <TierBadge tier={job.tier} />
             {job.fresher_friendly && <Badge tone="good">Fresher-friendly</Badge>}
-            {job.posting_gone && <Badge tone="bad">No longer listed</Badge>}
+            {job.posting_gone && <Badge tone="bad" title="This posting is closed: no job board lists it any more">Closed</Badge>}
             {tracked && <Badge tone="neutral">{STATUS_LABEL[job.tracker_status] || job.tracker_status}</Badge>}
           </div>
           <h3 className={cx("mt-1 font-display leading-snug text-ink", compact ? "text-[17px]" : "text-[21px]")}>

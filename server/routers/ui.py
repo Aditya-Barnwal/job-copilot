@@ -129,12 +129,69 @@ def artifact_edit(key: str, artifact_id: int, body: dict = Body(...)):
 
 
 @router.post("/api/jobs/{key}/artifacts/{artifact_id}/reject")
-def artifact_reject(key: str, artifact_id: int):
+def artifact_reject(key: str, artifact_id: int, body: Optional[dict] = Body(default=None)):
+    """{reason?: short text, retailor?: bool (default true), base?: str}. Marks the
+    version rejected, keeps your reason with it, then (unless retailor is false)
+    starts tailoring a new version in the background with the reason as guidance
+    for the model, never as facts. Poll /api/jobs/{key}/tailor/v2/status."""
     _no_demo("rejecting a version")
-    return _reply(tailor_v2.reject(key, artifact_id))
+    body = body or {}
+    reason, base, again = body.get("reason"), body.get("base"), body.get("retailor", True)
+    if reason is not None and not isinstance(reason, str):
+        raise HTTPException(status_code=400, detail="reason must be text")
+    if len(reason or "") > 2000:
+        raise HTTPException(status_code=400, detail="reason is too long")
+    if base is not None and not isinstance(base, str):
+        raise HTTPException(status_code=400, detail="base must be a string")
+    if not isinstance(again, bool):
+        raise HTTPException(status_code=400, detail="retailor must be true or false")
+    out = tailor_v2.reject(key, artifact_id, reason=reason)
+    if out.get("ok") and again:
+        from .tailor import start_retailor
+        out["tailoring"] = start_retailor(key, guidance=out.get("reason"), base=base,
+                                          from_artifact_id=out["artifact_id"])
+    return _reply(out)
 
 
 # --------------------------------------------------------------------------- needs you / answers bank
+
+_RESUME_LABEL = re.compile(r"(?<![A-Za-z])(resume|résumé|cv|curriculum vitae)(?![A-Za-z])", re.I)
+_COVER_LABEL = re.compile(r"\bcover\s*letter\b", re.I)
+_FILE_REASONS = ("needs approved résumé", "needs approved resume", "no approved cover letter",
+                 "file upload", "upload is not an approved file")
+_QUALIFIER = re.compile(r"^(?:optional|required)\s+|\s+(?:optional|required)$")
+
+
+def _file_need(label: str, reason: str, kind: str, ftype: str) -> Optional[str]:
+    """'resume' | 'cover_letter' | 'file' when the field is a file (or the cover-letter
+    box), which the answers bank never fills; None for a typeable question."""
+    r = (reason or "").strip().lower()
+    if not (kind == "upload" or ftype == "file" or r.startswith(_FILE_REASONS)):
+        return None
+    if r == "no approved cover letter" or _COVER_LABEL.search(label):
+        return "cover_letter"
+    if r.startswith(("needs approved résumé", "needs approved resume")) or _RESUME_LABEL.search(label):
+        return "resume"
+    return "file"
+
+
+def _question_key(label: str) -> str:
+    """Dedupe key: answers.norm plus a trailing / leading "required" / "optional"."""
+    k = answers_mod.norm(label)
+    prev = None
+    while prev != k:
+        prev, k = k, _QUALIFIER.sub("", k).strip()
+    return k
+
+
+def _typeable(label: str) -> bool:
+    return bool(re.search(r"[A-Za-z]{2}", label)) and len(label) <= 500
+
+
+_ACTION_TEXT = {"resume": ("needs an approved résumé", "resume"),
+                "cover_letter": ("needs an approved cover letter", "letter"),
+                "file": ("asks for a file you attach yourself", "apply")}
+
 
 def _bank_or_none():
     try:
@@ -150,37 +207,67 @@ def unanswered(limit: int = 200):
     bank now answers (e.g. you just saved it) is left out."""
     bank = _bank_or_none()
     groups: dict[str, dict] = {}
+    actions: dict[tuple, dict] = {}
+    files_ok: dict[str, dict] = {}
     with store.connect() as conn:
         rows = conn.execute(
-            "SELECT p.job_key, p.plan, p.created_at, j.title, j.company, j.status "
+            "SELECT p.job_key, p.plan, p.created_at, j.title, j.company, j.status, j.gone_at "
             "FROM fill_plans p JOIN jobs j ON j.key = p.job_key "
             "WHERE p.unresolved_count > 0 ORDER BY p.created_at DESC LIMIT 500").fetchall()
     import json as _json
+
+    def approved_now(job_key: str) -> dict:
+        """The job's approved files right now (the stored plan may predate an approval)."""
+        if job_key not in files_ok:
+            try:
+                files_ok[job_key] = service.approved_files(store.get_job(job_key) or {"key": job_key})[0]
+            except Exception:  # noqa: BLE001 — unknown: keep the row, it is only a reminder
+                files_ok[job_key] = {}
+        return files_ok[job_key]
+
+    seen_jobs: set[str] = set()
     for r in rows:
+        if r["job_key"] in seen_jobs:
+            continue                      # one plan per job: the newest
+        seen_jobs.add(r["job_key"])
         if store.is_submitted_or_later(r["status"]) or store.canonical_status(r["status"]) == "not_interested":
             continue
+        if r["gone_at"]:
+            continue                      # the posting is closed: nothing to answer
         try:
             plan = _json.loads(r["plan"]) if r["plan"] else {}
         except ValueError:
             continue
-        actions = {a.get("label"): a for step in plan.get("steps") or [] if isinstance(step, list)
-                   for a in step if isinstance(a, dict)}
+        acts = {a.get("label"): a for step in plan.get("steps") or [] if isinstance(step, list)
+                for a in step if isinstance(a, dict)}
         snap = {f.get("label"): f for step in (plan.get("snapshot") or {}).get("steps") or []
                 if isinstance(step, list) for f in step if isinstance(f, dict)}
         for u in plan.get("unresolved") or []:
             label = (u.get("label") or "").strip() if isinstance(u, dict) else ""
             if not label:
                 continue
-            key = answers_mod.norm(label)
-            if not key or answers_mod.is_secret_question(label):
-                continue
-            act, field = actions.get(label) or {}, snap.get(label) or {}
+            act, field = acts.get(label) or {}, snap.get(label) or {}
             kind = act.get("kind") or ""
             ftype = field.get("type") or {"select": "select", "radio": "radio", "check": "checkbox"}.get(kind, "text")
-            if kind == "upload" or ftype in ("file", "hidden") or field.get("hidden"):
-                continue      # file uploads come from your approved résumé / cover letter
-            if (u.get("reason") or act.get("note")) == "no approved cover letter":
-                continue      # the cover-letter box: written and approved in the Cover letter tab
+            need = _file_need(label, u.get("reason") or act.get("note") or "", kind, ftype)
+            if need:
+                # a file (or the cover-letter box) is never an answers-bank question:
+                # it is an action on the job's review card, until it is approved
+                have = approved_now(r["job_key"])
+                if (need == "resume" and have.get("resume")) or (need == "cover_letter" and have.get("cover_letter")):
+                    continue
+                akey = (r["job_key"], need, label.lower() if need == "file" else "")
+                if akey not in actions:
+                    text, tab = _ACTION_TEXT[need]
+                    actions[akey] = {"kind": need, "label": label, "text": text, "tab": tab,
+                                     "required": bool(u.get("required") or act.get("required")),
+                                     "job": {"key": r["job_key"], "title": r["title"], "company": r["company"]}}
+                continue
+            if ftype == "hidden" or field.get("hidden") or not _typeable(label):
+                continue
+            key = _question_key(label)
+            if not key or answers_mod.is_secret_question(label):
+                continue
             if service.is_consent_label(label, "check" if ftype in ("checkbox", "multi") else "text"):
                 continue      # consent and attestations: only you tick those, in the form
             ftype = {"multi": "checkbox"}.get(ftype, ftype)
@@ -205,7 +292,11 @@ def unanswered(limit: int = 200):
                 continue
         out.append(g)
     out.sort(key=lambda g: (not g["required"], -len(g["jobs"]), g["question"].lower()))
-    return {"questions": out[: max(1, min(int(limit), 500))], "bank_available": bank is not None}
+    order = {"resume": 0, "cover_letter": 1, "file": 2}
+    acts_out = sorted(actions.values(), key=lambda a: (order[a["kind"]], not a["required"],
+                                                       str(a["job"]["company"] or "").lower()))
+    return {"questions": out[: max(1, min(int(limit), 500))], "actions": acts_out[:500],
+            "bank_available": bank is not None}
 
 
 @router.post("/api/answers/save")
@@ -348,6 +439,52 @@ def unhide(key: str):
     _at, prev = _hidden_info(key)
     store.set_status(key, prev, source="user", note="unhidden")
     return {"ok": True, "status": prev}
+
+
+# --------------------------------------------------------------------------- earlier days (Today)
+
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@router.get("/api/queue/earlier")
+def queue_earlier(days: int = 7, before: Optional[str] = None):
+    """Previous queue days, newest first, below today's list: up to `days` days
+    before `before` (default: the latest built day, i.e. today's list). Left out:
+    postings that are gone or expired, jobs you hid (not interested), and jobs on
+    today's list (any lane); a job queued on several days shows on its newest one.
+    Jobs you acted on (tailored, ready, submitted, ...) stay, with their status."""
+    days = max(1, min(int(days), 60))
+    all_days = store.queue_days()
+    if before is not None and not _DAY_RE.match(before):
+        raise HTTPException(status_code=400, detail="before must be YYYY-MM-DD")
+    current = before or (all_days[0] if all_days else None)
+    if current is None:
+        return {"today": None, "days": [], "has_more": False, "total_days": 0}
+    earlier = [d for d in all_days if d < current]
+    seen = {j["key"] for j in jq.list_queue(day=current, lane=None).get("items") or []}
+    hidden = store.statuses_with_canonical(["not_interested"])
+    now = time.time()
+    today = jq.today(now)
+    sql = (jq._SELECT.replace("SELECT j.*", "SELECT q.lane AS queue_lane, q.rank AS queue_rank, j.*")
+           + " JOIN queue_items q ON q.job_key = j.key WHERE q.day = ? AND q.rank IS NOT NULL "
+           f"AND {jq._LIVE_SQL} AND COALESCE(j.status, 'new') NOT IN ({', '.join('?' * len(hidden))}) "
+           "AND (j.expires_at IS NULL OR j.expires_at = '' OR substr(j.expires_at, 1, 10) >= ?) "
+           "ORDER BY CASE q.lane WHEN 'main' THEN 0 WHEN 'extended' THEN 1 ELSE 2 END, q.rank")
+    out = []
+    with store.connect() as conn:
+        for d in earlier[:days]:
+            items = []
+            for r in conn.execute(sql, (d, *hidden, today)).fetchall():
+                r = dict(r)
+                if r["key"] in seen:
+                    continue
+                seen.add(r["key"])
+                card = jq.summarize_job(r, now)
+                card.update(rank=r["queue_rank"], queue_lane=r["queue_lane"], queue_day=d)
+                items.append(card)
+            if items:
+                out.append({"day": d, "count": len(items), "items": items})
+    return {"today": current, "days": out, "has_more": len(earlier) > days, "total_days": len(earlier)}
 
 
 # --------------------------------------------------------------------------- tracker CSV

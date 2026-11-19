@@ -44,14 +44,17 @@ function TCard({ job, col }: { job: JobCard; col: string }) {
       onKeyDown={(e) => { if (e.key === "Enter" && e.target === e.currentTarget) openReview(job.key, col === "ready_to_submit" ? "apply" : undefined); }}
       onClick={(e) => { if (!(e.target as HTMLElement).closest("a,button,select")) openReview(job.key, col === "ready_to_submit" ? "apply" : undefined); }}
       className="card card-hover cursor-pointer p-3.5 outline-none animate-rise">
-      <div className="text-[12px] font-semibold tracking-wide text-ink-2">{job.company}</div>
+      <div className="flex items-center gap-2 text-[12px] font-semibold tracking-wide text-ink-2">
+        <span className="min-w-0 truncate">{job.company}</span>
+        {job.posting_gone && <Badge tone="bad" title="This posting is closed: no job board lists it any more">Closed</Badge>}
+      </div>
       <h3 className="mt-0.5 font-display text-[15px] leading-snug text-ink">{job.title}</h3>
       <p className="mt-1.5 text-[12px] text-muted">
         {fmtDate(job.status_changed_at)}{since && <> · {since} here</>}
         {job.submitted_at && col !== "submitted" && <> · sent {fmtDate(job.submitted_at)}</>}
       </p>
       {job.submit_source === "detected" && col === "submitted" && <Badge tone="good" className="mt-2">Confirmation detected</Badge>}
-      {job.warning && <p className="mt-1.5 text-[12px] text-warn">{job.warning}</p>}
+      {job.warning && !job.posting_gone && <p className="mt-1.5 text-[12px] text-warn">{job.warning}</p>}
       <Trail dates={job.dates} />
       <div className="mt-3 flex items-center gap-1.5">
         {next && (

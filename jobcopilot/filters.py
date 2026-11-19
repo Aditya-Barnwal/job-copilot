@@ -198,6 +198,30 @@ def engineering_signal(title: Optional[str]) -> bool:
     return bool(_ENG_NOUN_RE.search(t) or _family_hits(t))
 
 
+# Non-software engineering disciplines. A generic title such as "Engineer I - Aerodynamics"
+# otherwise passes as software engineering, so a discipline word makes it other_engineering
+# (off) unless the title also says it is software / data / ML work.
+_NON_SOFTWARE_DISCIPLINE_RE = re.compile(
+    r"\b(?:aero(?:dynamics?|space|nautical|structures?)|avionics?|structures?|structural|"
+    r"mechanical|mechatronics?|civil|electrical|electronics?|hardware|firmware|pcb|vlsi|asic|fpga|"
+    r"analog|rf|antenna|propulsion|thermal|cfd|fea|cae|cad|hvac|piping|chemical|metallurg\w*|"
+    r"manufacturing|production|process\s+engineer|instrumentation|power\s+(?:systems?|electronics)|"
+    r"automotive\s+design|flight\s+(?:dynamics|test)|mission\s+systems|gnc|payload|"
+    r"geotechnical|surveying|mining|petroleum|biomedical\s+engineer)\b", re.I)
+_SOFTWARE_WORD_RE = re.compile(
+    r"\b(?:software|developer|sde|swe|backend|back[\s-]?end|full[\s-]?stack|data|ml|machine\s+learning|"
+    r"ai|llm|cloud|devops|platform|web|api|python|java|golang|go|node|react|qa|sdet|test\s+automation)\b", re.I)
+
+
+def non_software_discipline(title: Optional[str]) -> Optional[str]:
+    """The discipline word when the title names non-software engineering, else None."""
+    t = title or ""
+    m = _NON_SOFTWARE_DISCIPLINE_RE.search(t)
+    if m and not _SOFTWARE_WORD_RE.search(t):
+        return m.group(0)
+    return None
+
+
 def role_match(title: Optional[str], roles_cfg: Optional[dict] = None) -> Optional[tuple[str, str]]:
     """(family, tier) for a title, or None when it is not an engineering title.
 
@@ -209,6 +233,8 @@ def role_match(title: Optional[str], roles_cfg: Optional[dict] = None) -> Option
     t = title or ""
     if not engineering_signal(t):
         return None
+    if non_software_discipline(t):
+        return ("other_engineering", TIER_OFF)
     tiers = role_tiers(roles_cfg)
     hits = _family_hits(t)
     for fam, inner in _SUBSUMES.items():

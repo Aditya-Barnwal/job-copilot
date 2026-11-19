@@ -6,6 +6,7 @@
 pdflatex: ""
 timeout_s: 60            # per pdflatex run
 runs: 2                  # pdflatex passes (hyperref needs two)
+pinned_sections: [research]   # never left out by tailoring or the one-page guard (patent, publication)
 max_fit_tries: 6         # one-page guard: drop + re-render at most this often
 ats_min_ratio: 0.9       # share of headings + bullet openings found in the PDF text
 default_base: backend_sde

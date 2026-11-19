@@ -269,7 +269,8 @@ SYSTEM = (
     "Rules:\n"
     "1. Use only the fact ids given. You may reorder facts, exclude facts, reorder skills, "
     "and rephrase facts marked rephrasable. Facts marked locked (employers, titles, dates, "
-    "degrees, institutions, project names, patents, skills) can never be rephrased.\n"
+    "degrees, institutions, project names, patents, skills) can never be rephrased. "
+    "Facts in the research section (patents, publications) are always kept: never exclude them.\n"
     "2. Prefer reordering, including and excluding facts over rephrasing. Rephrase at most "
     "{max_rephrases} bullets, and only where a small wording change surfaces a supported "
     "keyword the bullet already implies. Most bullets should be left as they are.\n"
@@ -447,6 +448,20 @@ def _id_list(raw: Any, key: str, known: dict, problems: list[str], *,
     return out
 
 
+def pinned_ids(usable: list[F.Fact]) -> set[str]:
+    """Facts that tailoring may never leave out: every fact in a pinned section
+    (config/latex.yaml `pinned_sections`, default research: the patent and the
+    publication), plus their bullets. The owner wants those on every résumé."""
+    try:
+        from .resume.latex import load_config
+        sections = {str(x) for x in (load_config().get("pinned_sections") or ["research"])}
+    except Exception:  # noqa: BLE001 - config unreadable: keep the safe default
+        sections = {"research"}
+    ids = {f.id for f in usable if getattr(f, "section", "") in sections}
+    ids |= {f.id for f in usable if getattr(f, "parent", "") in ids}
+    return ids
+
+
 def validate_plan(raw: Any, usable: list[F.Fact], *,
                   max_rephrases: Optional[int] = None) -> tuple[dict, list[str]]:
     """(sanitised plan, problems). Every problem's offending edit is dropped from
@@ -468,6 +483,10 @@ def validate_plan(raw: Any, usable: list[F.Fact], *,
         "skills_order": _id_list(raw.get("skills_order"), "skills_order", known, problems, kind="skill"),
         "rephrase": {}, "surfaced_keywords": [], "gaps": [], "kept_original": [],
     }
+    pinned = pinned_ids(usable)
+    if pinned & set(plan["exclude"]):
+        plan["pinned_kept"] = sorted(pinned & set(plan["exclude"]))
+        plan["exclude"] = [x for x in plan["exclude"] if x not in pinned]
 
     def keep(fid: str, reason: str) -> None:
         plan["kept_original"].append({"fact_id": fid, "reason": reason})
@@ -546,6 +565,7 @@ def apply_plan(usable: list[F.Fact], base: Optional[F.Base], plan: Optional[dict
     plan = plan or EMPTY_PLAN
     keep = set(plan.get("include") or [])
     drop = (set(plan.get("exclude") or []) - keep) | set(plan.get("one_page_dropped") or [])
+    drop -= pinned_ids(usable)        # the patent / publication section is never left out
     order = list(plan.get("order") or [])
     reph = plan.get("rephrase") or {}
     by_id = {f.id: f for f in usable}

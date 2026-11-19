@@ -201,7 +201,7 @@ def _drop_candidates(content: ResumeContent) -> list[str]:
     if content.priority:
         rank = {fid: i for i, fid in enumerate(content.priority)}
         extra = []
-        for key in ("hackathons", "projects", "research"):
+        for key in ("hackathons", "projects"):          # research (patent, publication) is pinned
             sec = content.section(key)
             if sec and len(sec.items) > 1:
                 extra += [it.fact_id for it in reversed(sec.items) if it.fact_id in rank]

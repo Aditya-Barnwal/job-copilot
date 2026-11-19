@@ -29,8 +29,12 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import config as _config
-from . import store
+from . import localenv as _localenv
+
+_localenv.load()   # .env before anything imports jobcopilot.llm (the provider is read at import)
+
+from . import config as _config  # noqa: E402
+from . import store  # noqa: E402
 
 log = logging.getLogger("jobcopilot.daily")
 

@@ -6,10 +6,11 @@ from jobcopilot.filters import non_software_discipline, role_match
 
 OFF = ["Engineer I - Aerodynamics", "Engineer I - Avionics", "Engineer II - Structures (MUAS)",
        "Engineer II - Mechanical Design (P05115)", "Electrical Engineer", "Embedded Firmware Engineer",
-       "Process Engineer", "RF Engineer", "Propulsion Engineer I", "Civil Engineer"]
+       "Process Engineer", "RF Engineer", "Propulsion Engineer I", "Civil Engineer",
+       "Engineer II - AIT", "Engineer II -  Communication", "Integration and Test Engineer"]
 KEEP = ["Software Engineer, Avionics", "Hardware-in-the-loop Software Engineer", "SDE II", "Engineer I",
         "Data Engineer", "AI Engineer", "Software Engineer - Mainframe", "Backend Engineer (Payments)",
-        "QA Engineer", "Advance Software Engineer"]
+        "QA Engineer", "Advance Software Engineer", "Integration Engineer", "Software Engineer, Real-time Communication"]
 
 
 @pytest.mark.parametrize("title", OFF)

@@ -207,7 +207,8 @@ _NON_SOFTWARE_DISCIPLINE_RE = re.compile(
     r"analog|rf|antenna|propulsion|thermal|cfd|fea|cae|cad|hvac|piping|chemical|metallurg\w*|"
     r"manufacturing|production|process\s+engineer|instrumentation|power\s+(?:systems?|electronics)|"
     r"automotive\s+design|flight\s+(?:dynamics|test)|mission\s+systems|gnc|payload|"
-    r"geotechnical|surveying|mining|petroleum|biomedical\s+engineer)\b", re.I)
+    r"geotechnical|surveying|mining|petroleum|biomedical\s+engineer|ait|assembly|communications?|"
+    r"integration\s*(?:and|&)\s*test(?:ing)?|i&t|telecom\w*)\b", re.I)
 _SOFTWARE_WORD_RE = re.compile(
     r"\b(?:software|developer|sde|swe|backend|back[\s-]?end|full[\s-]?stack|data|ml|machine\s+learning|"
     r"ai|llm|cloud|devops|platform|web|api|python|java|golang|go|node|react|qa|sdet|test\s+automation)\b", re.I)

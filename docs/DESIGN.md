@@ -415,6 +415,10 @@ that a keyword rule can't be trusted with:
   range that starts at your figure wins over the one that ends there (an
   answer never undersells).
 
+- **Relevant experience is the person's call.** Questions about relevant,
+  related, similar or domain experience are left for the person: total
+  experience is only a ceiling.
+
 Credentials and ID or card numbers are never stored.
 
 ## 12. Fill plans and the autofill safety model
@@ -470,7 +474,13 @@ browser context so every page and frame is covered:
   adapter may allow specific save-progress or upload endpoints, never its
   submit endpoints), every POST navigation, every main-frame navigation the
   code didn't start, any request carrying the form marker, and every request to
-  a do-not-automate host. WebSockets are closed while filling (where the
+  a do-not-automate host. A page that loads its form through GraphQL POSTs
+  (Ashby) may make only the READ operations its adapter names, by exact name: the
+  URL's single operation parameter, the body's operation name and the document's
+  one top-level `query` must all be that name. No mutation, no prefix or pattern,
+  and never a name or body with Submit, Create, Apply or Update. Submit patterns
+  match the request body too, so a submit disguised under a read's URL is still
+  aborted, and they are checked first. WebSockets are closed while filling (where the
   installed Playwright can route them). If the route
   handler itself fails, it aborts the request.
 
@@ -490,10 +500,16 @@ if any frame ends up on a denied host, the session trips and stops writing for
 good. The planner applies the same rule to redirects during the read-only load.
 
 **5. CAPTCHA and login walls pause.** Detectors in `detect.py` read frame URLs
-and top-document attributes, and never touch a challenge frame. A visible
-challenge or a sign-in wall ends the run as `needs_you`; the person solves it,
-signs in by hand, or abandons the fill. Invisible CAPTCHAs that only trigger
-on submission don't pause the run, because submission is the person's step.
+and top-document attributes, and never touch a challenge frame. Only a
+challenge the person can actually see pauses the run: a provider's frame counts
+when its iframe element is rendered (not display:none, visibility:hidden or
+transparent), on screen, and big enough to be solved, and it isn't the
+size=invisible reCAPTCHA badge. Invisible widgets (an invisible hCaptcha, the
+badge) only challenge when the person presses Submit, which is their step, so
+the fill goes around them without interacting with them. The check runs again
+before every field, so a challenge that appears mid-fill stops the typing. A
+visible challenge or a sign-in wall ends the run as `needs_you`; the person
+solves it, signs in by hand, or abandons the fill.
 
 **6. Honeypots and consent are never touched.** Hidden, off-screen and
 known-trap fields (such as Workday's `beecatcher`) raise `HoneypotRefused`.

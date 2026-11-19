@@ -482,6 +482,9 @@ def test_spec_adapter_fill_uses_the_run_ctx_floor():
 
         def highlight(self, *a, **k):
             return True
+
+        def captcha(self):              # the mid-fill re-check: no challenge on screen
+            return None
     ad = GreenhouseAdapter()
     ad.ctx = _ctx("https://x.test", min_confidence=0.95)
     safe = FakeSafe()

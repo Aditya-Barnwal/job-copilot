@@ -20,6 +20,7 @@ Submit works normally; after that the session never writes again.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -292,6 +293,131 @@ _DOM_RELEASE = "() => { window.dispatchEvent(new Event('__jcoff_%(token)s')); }"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
+# --------------------------------------------------------------------------- GraphQL reads
+#
+# Some ATS pages (Ashby) load the posting and its form through GraphQL POSTs.
+# The guard denies every non-GET while filling; an adapter may name the exact
+# READ operations its page needs (allow_graphql_reads). A request passes only
+# when ALL hold: the URL is the declared endpoint with exactly one query
+# parameter op=<name>; <name> is on the list, character for character (no
+# prefix, no pattern); the JSON body's operationName is the same name; the
+# document's single top-level operation is `query <name>` (fragments allowed,
+# no mutation / subscription); and neither the name nor the body contains
+# Submit, Create, Apply or Update. Submit patterns are checked first and win.
+
+_FORBIDDEN_OP_WORDS = re.compile(r"submit|create|apply|update", re.I)
+_FORBIDDEN_BODY_WORDS = re.compile(r"Submit|Create|Apply|Update")   # identifiers, not "updatedAt"
+_OP_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def read_op_names(names: Iterable[Any]) -> frozenset:
+    """Validate an allow list of GraphQL read operations: plain exact names only
+    (no wildcard, prefix or regex) and none with Submit / Create / Apply / Update."""
+    out = set()
+    for n in names or ():
+        n = str(n)
+        if not _OP_NAME_RE.fullmatch(n):
+            raise ValueError(f"not an exact GraphQL operation name: {n!r}")
+        if _FORBIDDEN_OP_WORDS.search(n):
+            raise ValueError(f"never allowed (submit / create / apply / update): {n!r}")
+        out.add(n)
+    return frozenset(out)
+
+
+def _top_level_definitions(doc: str) -> Optional[list[tuple[str, str]]]:
+    """[(kind, name)] of a GraphQL document's top-level definitions (query /
+    mutation / subscription / fragment), skipping strings and comments. None
+    when it can't be read for sure (anonymous `{...}`, unbalanced braces...)."""
+    defs: list[tuple[str, str]] = []
+    depth, i, n = 0, 0, len(doc)
+    pending: Optional[tuple[str, str]] = None
+    while i < n:
+        c = doc[i]
+        if c == "#":
+            j = doc.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c == '"':
+            if doc.startswith('"""', i):
+                j = doc.find('"""', i + 3)
+                if j < 0:
+                    return None
+                i = j + 3
+                continue
+            j = i + 1
+            while j < n and doc[j] != '"':
+                j += 2 if doc[j] == "\\" else 1
+            if j >= n:
+                return None
+            i = j + 1
+            continue
+        if c == "{":
+            if depth == 0:
+                if pending is None:
+                    return None                  # an anonymous operation
+                defs.append(pending)
+                pending = None
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 0 and (c.isalpha() or c == "_"):
+            w = _OP_NAME_RE.match(doc, i).group(0)
+            i += len(w)
+            if pending is None:
+                if w not in ("query", "mutation", "subscription", "fragment"):
+                    return None
+                m = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)").match(doc, i)
+                pending = (w, m.group(1) if m else "")
+                if m:
+                    i = m.end()
+            continue
+        i += 1
+    if depth != 0 or pending is not None:
+        return None
+    return defs
+
+
+def graphql_read_allowed(url: str, body: str, rules: Iterable[tuple[Pattern, frozenset]]) -> bool:
+    """True only for an exactly-named GraphQL READ the adapter declared (see above)."""
+    for endpoint, ops in rules or ():
+        if not endpoint.search(url):
+            continue
+        try:
+            q = urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query, keep_blank_values=True)
+        except ValueError:
+            return False
+        if len(q) != 1 or q[0][0] != "op":
+            return False
+        name = q[0][1]
+        if name not in ops or _FORBIDDEN_OP_WORDS.search(name):
+            return False
+        if not body or len(body) >= 65536 or _FORBIDDEN_BODY_WORDS.search(body):
+            return False
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return False
+        if not isinstance(data, dict) or data.get("operationName") != name or not isinstance(data.get("query"), str):
+            return False
+        defs = _top_level_definitions(data["query"])
+        if defs is None:
+            return False
+        operations = [d for d in defs if d[0] != "fragment"]
+        return operations == [("query", name)]
+    return False
+
+
+def _graphql_rules(rules: Iterable[Any]) -> list[tuple[Pattern, frozenset]]:
+    """[(endpoint regex, exact op names)] from (endpoint, names) pairs."""
+    out = []
+    for endpoint, names in rules or ():
+        ep = endpoint if hasattr(endpoint, "search") else re.compile(str(endpoint))
+        out.append((ep, read_op_names(names)))
+    return out
+
+
 def _compile(patterns: Iterable[Any]) -> list[Pattern]:
     out = []
     for p in patterns or ():
@@ -303,7 +429,7 @@ class Guard:
     """Installs and releases the DOM + network layers on one browser context."""
 
     def __init__(self, context: Any, *, submit_patterns: Iterable[Any] = (),
-                 allow_post_patterns: Iterable[Any] = ()) -> None:
+                 allow_post_patterns: Iterable[Any] = (), allow_graphql_reads: Iterable[Any] = ()) -> None:
         self.context = context
         self.token = secrets.token_hex(16)            # releases the DOM block (closure-only)
         self.install_id = secrets.token_hex(8)        # "already installed" marker (public)
@@ -312,6 +438,7 @@ class Guard:
         self.tripped: Optional[str] = None            # set when a frame lands on a denied host
         self.submit_patterns = _compile(submit_patterns)
         self.allow_post_patterns = _compile(allow_post_patterns)
+        self.allow_graphql_reads: list[tuple[Pattern, frozenset]] = _graphql_rules(allow_graphql_reads)
         self.active = False
         self.released = False
         self.blocked: list[dict] = []          # {kind, method, host} — never bodies or queries
@@ -386,9 +513,11 @@ class Guard:
         except Exception:  # noqa: BLE001 — fail closed: an unconnected route reaches no server
             pass
 
-    def add_patterns(self, *, submit: Iterable[Any] = (), allow_post: Iterable[Any] = ()) -> None:
+    def add_patterns(self, *, submit: Iterable[Any] = (), allow_post: Iterable[Any] = (),
+                     allow_graphql_reads: Iterable[Any] = ()) -> None:
         self.submit_patterns += _compile(submit)
         self.allow_post_patterns += _compile(allow_post)
+        self.allow_graphql_reads += _graphql_rules(allow_graphql_reads)
 
     def release(self) -> None:
         """handover(): stop blocking, so the user's own Submit works."""
@@ -455,6 +584,8 @@ class Guard:
                     return route.abort("blockedbyclient")
                 if any(p.search(url) for p in self.allow_post_patterns):
                     return route.fallback()
+                if self.allow_graphql_reads and graphql_read_allowed(url, body, self.allow_graphql_reads):
+                    return route.fallback()
                 self._record("non-get", request)
                 return route.abort("blockedbyclient")
             if self._is_main_frame_nav(request) and self._nav_depth <= 0:
@@ -473,14 +604,16 @@ _GUARDS: dict[int, Guard] = {}
 
 
 def guard_for(context: Any, *, submit_patterns: Iterable[Any] = (),
-              allow_post_patterns: Iterable[Any] = ()) -> Guard:
+              allow_post_patterns: Iterable[Any] = (), allow_graphql_reads: Iterable[Any] = ()) -> Guard:
     """The one Guard of a browser context (created + installed on first use)."""
     g = _GUARDS.get(id(context))
     if g is None or g.context is not context:
-        g = Guard(context, submit_patterns=submit_patterns, allow_post_patterns=allow_post_patterns)
+        g = Guard(context, submit_patterns=submit_patterns, allow_post_patterns=allow_post_patterns,
+                  allow_graphql_reads=allow_graphql_reads)
         _GUARDS[id(context)] = g
     else:
-        g.add_patterns(submit=submit_patterns, allow_post=allow_post_patterns)
+        g.add_patterns(submit=submit_patterns, allow_post=allow_post_patterns,
+                       allow_graphql_reads=allow_graphql_reads)
     return g.install() if not g.released else g
 
 

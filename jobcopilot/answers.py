@@ -1337,6 +1337,10 @@ def h_experience(ctx: _Ctx) -> Answer:
     if tech:
         return _none(f"asks for experience with {tech[0]}; per-skill years aren't in answers.yaml "
                      f"(your total experience is a ceiling)", "experience_skill")
+    if re.search(r"\b(relevant|related|similar|applicable|domain)\b", ctx.q):
+        # total experience isn't necessarily relevant experience: that's the person's call
+        return _none("asks for relevant experience: your total experience is a ceiling, how much of it "
+                     "counts is yours to say", "experience_relevant")
     a = _from(ctx.bank, "employment.current_start_date", "experience")
     d = parse_date(a.value) if a.value != "" else None
     if d:
@@ -2135,7 +2139,7 @@ def answer_question(question: str, *, field_type: str = "text", options: Optiona
     if _is_attestation(ctx):
         return _none("consent / attestation / authorisation checkbox: only you can tick this", "consent")
     if ft == "text" and _first_rule(ctx) in _QUANTITY_RULES and (
-            ctx.digits_only or hint_units(hint) or label_units(raw) & set(COUNT_UNITS + ("lpa",))):
+            ctx.digits_only or hint_units(hint) or label_units(raw) & set(COUNT_UNITS + ("lpa", "annual", "monthly"))):
         ctx.field_type = "number"
     saved = _custom_answer(ctx)
     if saved is not None:

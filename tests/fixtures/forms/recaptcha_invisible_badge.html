@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- An invisible reCAPTCHA: Google's fixed badge (bottom right, mostly off screen) with a
+     size=invisible anchor frame. It challenges only when the person submits. -->
+<html><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<form action="/submit" method="post">
+  <p><label for="first">First name</label> <input id="first" name="first_name"></p>
+  <p><label for="email">Email</label> <input id="email" type="email" name="email"></p>
+  <button type="submit" id="submit">Submit application</button>
+</form>
+<div class="grecaptcha-badge" data-style="bottomright" style="width: 256px; height: 60px; position: fixed; bottom: 14px; right: -186px; box-shadow: gray 0 0 5px;">
+  <div class="grecaptcha-logo"><iframe title="reCAPTCHA" width="256" height="60" src="/recaptcha/api2/anchor?ar=1&amp;k=test-key&amp;co=x&amp;hl=en&amp;v=x&amp;size=invisible&amp;cb=x"></iframe></div>
+</div>
+</body></html>

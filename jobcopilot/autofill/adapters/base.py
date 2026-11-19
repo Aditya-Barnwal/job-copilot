@@ -62,6 +62,7 @@ class Adapter:
     priority: int = 0
     submit_patterns: tuple[str, ...] = ()        # network: aborted always (URL or body regex)
     allow_post_patterns: tuple[str, ...] = ()    # network: benign non-GETs (uploads, save-progress)
+    allow_graphql_reads: tuple = ()              # network: ((endpoint regex, exact read op names),)
     confirmation_markers: dict = {}              # {"url": (regex, ...), "text": (regex, ...)}
     honeypot_selectors: tuple[str, ...] = ()     # never filled, never highlighted
     next_selectors: tuple[str, ...] = ()         # tried in order before the generic Next search
@@ -85,8 +86,11 @@ class Adapter:
 
     # -- execution
     def safe_page_kwargs(self) -> dict:
-        return {"submit_patterns": self.submit_patterns,
-                "allow_post_patterns": self.allow_post_patterns, "hosts": self.hosts}
+        kw = {"submit_patterns": self.submit_patterns,
+              "allow_post_patterns": self.allow_post_patterns, "hosts": self.hosts}
+        if self.allow_graphql_reads:
+            kw["allow_graphql_reads"] = self.allow_graphql_reads
+        return kw
 
     def next_locator(self, safe: Any, step_index: int) -> Optional[str]:
         for sel in self.next_selectors:

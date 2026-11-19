@@ -167,6 +167,8 @@ def test_earliest_start_date_still_a_date(bank):
     ("What's your current salary? (in lakhs per annum)", "text", "", 12.5),
     ("Expected Salary", "text", "inr, annual", 1800000),
     ("Expected CTC (in lakhs)", "number", "", 18),
+    ("Please share your current annual CTC (INR)", "text", "", 1250000),      # Ashby: a text box
+    ("Please share your expected annual CTC (INR)", "text", "", 1800000),
 ])
 def test_salary_in_the_asked_unit(bank, q, ft, hint, want):
     assert typed(ask(bank, q, ft, hint=hint, job=JOB_IN)) == want

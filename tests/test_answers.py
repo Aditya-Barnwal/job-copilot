@@ -578,7 +578,8 @@ def test_r3_5_currency_detected_in_question(bank, q, cur):
     data = with_data(bank, compensation__expected_ctc=ec)
     a = ask_d(data, q, "text", job=JOB_US)
     if cur == "INR":
-        assert a.value.endswith("LPA")
+        # "(₹ per annum)" names the unit: rupees a year, as a plain number
+        assert a.value == 1800000 and "annual, in rupees" in a.note
     else:
         assert a.value.startswith(f"{cur} "), (a.value, a.note)
 

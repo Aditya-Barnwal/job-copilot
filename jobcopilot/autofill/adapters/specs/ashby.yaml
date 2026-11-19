@@ -39,12 +39,25 @@ submit_patterns:
   - {method: POST, url_regex: '^https?://jobs\.ashbyhq\.com/api/non-user-graphql\?.*op=\w*Submit\w*'}
   - {method: POST, url_regex: '^https?://api\.ashbyhq\.com/applicationForm\.submit'}
   - {method: POST, url_regex: '/api/non-user-graphql\?.*op=\w*Submit\w*'}   # local fixture / proxy
+  # by request body too, whatever op= the URL claims: a submit mutation disguised
+  # under a read operation's URL is still a submit
+  - {method: POST, body_regex: '"operationName"\s*:\s*"[^"]*Submit[^"]*"'}
+  - {method: POST, body_regex: '\bmutation\s+\w*Submit'}
 
 # Harmless non-GETs while filling (the guard denies every other one; submit_patterns
 # win over this list): the résumé upload handshake. The signed upload itself goes
 # to Ashby's storage host; verify it in the supervised live dry run.
 allow_post:
   - '^https?://jobs\.ashbyhq\.com/api/non-user-graphql\?(?!.*op=\w*Submit)[^#]*op=\w*(FileUpload|UploadHandle|ParseResume)\w*'
+
+# The hosted page loads the posting and its form through GraphQL POSTs. Only these
+# READ operations pass, by exact name (no prefix / pattern), and only as a single
+# `query <name>` whose JSON operationName is the same name (guard.graphql_read_allowed).
+# Names were observed on a real posting; never add one with Submit / Create / Apply /
+# Update (load_spec refuses it). submit_patterns above are checked first.
+allow_graphql_reads:
+  endpoint: '^https://jobs\.ashbyhq\.com/api/non-user-graphql\?'
+  operations: [ApiJobPosting, ApiOrganizationFromHostedJobsPageName]
 
 confirmation:
   url_regex: []

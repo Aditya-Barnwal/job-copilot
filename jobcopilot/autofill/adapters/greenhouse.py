@@ -24,7 +24,8 @@ from typing import Any, Iterable, Optional
 import yaml
 
 from .. import detect
-from ..guard import ImplausibleValue, SafePageError, SubmitGuardViolation, Halted, is_consent_label
+from ..guard import (ImplausibleValue, SafePageError, SubmitGuardViolation, Halted, is_consent_label,
+                     read_op_names)
 from ..plan import COVER_TEXT_SOURCE, FieldAction, FillPlan, Outcome, is_cover_letter_text_field
 from .base import Adapter, register
 
@@ -34,7 +35,8 @@ SPEC_DIR = Path(__file__).resolve().parent / "specs"
 DEFAULT_MIN_CONFIDENCE = 0.8
 _SPEC_KEYS = {"ats", "hosts", "url_patterns", "form", "fields", "custom_questions", "comboboxes",
               "uploads", "cover_letter_text", "never", "honeypots", "invisible_captcha", "submit", "errors",
-              "submit_patterns", "allow_post", "confirmation", "steps", "login_wall", "yours"}
+              "submit_patterns", "allow_post", "allow_graphql_reads", "confirmation", "steps", "login_wall",
+              "yours"}
 _TEXTLIKE = {"text", "textarea", "email", "tel", "url", "number", "date", "search", ""}
 _ANS_TYPE = {"textarea": "textarea", "number": "number", "date": "date", "select": "select",
              "combobox": "select", "radio": "radio", "checkbox": "checkbox", "multi": "checkbox"}
@@ -64,6 +66,13 @@ def load_spec(name: str) -> dict:
         re.compile(rx)
     for rx in spec.get("allow_post") or []:
         re.compile(rx)
+    gql = spec.get("allow_graphql_reads")
+    if gql is not None:
+        if not isinstance(gql, dict) or set(gql) != {"endpoint", "operations"} \
+                or not str(gql["endpoint"]).startswith("^https://"):
+            raise ValueError(f"{p.name}: allow_graphql_reads needs a ^https:// endpoint and exact operations")
+        re.compile(gql["endpoint"])
+        read_op_names(gql["operations"])          # exact names only; never Submit/Create/Apply/Update
     return spec
 
 
@@ -285,6 +294,8 @@ class SpecAdapter(Adapter):
         # The guard tests every submit pattern against the URL AND the request body.
         cls.submit_patterns = tuple(p.get("url_regex") or p["body_regex"] for p in spec.get("submit_patterns") or ())
         cls.allow_post_patterns = tuple(spec.get("allow_post") or ())
+        gql = spec.get("allow_graphql_reads")
+        cls.allow_graphql_reads = ((gql["endpoint"], read_op_names(gql["operations"])),) if gql else ()
         conf = spec.get("confirmation") or {}
         cls.confirmation_markers = {
             "url": tuple(conf.get("url_regex") or ()),
@@ -601,6 +612,11 @@ class SpecAdapter(Adapter):
             _ctx(self.ctx, "min_confidence", DEFAULT_MIN_CONFIDENCE) or DEFAULT_MIN_CONFIDENCE)
         for a in actions:
             if st.halted:
+                break
+            cap = safe.captcha()           # a challenge that became visible mid-fill: stop typing
+            if cap and not self._invisible_captcha_only(safe, cap):
+                safe.halt("captcha")
+                st.halted = f"CAPTCHA / bot check appeared ({cap}): solve it yourself"
                 break
             if self._count(safe, a.locator) == 0:
                 log.info("not on this page: %r", a.label)       # e.g. a spec field this tenant doesn't use

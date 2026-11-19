@@ -258,14 +258,16 @@ class SafePage:
 
     def __init__(self, page: Any, *, submit_patterns: Iterable[Any] = (),
                  allow_post_patterns: Iterable[Any] = (), hosts: Iterable[str] = (),
-                 guard: Optional[Guard] = None) -> None:
+                 guard: Optional[Guard] = None, allow_graphql_reads: Iterable[Any] = ()) -> None:
         self.__page = page
         if guard is not None:
-            guard.add_patterns(submit=submit_patterns, allow_post=allow_post_patterns)
+            guard.add_patterns(submit=submit_patterns, allow_post=allow_post_patterns,
+                               allow_graphql_reads=allow_graphql_reads)
             self.guard = guard.install()
         else:
             self.guard = guard_for(page.context, submit_patterns=submit_patterns,
-                                   allow_post_patterns=allow_post_patterns)
+                                   allow_post_patterns=allow_post_patterns,
+                                   allow_graphql_reads=allow_graphql_reads)
         self._halted: Optional[str] = "handed over to the user" if self.guard.released else None
         self.allowed_hosts: list[str] = list(hosts or ())
         self.allowed_uploads: Optional[set[str]] = None

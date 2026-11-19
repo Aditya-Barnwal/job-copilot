@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Ashby-like page that talks GraphQL (POST /api/non-user-graphql?op=<name>, JSON body
+     {operationName, variables, query}). On load it tries: an allowed READ, the submit
+     mutation, the submit mutation disguised under a read op's URL name, a mutation that
+     borrows the read op's name, a read op that is only a prefix match, and a read with
+     an extra URL parameter. window.__done counts finished requests. -->
+<html><head><meta charset="utf-8"><title>Apply</title></head>
+<body>
+<form class="ashby-application-form-container"><p><label for="n">Name</label><input id="n" name="n"></p></form>
+<script>
+  window.__done = 0; window.__ok = {};
+  function gql(tag, op, name, kind, extra) {
+    var body = JSON.stringify({operationName: name, variables: {id: "x"},
+      query: kind + " " + name + "($id: String!) { jobPosting(id: $id) { id title updatedAt } }"});
+    return fetch('/api/non-user-graphql?op=' + op + (extra || ''), {method: 'POST',
+      headers: {'content-type': 'application/json'}, body: body})
+      .then(function () { window.__ok[tag] = true; }, function () { window.__ok[tag] = false; })
+      .then(function () { window.__done++; });
+  }
+  gql('read', 'ApiJobPosting', 'ApiJobPosting', 'query');
+  gql('submit', 'ApiSubmitSingleApplicationFormAction', 'ApiSubmitSingleApplicationFormAction', 'mutation');
+  gql('disguised', 'ApiJobPosting', 'ApiSubmitSingleApplicationFormAction', 'mutation');
+  gql('borrowed', 'ApiJobPosting', 'ApiJobPosting', 'mutation');
+  gql('prefix', 'ApiJobPostingDetails', 'ApiJobPostingDetails', 'query');
+  gql('extra', 'ApiJobPosting', 'ApiJobPosting', 'query', '&debug=1');
+</script>
+</body></html>

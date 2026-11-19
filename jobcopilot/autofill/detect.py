@@ -9,25 +9,62 @@ import re
 import urllib.parse
 from typing import Any, Iterable, Optional
 
-# Frame URLs of interactive challenges. Invisible reCAPTCHA (size=invisible /
-# v3 badge) is not a challenge until the user submits, so it doesn't pause us.
+# Frame URLs of CAPTCHA / bot-challenge providers. A match is only a reason to
+# pause when the person can SEE the challenge (docs/DESIGN.md §12): its iframe
+# element is rendered, on screen and big enough to be a challenge. Invisible
+# widgets (Lever's invisible hCaptcha, the size=invisible reCAPTCHA badge)
+# only challenge when the person presses Submit themselves; we fill around
+# them and never interact with any challenge frame. A challenge that becomes
+# visible later is caught by the re-check before every field.
 _CAPTCHA_FRAME_RE = re.compile(
     r"(/recaptcha/(api2|enterprise)/(anchor|bframe))|hcaptcha\.com|newassets\.hcaptcha|"
     r"challenges\.cloudflare\.com|/cdn-cgi/challenge-platform/|arkoselabs\.com|funcaptcha\.com|"
     r"captcha-delivery\.com|geo\.captcha", re.I)
-_INVISIBLE_RE = re.compile(r"[?&]size=invisible\b", re.I)
+_INVISIBLE_RE = re.compile(r"[?&#]size=invisible\b", re.I)
 _CAPTCHA_DOM = (".g-recaptcha:not([data-size=invisible]), .h-captcha:not([data-size=invisible]), "
                 ".cf-turnstile, #challenge-form, #challenge-stage, #FunCaptcha, [data-arkose], "
                 "iframe[title*='captcha' i]:not([title*='invisible' i]), "
-                "iframe[src*='recaptcha/api2/anchor'], iframe[src*='hcaptcha'], "
-                "iframe[src*='challenges.cloudflare.com'], iframe[src*='arkoselabs']")
+                "iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor'], "
+                "iframe[src*='recaptcha/api2/bframe'], iframe[src*='recaptcha/enterprise/bframe'], "
+                "iframe[src*='hcaptcha'], iframe[src*='challenges.cloudflare.com'], iframe[src*='arkoselabs']")
+# Smallest box a person can solve: a compact Turnstile is ~130x120, the reCAPTCHA /
+# hCaptcha checkbox ~300x78, an image challenge ~400x580.
+MIN_CHALLENGE_W, MIN_CHALLENGE_H = 100, 40
 
-_JS_CAPTCHA = """(sel) => {
-  const vis = (el) => { const s = getComputedStyle(el), r = el.getBoundingClientRect();
-    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 1 && r.height > 1; };
-  // Only a widget that is actually on screen counts: Lever's invisible hCaptcha
-  // leaves a zero-height .h-captcha div on every page.
-  return Array.from(document.querySelectorAll(sel)).some(vis);
+# Visibility of one element in its own document, read from the top-level DOM of
+# that document (never from inside a challenge frame).
+_JS_SEEN = r"""(el, a) => {
+  if (!el || !el.isConnected) return false;
+  if (el.checkVisibility && !el.checkVisibility({opacityProperty: true, visibilityProperty: true})) return false;
+  const s = getComputedStyle(el);
+  if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity || '1') === 0) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width < a.w || r.height < a.h) return false;
+  const W = Math.max(document.documentElement.scrollWidth, window.innerWidth);
+  const H = Math.max(document.documentElement.scrollHeight, window.innerHeight);
+  const x = r.left + window.scrollX, y = r.top + window.scrollY;
+  if (x + r.width <= 0 || y + r.height <= 0 || x >= W || y >= H) return false;
+  if (a.badge && (el.closest('.grecaptcha-badge') || /[?&#]size=invisible\b/i.test(el.getAttribute('src') || ''))) return false;
+  return true;
+}"""
+
+_JS_CAPTCHA = r"""(a) => {
+  const seen = (el, w, h) => { if (el.checkVisibility && !el.checkVisibility({opacityProperty: true, visibilityProperty: true})) return false;
+    const s = getComputedStyle(el); if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity || '1') === 0) return false;
+    const r = el.getBoundingClientRect(); if (r.width < w || r.height < h) return false;
+    const W = Math.max(document.documentElement.scrollWidth, window.innerWidth), H = Math.max(document.documentElement.scrollHeight, window.innerHeight);
+    const x = r.left + window.scrollX, y = r.top + window.scrollY;
+    return !(x + r.width <= 0 || y + r.height <= 0 || x >= W || y >= H); };
+  const quiet = (f) => /[?&#]size=invisible\b/i.test(f.getAttribute('src') || '') || !!f.closest('.grecaptcha-badge');
+  for (const el of document.querySelectorAll(a.sel)) {
+    if (el.tagName === 'IFRAME') { if (!quiet(el) && seen(el, a.w, a.h)) return true; continue; }
+    if (el.closest('.grecaptcha-badge') || !seen(el, a.w, a.h)) continue;
+    // a widget box that only holds invisible / hidden challenge frames is not a challenge yet
+    const frames = Array.from(el.querySelectorAll('iframe'));
+    if (frames.length && frames.every(f => quiet(f) || !seen(f, a.w, a.h))) continue;
+    return true;
+  }
+  return false;
 }"""
 
 _JS_LOGIN = """() => {
@@ -69,13 +106,42 @@ def captcha_present(page: Any) -> bool:
     return captcha_info(page) is not None
 
 
+def _frame_seen(frame: Any) -> bool:
+    """Is this challenge frame's iframe element visible to the person? Its own
+    element must be rendered, on screen, big enough and not the invisible
+    reCAPTCHA badge; every enclosing iframe must be rendered too. Read from the
+    parent documents only. Can't tell (an element we can't read) = visible."""
+    try:
+        el = frame.frame_element()
+    except Exception:  # noqa: BLE001
+        return True
+    try:
+        if not el.evaluate(_JS_SEEN, {"w": MIN_CHALLENGE_W, "h": MIN_CHALLENGE_H, "badge": True}):
+            return False
+        parent = frame.parent_frame
+        for _ in range(8):                         # enclosing iframes (nested challenge hosts)
+            if parent is None or parent.parent_frame is None:
+                return True
+            if not parent.frame_element().evaluate(_JS_SEEN, {"w": 1, "h": 1, "badge": False}):
+                return False
+            parent = parent.parent_frame
+        return True
+    except Exception:  # noqa: BLE001 — unreadable: assume the person sees it (pause)
+        return True
+
+
 def captcha_info(page: Any) -> Optional[str]:
+    """Why the page shows a challenge the person can see, or None. Hidden,
+    zero-size, off-screen and size=invisible challenge frames don't count."""
     try:
         for frame in page.frames:
             u = frame.url or ""
-            if u and _CAPTCHA_FRAME_RE.search(u) and not _INVISIBLE_RE.search(u):
+            if not u or not _CAPTCHA_FRAME_RE.search(u) or _INVISIBLE_RE.search(u):
+                continue
+            if frame is page.main_frame or _frame_seen(frame):    # a challenge page itself: always
                 return f"challenge frame on {urllib.parse.urlsplit(u).hostname or 'page'}"
-        if page.main_frame.evaluate(_JS_CAPTCHA, _CAPTCHA_DOM):
+        if page.main_frame.evaluate(_JS_CAPTCHA, {"sel": _CAPTCHA_DOM, "w": MIN_CHALLENGE_W,
+                                                   "h": MIN_CHALLENGE_H}):
             return "challenge widget on the page"
     except Exception:  # noqa: BLE001 — unreadable page: not evidence either way
         return None

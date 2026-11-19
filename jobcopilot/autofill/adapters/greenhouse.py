@@ -24,7 +24,7 @@ from typing import Any, Iterable, Optional
 import yaml
 
 from .. import detect
-from ..guard import SafePageError, SubmitGuardViolation, Halted, is_consent_label
+from ..guard import ImplausibleValue, SafePageError, SubmitGuardViolation, Halted, is_consent_label
 from ..plan import COVER_TEXT_SOURCE, FieldAction, FillPlan, Outcome, is_cover_letter_text_field
 from .base import Adapter, register
 
@@ -120,10 +120,15 @@ def _ctx(ctx: Any, key: str, default: Any = None) -> Any:
 
 
 def _answer(ctx: Any, question: str, *, field_type: str, options: Optional[list],
-            required: Optional[bool]) -> Any:
+            required: Optional[bool], unit_hint: str = "", digits_only: bool = False) -> Any:
     """answers.answer_question through whatever the caller passed (PlanContext,
-    the service's ctx dict, or nothing = profile/answers.yaml)."""
-    kw = {"field_type": field_type, "options": options or None, "required": required}
+    the service's ctx dict, or nothing = profile/answers.yaml). The unit hint and
+    digits-only flag are passed only when there is one."""
+    kw: dict = {"field_type": field_type, "options": options or None, "required": required}
+    if unit_hint:
+        kw["unit_hint"] = unit_hint
+    if digits_only:
+        kw["digits_only"] = True
     fn = getattr(ctx, "answer", None) if ctx is not None and not isinstance(ctx, dict) else None
     if callable(fn):
         return fn(question, **kw)
@@ -149,6 +154,15 @@ def _value_str(v: Any, kind: str) -> Optional[str]:
             return None
         return json.dumps(items) if kind == "check" else ", ".join(items)
     return str(v)
+
+
+def field_units(f: dict) -> tuple[str, bool]:
+    """(unit_hint, digits_only) of a normalised field, from its SafePage meta."""
+    from ..safepage import _DIGITS_PATTERN_RE
+    m = f.get("meta") or {}
+    digits = (str(m.get("inputmode") or "") in ("numeric", "decimal")
+              or bool(_DIGITS_PATTERN_RE.match(str(m.get("pattern") or ""))))
+    return str(m.get("unit_hint") or f.get("unit_hint") or ""), digits
 
 
 def _options(f: dict) -> list[str]:
@@ -234,6 +248,7 @@ class _Run:
         self.left_empty = 0
         self.highlighted: list[str] = []
         self.missing: list[str] = []          # required, no approved value
+        self.uncertain: list[str] = []        # required, value refused before typing (needs you)
         self.consent: list[str] = []          # yours to tick
         self.yours: list[str] = []            # spec `yours`: steps only the person can do (a CAPTCHA...)
         self.problems: list[str] = []
@@ -399,7 +414,9 @@ class SpecAdapter(Adapter):
             if radio_consent or any(is_consent_label(t, kind="checkbox") for t in texts if t):
                 return empty("consent / attestation: only you can choose this", "consent")
         question = label
-        if entry and entry.get("question") and A.match_rule(label) is None:
+        # the spec's question replaces a label the rules can't read, or (question_wins)
+        # one that reads wrong for this box, e.g. a phone box beside its own dial-code picker
+        if entry and entry.get("question") and (A.match_rule(label) is None or entry.get("question_wins")):
             question = str(entry["question"])
         company = (_ctx(ctx, "job") or {}).get("company") or "this company"
         question = question.replace("{company}", str(company))
@@ -411,14 +428,20 @@ class SpecAdapter(Adapter):
         ft = _ANS_TYPE.get(typ, "text")
         if typ == "checkbox" and opts and len(opts) > 1:
             ft = "checkbox"
+        hint, digits = field_units(f)
         a = _answer(ctx, question, field_type=ft, options=opts if typ != "combobox" else None,
-                    required=req)
+                    required=req, unit_hint=hint, digits_only=digits)
         floor = float(_ctx(ctx, "min_confidence", DEFAULT_MIN_CONFIDENCE) or DEFAULT_MIN_CONFIDENCE)
         value = _value_str(a.value, kind)
         conf = float(a.confidence or 0.0)
         if a.needs_user or value is None or conf < floor:
             note = a.note or ("needs your approval" if a.needs_user else "low confidence")
             return empty(note, a.source or "none", conf)
+        if kind == "fill":                 # the same check SafePage.fill makes before typing
+            why = A.implausible_number(value, label=" ; ".join(dict.fromkeys(x for x in (label, question) if x)),
+                                       hint=hint, numeric=typ == "number", digits_only=digits)
+            if why:
+                return empty(why + ": please answer it yourself", a.source or "none", 0.0)
         if typ == "checkbox" and not opts and value == "false":
             return None
         return FieldAction(loc, label, kind, value, a.source, conf, False, "", req)
@@ -594,6 +617,9 @@ class SpecAdapter(Adapter):
                 st.filled += 1
             except Halted as exc:
                 st.halted = str(exc)
+            except ImplausibleValue as exc:     # the pre-typing number check (SafePage.fill)
+                st.problems.append(f"{a.label}: {exc}, left for you")
+                self._empty(safe, a, st, uncertain=True)
             except SubmitGuardViolation:
                 log.warning("guard refused a control for %r (left empty)", a.label)
                 st.problems.append(f"{a.label}: the control looked submit-like, left for you")
@@ -652,7 +678,7 @@ class SpecAdapter(Adapter):
             raise SafePageError(f"option matched {len(hits)} controls")
         return hits[0]["selector"]
 
-    def _empty(self, safe: Any, a: FieldAction, st: _Run, note: str = "") -> None:
+    def _empty(self, safe: Any, a: FieldAction, st: _Run, note: str = "", uncertain: bool = False) -> None:
         st.left_empty += 1
         if a.label not in st.highlighted:
             st.highlighted.append(a.label)
@@ -662,7 +688,7 @@ class SpecAdapter(Adapter):
             if a.note and a.note not in st.yours:
                 st.yours.append(a.note)
         elif a.required:
-            st.missing.append(a.label)
+            (st.uncertain if uncertain else st.missing).append(a.label)
         loc = a.locator
         if not safe.highlight(loc, "needs_you") and self._count(safe, loc) > 1:
             safe.highlight(f"{loc} >> nth=0", "needs_you")
@@ -728,6 +754,8 @@ class SpecAdapter(Adapter):
             status, reason = "needs_you", f"stopped: {st.halted}"
         elif st.missing:
             status, reason = "blocked", "required fields without an approved answer: " + "; ".join(st.missing[:8])
+        elif st.uncertain:
+            status, reason = "needs_you", "required fields to check yourself: " + "; ".join(st.uncertain[:8])
         elif submit is None:
             status, reason = "blocked", "no single Submit control found; review the page yourself"
         elif st.yours:

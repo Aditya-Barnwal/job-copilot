@@ -529,6 +529,196 @@ def _fmt_num(x: float) -> int | float:
     return int(x) if float(x).is_integer() else round(x, 2)
 
 
+_DURATION_UNITS = (("years", 12), ("months", 1), ("weeks", 7 / 30), ("days", 1 / 30))
+
+
+def duration_months(text: Any) -> Optional[int]:
+    """'2 years 10 months' -> 34, '18 months' -> 18, '3 yrs' -> 36, '3' -> 36 (a bare
+    number is years). None when it can't be read for sure ('2+ years', '1-2 years')."""
+    if isinstance(text, bool):
+        return None
+    if isinstance(text, (int, float)):
+        return int(round(float(text) * 12))
+    t = norm(text)
+    if not t or re.search(r"\+|\d\s*(-|to)\s*\d", str(text).lower()):
+        return None
+    if re.fullmatch(r"\d+(\.\d+)?", t):
+        return int(round(float(t) * 12))
+    total, matched = 0.0, False
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]+)", t):
+        for name, f in _DURATION_UNITS:
+            if re.fullmatch({"years": r"years?|yrs?|y", "months": r"months?|mos?|m",
+                             "weeks": r"weeks?|wks?|w", "days": r"days?|d"}[name], unit):
+                total += float(num) * f
+                matched = True
+                break
+        else:
+            return None
+    if not matched or re.sub(r"(\d+(?:\.\d+)?)\s*[a-z]+|\band\b", " ", t).strip():
+        return None
+    return int(round(total))
+
+
+# --------------------------------------------------------------------------- units of a numeric field
+#
+# A number typed into a form is only right in the unit the form asks for. The
+# unit comes from the label ("Experience (in years)", "Notice period (days)",
+# "Expected CTC (LPA)") and from the field's unit hint: the short unit words
+# shown beside the box ("Years" / "Months" suffix boxes, an "INR" currency
+# picker, an "Annual" tag), read by the SafePage inspector (meta `unit_hint`,
+# words from a fixed vocabulary only, never page content). Without a unit the
+# handlers below leave a numeric field for the person.
+
+COUNT_UNITS = ("years", "months", "weeks", "days")
+_UNIT_WORD = {
+    "years": "years", "year": "years", "yrs": "years", "yr": "years",
+    "months": "months", "month": "months", "mos": "months",
+    "weeks": "weeks", "week": "weeks", "days": "days", "day": "days",
+    "lpa": "lpa", "lakh": "lpa", "lakhs": "lpa", "lac": "lpa", "lacs": "lpa",
+    "crore": "crore", "crores": "crore",
+    "annual": "annual", "annually": "annual", "annum": "annual", "yearly": "annual",
+    "per annum": "annual", "per year": "annual", "p.a.": "annual", "p. a.": "annual",
+    "monthly": "monthly", "per month": "monthly",
+    "per week": "weekly", "per day": "daily", "per hour": "hourly",
+    "inr": "INR", "rupee": "INR", "rupees": "INR", "₹": "INR",
+    "usd": "USD", "dollar": "USD", "dollars": "USD", "$": "USD",
+    "eur": "EUR", "€": "EUR", "gbp": "GBP", "£": "GBP",
+    "sgd": "SGD", "aud": "AUD", "cad": "CAD", "aed": "AED",
+}
+_CURRENCY_CODES = {"INR", "USD", "EUR", "GBP", "SGD", "AUD", "CAD", "AED"}
+_PERIOD_UNITS = {"annual", "monthly", "weekly", "daily", "hourly"}
+
+
+def hint_units(hint: Any) -> set[str]:
+    """Units named by a field's unit hint ('years', 'inr, annual', ...)."""
+    out = set()
+    for w in re.split(r"\s*[,|;]\s*", str(hint or "").strip().lower()):
+        w = re.sub(r"\s+", " ", w)
+        if w in _UNIT_WORD:
+            out.add(_UNIT_WORD[w])
+        elif w.startswith("per "):
+            out.add(_UNIT_WORD.get(w, "other_period"))
+    return out
+
+
+_LABEL_COUNT_RX = re.compile(
+    r"\b(?:in|no of|number of|how many|count of|total no of|total number of)\s+(years?|yrs?|months?|weeks?|days?)\b|"
+    r"\b(years?|yrs?|months?|weeks?|days?) of\b|\b(yoe)\b")
+_LABEL_PAREN_RX = re.compile(r"\(\s*(?:in\s+(years?|yrs?|months?|weeks?|days?)|(years|yrs|months|mos|weeks|days|"
+                             r"lpa|lakhs?|lacs?))\s*\)")
+
+
+def label_units(label: Any) -> set[str]:
+    """Units a label asks for in so many words: '(in years)', '(days)', 'years of',
+    'how many months', 'LPA' / 'lakhs', 'per month', 'annual'. A bare 'year'
+    ('Graduation year') is not a count unit."""
+    raw = str(label or "").lower()
+    q = norm(raw)
+    out: set[str] = set()
+    for m in _LABEL_COUNT_RX.finditer(q):
+        w = next(g for g in m.groups() if g)
+        out.add("years" if w == "yoe" else _UNIT_WORD.get(w, w))
+    for m in _LABEL_PAREN_RX.finditer(raw):
+        w = m.group(1) or m.group(2)
+        out.add(_UNIT_WORD.get(w, w))
+    if re.search(r"\b(lpa|lakhs?|lacs?)\b", q):
+        out.add("lpa")
+    if re.search(r"\bcrores?\b", q):
+        out.add("crore")
+    if re.search(r"\b(per month|monthly|a month|pm)\b", q):
+        out.add("monthly")
+    if re.search(r"\b(per annum|annual|annually|yearly|per year|a year|p a)\b", q):
+        out.add("annual")
+    if re.search(r"\b(per hour|hourly|per week|weekly|per day|daily)\b", q):
+        out.add("other_period")
+    return out
+
+
+def number_units(label: Any = "", hint: Any = "") -> set[str]:
+    return label_units(label) | hint_units(hint)
+
+
+_SALARY_Q = re.compile(r"\b(salary|ctc|cctc|ectc|compensation|package|pay|remuneration|stipend|income|"
+                       r"earnings?|cost to company|wages?)\b")
+_EXPERIENCE_Q = re.compile(r"\b(experience|yoe|exp)\b")
+_NOTICE_Q = re.compile(r"\b(notice|join|joining|available|availability|start)\b")
+_REMAINDER_Q = re.compile(r"\b(beyond|remaining|additional|extra|plus|apart from|besides|over and above)\b")
+_PLAIN_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def implausible_number(value: Any, *, label: Any = "", hint: Any = "", numeric: bool = False,
+                       digits_only: bool = False, bounds: Optional[tuple] = None) -> Optional[str]:
+    """Why `value` must not be typed into this field, or None. Only numeric fields
+    are checked: type=number (`numeric`), a field whose label or unit hint names a
+    count or money unit, or a digits-only box (`digits_only`: inputmode / pattern)
+    asking for experience, notice or salary. The value must then be one plain
+    number inside a plausible range for what is asked (experience 0-50 years /
+    0-11 months beyond full years, notice 0-365 days, a salary in its unit), and
+    never a year in a count field. `bounds` = the field's own (min, max, step).
+    The reason never contains the value."""
+    units = number_units(label, hint)
+    counts = units & set(COUNT_UNITS)
+    amounts = units - set(COUNT_UNITS)
+    q = norm(label)
+    salary = bool(_SALARY_Q.search(q))
+    exp = not salary and bool(_EXPERIENCE_Q.search(q))
+    notice = not salary and not exp and bool(_NOTICE_Q.search(q))
+    if not (numeric or counts or amounts or (digits_only and (salary or exp or notice))):
+        return None
+    if isinstance(value, bool) or value is None:
+        return "the value isn't a number"
+    s = (str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)).strip()
+    if not _PLAIN_NUMBER.fullmatch(s):
+        return "the value isn't one plain number"
+    x = float(s)
+    lo = hi = None
+    lo_b, hi_b, step = (list(bounds) + [None, None, None])[:3] if bounds else (None, None, None)
+    for b, is_lo in ((lo_b, True), (hi_b, False)):
+        try:
+            if b not in (None, "") and (x < float(b) if is_lo else x > float(b)):
+                return "the value is outside the field's own min / max"
+        except (TypeError, ValueError):
+            pass
+    if str(step or "").strip() in ("1", "1.0") and not x.is_integer():
+        return "the field takes whole numbers only"
+    if counts and not salary and x.is_integer() and 1900 <= x <= 2100:
+        return f"the value looks like a year, not a number of {sorted(counts)[0]}"
+    what = ""
+    if salary:
+        cur = next(iter(units & _CURRENCY_CODES), "")
+        if "lpa" in units:
+            lo, hi, what = 0.5, 500, "a salary in lakhs per annum"
+        elif "crore" in units:
+            lo, hi, what = 0.01, 50, "a salary in crores"
+        elif "monthly" in units:
+            lo, hi, what = (5_000, 5_000_000, "a monthly salary in INR") if cur == "INR" else (
+                (100, 200_000, f"a monthly salary in {cur}") if cur else (None, None, ""))
+        elif cur == "INR":
+            lo, hi, what = ((50_000, 100_000_000, "an annual salary in INR") if "annual" in units
+                            else (5_000, 100_000_000, "a salary in INR"))
+        elif cur:
+            lo, hi, what = 1_000, 2_000_000, f"an annual salary in {cur}"
+    elif exp:
+        if "months" in counts and "years" not in counts:
+            lo, hi, what = (0, 11, "months beyond full years") if _REMAINDER_Q.search(q) else (
+                0, 600, "months of experience")
+        elif "years" in counts and "months" not in counts:
+            lo, hi, what = 0, 50, "years of experience"
+        else:
+            lo, hi, what = 0, 600, "experience"
+    elif notice:
+        unit = next(iter(counts), "days") if len(counts) <= 1 else "days"
+        lo, hi = {"days": (0, 365), "weeks": (0, 52), "months": (0, 12), "years": (0, 1)}[unit]
+        what = f"a notice period in {unit}"
+    elif len(counts) == 1:
+        unit = next(iter(counts))
+        lo, hi = {"years": (0, 100), "months": (0, 1200), "weeks": (0, 520), "days": (0, 3650)}[unit]
+        what = f"a number of {unit}"
+    if lo is not None and not (lo <= x <= hi):
+        return f"the value is outside the plausible range for {what} ({_fmt_num(lo):,}–{_fmt_num(hi):,})"
+    return None
+
+
 # --------------------------------------------------------------------------- context
 
 @dataclass
@@ -543,6 +733,9 @@ class _Ctx:
     today: dt.date
     company: Any
     required: Optional[bool]
+    hint: str = ""                # the field's unit hint (SafePage meta unit_hint)
+    units: frozenset = frozenset()  # label_units(raw) | hint_units(hint)
+    digits_only: bool = False     # inputmode numeric / a digits pattern
 
 
 _ATS_SOURCES = {"greenhouse", "lever", "ashby", "workday", "workable", "smartrecruiters",
@@ -873,20 +1066,54 @@ def h_notice(ctx: _Ctx) -> Answer:
             days.rule = "notice"
             return days
     if ctx.field_type == "number":
-        if days.value == "":
-            return days
-        d = float(days.value)
-        if re.search(r"\bmonths?\b", ctx.q):
-            days.value = int(d // 30)
-        elif re.search(r"\bweeks?\b", ctx.q):
-            days.value = int(d // 7)
-        else:
-            days.value = int(d)
-        return days
+        return _notice_number(ctx, days)
     return _from(ctx.bank, "availability.notice_period", "notice")
 
 
+def _count_unit(ctx: _Ctx) -> Optional[str]:
+    """The one count unit (years / months / weeks / days) the field asks for: from
+    its label's unit words, else its unit hint, else a lone unit word in the
+    question. None = none, or more than one."""
+    words = {u for u in COUNT_UNITS if re.search(rf"\b{u[:-1]}s?\b", ctx.q)}
+    for s in (label_units(ctx.raw) & set(COUNT_UNITS), hint_units(ctx.hint) & set(COUNT_UNITS), words):
+        if len(s) == 1:
+            return next(iter(s))
+        if len(s) > 1:
+            return None
+    return None
+
+
+def _notice_number(ctx: _Ctx, days: Answer) -> Answer:
+    """notice_period_days as a plain number in the unit the field asks for
+    (days / weeks / months, 30 days = 1 month); empty when the field names no
+    unit or the notice isn't a whole number of that unit."""
+    if days.value == "":
+        return days
+    d = _num(days.value)
+    if d is None or d < 0:
+        return Answer("", days.source, 0.0, True, "notice_period_days isn't a number", "notice", days.status)
+    unit = _count_unit(ctx)
+    per = {"days": 1, "weeks": 7, "months": 30}.get(unit or "")
+    if per is None:
+        return Answer("", days.source, 0.0, True, "the field doesn't say whether it wants days, weeks or "
+                      "months: please answer it yourself", "notice", days.status)
+    if d % per:
+        return Answer("", days.source, 0.0, True, f"your notice period isn't a whole number of {unit}: "
+                      "please answer it yourself", "notice", days.status)
+    days.value = int(d // per)
+    days.note = (days.note + "; " if days.note else "") + f"notice period in {unit}"
+    return days
+
+
 def h_earliest_start(ctx: _Ctx) -> Answer:
+    # "Available to join (in days)", "How many days to join?": a count, not a date
+    if ctx.field_type == "number" or (set(ctx.units) & {"days", "weeks", "months"}
+                                      and not re.search(r"\bdate\b", ctx.q)):
+        if ctx.options:
+            return h_notice(ctx)
+        return _notice_number(ctx, _notice_days(ctx))
+    if ctx.options and any(_days_range(o) for o in ctx.options) and not any(parse_date(o) for o in ctx.options):
+        return h_notice(ctx)              # "Available to join" with "Immediately / 15 days / 30 days"
     a = _from(ctx.bank, "availability.earliest_start", "earliest_start")
     if a.value == "" or ctx.field_type != "date":
         return a
@@ -978,6 +1205,7 @@ def _years_range(option: str) -> Optional[tuple[float, float, bool, bool]]:
     "more than 5 years", "5+ years", "up to 2 years", "Fresher". None = can't tell.
     A number takes the unit written after it, else the next unit in the text."""
     t = norm(option).replace("+", " + ")
+    t = re.sub(r"\b(a|an|one) (year|month|week)\b", r"1 \2", t)      # "less than a year"
     if re.fullmatch(r"(fresher|no experience|none|entry level|0)( experience)?", t.strip()):
         return (0.0, 0.0, True, True)
     toks = re.findall(r"\d+(?:\.\d+)?|[a-z]+|\+", t)
@@ -1032,6 +1260,24 @@ def _experience_option(years: float, options: list[str]) -> tuple[Optional[str],
         if (lo < years - eps or (lo_in and abs(years - lo) <= eps)) and \
                 (years < hi - eps or (hi_in and abs(years - hi) <= eps)):
             hits.append((o, lo, hi))
+    if not hits:
+        # A whole-year ladder ("1 year", "2 years", "3 years", "5 years or more"):
+        # "N years" holds N years and some months, rounded down like a numeric
+        # answer (2y 10m -> "2 years"), but only when N+1 years is itself an
+        # option (a point or a range from it), so the ladder really steps by a year.
+        rngs = [r for r in (_years_range(o) for o in options) if r]
+        for o in options:
+            r = _years_range(o)
+            if not r or r[0] != r[1] or r[0] < 1 or not float(r[0]).is_integer() \
+                    or not (r[0] <= years < r[0] + 1):              # 0 / "Fresher" means none at all
+                continue
+            nxt = r[0] + 1
+            if any(abs(lo - nxt) <= eps and (lo_in or hi == lo) for lo, hi, lo_in, _ in rngs):
+                hits.append((o, r[0], nxt))
+    if len(hits) > 1:                           # an exact point ("Fresher" = 0, "2 years") wins
+        exact = [h for h in hits if abs(h[1] - years) <= eps and abs(h[2] - years) <= eps]
+        if len(exact) == 1:
+            hits = exact
     if len(hits) > 1:                           # shared edge: prefer the range that starts there
         starts = [h for h in hits if abs(h[1] - years) <= eps and h[2] > h[1]]
         if len(starts) == 1:
@@ -1040,6 +1286,46 @@ def _experience_option(years: float, options: list[str]) -> tuple[Optional[str],
         return hits[0][0], ""
     return None, ("no option covers your experience" if not hits
                   else "more than one option covers your experience")
+
+
+def _experience_unit(ctx: _Ctx) -> Optional[str]:
+    """What a numeric experience field wants: 'years' (whole years), 'months'
+    (total months), 'months_rem' (months beyond the full years, e.g. Keka's
+    Years box + Months picker) or None (can't tell: the label and the box's
+    unit hint disagree, both units at once, or no unit at all)."""
+    q = ctx.q
+    qy, qm = bool(re.search(r"\b(years?|yrs?|yoe)\b", q)), bool(re.search(r"\bmonths?\b", q))
+    h = hint_units(ctx.hint)
+    hy, hm = "years" in h, "months" in h
+    if qm and _REMAINDER_Q.search(q) and not hy:
+        return "months_rem"
+
+    def one(y: bool, m: bool) -> Optional[str]:
+        return "years" if y and not m else ("months" if m and not y else None)
+
+    qu, hu = one(qy, qm), one(hy, hm)
+    if qu and hu and qu != hu:
+        return None                    # "Experience (in years)" on a box marked Months
+    unit = hu or qu
+    if unit == "months" and _month_picker(ctx.options):
+        return "months_rem"            # a 0..11 picker beside a years box
+    return unit
+
+
+def _int_options(options: list[str]) -> Optional[dict[int, str]]:
+    """{n: option} when every option is a plain whole number ('0'..'11', '10 months')."""
+    out: dict[int, str] = {}
+    for o in options or []:
+        m = re.fullmatch(r"\s*(\d{1,3})\s*(years?|yrs?|months?)?\s*", str(o).lower())
+        if not m:
+            return None
+        out[int(m.group(1))] = o
+    return out or None
+
+
+def _month_picker(options: list[str]) -> bool:
+    ints = _int_options(options)
+    return bool(ints) and len(ints) >= 6 and max(ints) <= 11
 
 
 def h_experience(ctx: _Ctx) -> Answer:
@@ -1053,28 +1339,49 @@ def h_experience(ctx: _Ctx) -> Answer:
                      f"(your total experience is a ceiling)", "experience_skill")
     a = _from(ctx.bank, "employment.current_start_date", "experience")
     d = parse_date(a.value) if a.value != "" else None
-    if not d:
-        static = _from(ctx.bank, "employment.total_experience", "experience")
-        if ctx.field_type == "number" and static.value != "":
-            n = _num(static.value)
-            if n is None:
-                return Answer("", static.source, 0, True, "total_experience isn't a number", "experience")
-            static.value = int(n)
-        return static
-    months = months_between(d, ctx.today)
-    if ctx.field_type == "number" or ctx.options:
-        val: Any = months if re.search(r"\bmonths?\b", ctx.q) and not re.search(r"\byears?\b", ctx.q) \
-            else months // 12
-        if ctx.options:
+    if d:
+        months: Optional[int] = months_between(d, ctx.today)
+        how = "computed from employment.current_start_date"
+    else:
+        a = _from(ctx.bank, "employment.total_experience", "experience")
+        if a.value == "":
+            return a
+        if ctx.field_type != "number" and not ctx.options:
+            return a                   # a text box: your own words, as written
+        months = duration_months(a.value)
+        how = "from employment.total_experience"
+        if months is None:
+            return Answer("", a.source, 0.0, True, "total_experience isn't a duration I can read "
+                          "(e.g. '2 years 10 months')", "experience", a.status)
+    numeric_unit = _experience_unit(ctx) if (ctx.field_type == "number" or ctx.options) else None
+    if ctx.options:
+        ints = _int_options(ctx.options)
+        if numeric_unit is None and (ints or hint_units(ctx.hint) & {"years", "months"}):
+            return Answer("", a.source, 0.0, True, "can't tell whether the options are years or months "
+                          "(the label and the box disagree): please answer it yourself", "experience", a.status)
+        if numeric_unit == "months_rem" or (ints and numeric_unit in ("years", "months")):
+            want = {"years": months // 12, "months": months, "months_rem": months % 12}[numeric_unit]
+            if not ints or want not in ints:
+                return Answer("", a.source, 0.0, True, "no option holds your experience in the asked unit",
+                              "experience", a.status)
+            val: Any = ints[want]
+        else:
             best, why = _experience_option(months / 12, ctx.options)
             if best is None:
                 return Answer("", a.source, 0.0, True, f"{why} ({fmt_years_months(months)})",
                               "experience", a.status)
             val = best
+    elif ctx.field_type == "number":
+        if numeric_unit is None:
+            return Answer("", a.source, 0.0, True, "the field doesn't say whether it wants years or months "
+                          "(or says both): please answer it yourself", "experience", a.status)
+        val = {"years": months // 12, "months": months, "months_rem": months % 12}[numeric_unit]
+        how += {"years": "; whole years, rounded down (never a decimal: '2.10' vs '2.8' is ambiguous)",
+                "months": "; total months", "months_rem": "; months beyond the whole years"}[numeric_unit]
     else:
         val = fmt_years_months(months)
     a.value = val
-    a.note = (a.note + "; " if a.note else "") + "computed from employment.current_start_date (rounded down)"
+    a.note = (a.note + "; " if a.note else "") + how + ("" if ctx.field_type == "number" else " (rounded down)")
     return a
 
 
@@ -1095,6 +1402,8 @@ _CURRENCY_MARKS = [   # checked in order: C$ / S$ / A$ before a bare $
 
 
 def _question_currency(ctx: _Ctx) -> str:
+    """The currency the label names, else the one the field's unit hint shows
+    (an "INR" picker or prefix box beside the amount)."""
     raw = ctx.raw
     for cur, rx, sym in _CURRENCY_MARKS:
         if re.search(rx, ctx.q):
@@ -1104,7 +1413,8 @@ def _question_currency(ctx: _Ctx) -> str:
                 return cur
         elif sym in raw and (len(sym) == 1 or re.search(r"(?<![A-Za-z])" + re.escape(sym), raw)):
             return cur
-    return ""
+    hinted = sorted(hint_units(ctx.hint) & _CURRENCY_CODES)
+    return hinted[0] if len(hinted) == 1 else ""
 
 
 def _currency(ctx: _Ctx) -> str:
@@ -1142,14 +1452,102 @@ def _posted_range(job: dict, currency: str) -> Optional[tuple[float, float]]:
 
 
 def _inr_number(ctx: _Ctx, lpa: float) -> tuple[Any, str]:
-    """An LPA amount in the unit the question asks for."""
-    if re.search(r"\b(lpa|lakh|lakhs|lac|lacs)\b", ctx.q):
+    """An LPA amount as a plain number in the unit the field asks for, or
+    (None, why) when the unit can't be told for sure:
+      LPA / lakhs in the label or beside the box  -> lakhs per annum (12.5)
+      per month / monthly                         -> rupees a month (104167)
+      per annum / annual / yearly                 -> rupees a year (1250000)
+      INR / rupees / ₹ named, and the word CTC    -> rupees a year (CTC is annual)
+    Anything else ("Expected CTC" alone, "Salary (INR)" with no period) is left
+    for the person: 12.5 and 1250000 are both plausible there."""
+    u = set(ctx.units)
+    if "lpa" in u:
         return _fmt_num(lpa), "in lakhs per annum"
-    if re.search(r"per month|monthly|a month", ctx.q):
+    if "crore" in u or "other_period" in u or u & {"weekly", "daily", "hourly"}:
+        return None, "the field asks for a unit your CTC isn't kept in"
+    monthly, annual = "monthly" in u, "annual" in u
+    if monthly and annual:
+        return None, "the field mentions both monthly and annual amounts"
+    if monthly:
         return int(round(lpa * 100000 / 12)), "monthly, in rupees"
-    if re.search(r"\b(inr|rupees?|per annum|annual|yearly|in numbers|absolute)\b", ctx.q) or "₹" in ctx.raw:
+    if annual:
         return int(round(lpa * 100000)), "annual, in rupees"
-    return _fmt_num(lpa), "assumed lakhs per annum (the question gives no unit)"
+    inr = _question_currency(ctx) == "INR"
+    if inr and re.search(r"\b(ctc|cctc|ectc|cost to company)\b", ctx.q):
+        return int(round(lpa * 100000)), "annual, in rupees (CTC is annual)"
+    if inr:
+        return None, "the field doesn't say per year or per month"
+    return None, "the field doesn't say lakhs or rupees, per year or per month"
+
+
+def _lpa_range(option: str, *, lpa_label: bool = False) -> Optional[tuple[float, float, bool, bool]]:
+    """(lo, hi, lo_inclusive, hi_inclusive) in LPA for a salary option: "3 - 6 LPA",
+    "Less than 3 LPA", "24+ LPA", "15L - 20L", "1 - 1.5 Cr", "10,00,000 - 15,00,000"
+    (rupee amounts). Unitless small numbers ("3-6") only when the question itself
+    says LPA (`lpa_label`). None = not a rupee range this can read."""
+    t = re.sub(r"(?<=\d),(?=\d)", "", str(option or "")).lower().replace("₹", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    nums = [(float(n), u or "") for n, u in re.findall(
+        r"(\d+(?:\.\d+)?)\s*(lpa|lakhs?|lacs?|l\b|crores?|cr\b|k\b)?", t)]
+    if not nums or re.search(r"\b(usd|eur|gbp|sgd|aud|cad|aed|per month|monthly|/ ?month|pm)\b|[$€£]", t):
+        return None
+    for i in range(len(nums) - 2, -1, -1):          # "1 - 1.5 Cr": a bare number takes the next unit
+        if not nums[i][1] and nums[i + 1][1]:
+            nums[i] = (nums[i][0], nums[i + 1][1])
+    units = {u for _, u in nums if u}
+    has_lakh = bool(re.search(r"\b(lpa|lakhs?|lacs?)\b|\d\s*l\b", t)) or any(u.startswith(("l", "lakh", "lac")) for u in units)
+    vals = []
+    for n, u in nums:
+        if u.startswith("cr"):
+            vals.append(n * 100)
+        elif u == "k":
+            return None
+        elif u or has_lakh or (lpa_label and n < 1000):
+            vals.append(n)
+        elif n >= 10000:
+            vals.append(n / 100000)                     # an absolute rupee amount
+        else:
+            return None
+    if re.search(r"\b(less than|under|below|fewer than)\b", t):
+        return (0.0, vals[0], True, False)
+    if re.search(r"\b(up to|upto|within|or less|at most|max|maximum)\b", t):
+        return (0.0, vals[0], True, True)
+    if re.search(r"\b(more than|over|above|greater than)\b", t):
+        return (vals[0], math.inf, False, True)
+    if re.search(r"\+|\b(or more|at least|and above|plus|min|minimum)\b", t):
+        return (vals[0], math.inf, True, True)
+    if len(vals) >= 2:
+        if not re.search(r"\d\s*[a-z.]*\s*(-|–|—|\bto\b)\s*\d", t):
+            return None
+        return (min(vals[:2]), max(vals[:2]), True, True)
+    return (vals[0], vals[0], True, True)
+
+
+def _salary_option(ctx: _Ctx, lpa: float) -> Optional[tuple[Optional[str], str]]:
+    """For a select of salary ranges: (the one option holding `lpa`, "") or (None,
+    why). None when no option is a number at all (not a range question). A range
+    that starts at your number beats one that ends there ("18 - 21" over
+    "15 - 18" for 18 LPA): an answer never undersells."""
+    opts = [o for o in ctx.options if str(o).strip()]
+    if not any(re.search(r"\d", o) for o in opts):
+        return None
+    lpa_label = "lpa" in ctx.units
+    eps = 1e-9
+    hits = []
+    for o in opts:
+        r = _lpa_range(o, lpa_label=lpa_label)
+        if not r:
+            continue
+        lo, hi, lo_in, hi_in = r
+        if (lo < lpa - eps or (lo_in and abs(lpa - lo) <= eps)) and (lpa < hi - eps or (hi_in and abs(lpa - hi) <= eps)):
+            hits.append((o, lo, hi))
+    if len(hits) > 1:
+        exact = [h for h in hits if abs(h[1] - lpa) <= eps and abs(h[2] - lpa) <= eps]
+        starts = [h for h in hits if abs(h[1] - lpa) <= eps and h[2] > h[1]]
+        hits = exact if len(exact) == 1 else (starts if len(starts) == 1 else hits)
+    if len(hits) == 1:
+        return hits[0][0], ""
+    return None, ("no option covers your figure" if not hits else "more than one option covers your figure")
 
 
 def _asks_current_ctc_too(q: str) -> bool:
@@ -1195,11 +1593,20 @@ def h_expected_ctc(ctx: _Ctx) -> Answer:
         if floor is not None and amount < floor:
             amount, note = floor, note + f"; raised to your floor ({floor:g} LPA)"
         amount = math.ceil(amount * 2) / 2            # nearest 0.5 LPA, never down
+        if ctx.options:
+            picked = _salary_option(ctx, amount)
+            if picked is not None:
+                if picked[0] is None:
+                    return Answer("", f"answers.yaml:{path}", 0.0, True, f"{picked[1]}: please answer it yourself",
+                                  "expected_ctc", status)
+                return Answer(picked[0], f"answers.yaml:{path}", 1.0, needs, f"{note}; the range holding it",
+                              "expected_ctc", status)
         if ctx.field_type == "number":
             val, unit = _inr_number(ctx, amount)
-            conf = 0.7 if unit.startswith("assumed") else 1.0
-            return Answer(val, f"answers.yaml:{path}", conf, needs or conf < 1, f"{note}; {unit}",
-                          "expected_ctc", status)
+            if val is None:
+                return Answer("", f"answers.yaml:{path}", 0.0, True, f"{unit}: please answer it yourself",
+                              "expected_ctc", status)
+            return Answer(val, f"answers.yaml:{path}", 1.0, needs, f"{note}; {unit}", "expected_ctc", status)
         return Answer(f"{_fmt_num(amount)} LPA", f"answers.yaml:{path}", 1.0, needs, note, "expected_ctc", status)
     k = cur.lower()
     floor, default = _num(ec.get(f"{k}_floor")), _num(ec.get(f"{k}_default"))
@@ -1218,7 +1625,17 @@ def h_expected_ctc(ctx: _Ctx) -> Answer:
     if floor is not None and amount < floor:
         amount, note = floor, note + f"; raised to your floor ({cur} {floor:,.0f})"
     amount = int(math.ceil(amount / 1000.0) * 1000)
+    if ctx.options and any(re.search(r"\d", str(o)) for o in ctx.options):
+        return Answer("", f"answers.yaml:{path}", 0.0, True, f"pick the {cur} range yourself", "expected_ctc", status)
     val: Any = amount if ctx.field_type == "number" else f"{cur} {amount:,} per year"
+    if ctx.field_type == "number":
+        u = set(ctx.units)
+        if "lpa" in u or "crore" in u or "other_period" in u or u & {"weekly", "daily", "hourly"} \
+                or {"monthly", "annual"} <= u:
+            return Answer("", f"answers.yaml:{path}", 0.0, True, f"the field asks for a unit your {cur} "
+                          "expectation isn't kept in: please answer it yourself", "expected_ctc", status)
+        if "monthly" in u:
+            val, note = int(round(amount / 12)), note + "; monthly"
     return Answer(val, f"answers.yaml:{path}", 1.0, needs, note, "expected_ctc", status)
 
 
@@ -1230,12 +1647,26 @@ def h_current_ctc(ctx: _Ctx) -> Answer:
     if a.value == "" or _num(a.value) is None:
         return a
     lpa = float(_num(a.value))
+    if ctx.options:
+        picked = _salary_option(ctx, lpa)
+        if picked is not None:
+            if picked[0] is None or _question_currency(ctx) not in ("", "INR"):
+                why = picked[1] or "the options aren't in INR"
+                return Answer("", a.source, 0.0, True, f"{why}: please answer it yourself", "current_ctc", a.status)
+            a.value = picked[0]
+            a.note = (a.note + "; " if a.note else "") + "the range holding your current CTC"
+            return a
     if ctx.field_type == "number":
+        cur = _currency(ctx)
+        if cur != "INR":       # answers.yaml keeps your current CTC in lakhs of rupees
+            why = f"the field asks for {cur}" if cur else "couldn't tell which currency the field wants"
+            return Answer("", a.source, 0.0, True, f"{why}; your current CTC is in INR: please answer it "
+                          "yourself", "current_ctc", a.status)
         val, unit = _inr_number(ctx, lpa)
+        if val is None:
+            return Answer("", a.source, 0.0, True, f"{unit}: please answer it yourself", "current_ctc", a.status)
         a.value = val
         a.note = (a.note + "; " if a.note else "") + unit
-        if unit.startswith("assumed"):
-            a.confidence, a.needs_user = 0.7, True
     else:
         a.value = f"{_fmt_num(lpa)} LPA"
     return a
@@ -1419,7 +1850,8 @@ RULES: list[tuple[str, str, Any]] = [
     ("institution", r"universit|college|institut|school name|\bschool\b|alma mater", h_institution),
     ("experience", r"(years|yrs|months) of (\w+ )?experience|total (work |professional )?experience|how (many|much) "
                    r"(years|experience)|work experience|\byoe\b|experience in years|relevant experience|"
-                   r"years (of )?(professional|industry)|professional experience", h_experience),
+                   r"years (of )?(professional|industry)|professional experience|experience (in )?(years|yrs|months)\b",
+     h_experience),
     ("current_ctc", r"^(?!.*" + _EXPECT_WORDS + r").*(?:" + _CURRENT_CTC + r")", h_current_ctc),
     ("expected_ctc", r"expected (ctc|salary|compensation|package|pay|remuneration|annual)|salary expectations?|"
                      r"compensation expectations?|desired (salary|compensation|pay|annual)|salary requirements?|"
@@ -1624,9 +2056,18 @@ def _finalize(a: Answer, ctx: _Ctx) -> Answer:
         a.value = "Yes" if a.value else "No"
         return a
     if ft == "number":
-        n = _num(a.value) if not isinstance(a.value, (int, float)) else a.value
-        if n is None:
-            return Answer("", a.source, 0.0, True, "the value isn't a number", a.rule, a.status)
+        # One plain number or nothing: never the digits of "2 years 10 months"
+        # run together, never a date or a year in a count field.
+        if isinstance(a.value, (int, float)):
+            n: Any = a.value
+        elif isinstance(a.value, str) and _PLAIN_NUMBER.fullmatch(a.value.strip()):
+            n = float(a.value.strip())
+        else:
+            return Answer("", a.source, 0.0, True, "the field wants one number and the answer isn't one: "
+                          "please answer it yourself", a.rule, a.status)
+        why = implausible_number(n, label=ctx.raw, hint=ctx.hint, numeric=True)
+        if why:
+            return Answer("", a.source, 0.0, True, why + ": please answer it yourself", a.rule, a.status)
         a.value = _fmt_num(float(n)) if not isinstance(n, int) else n
         return a
     if isinstance(a.value, list):
@@ -1661,20 +2102,41 @@ def _strip_marks(question: str) -> str:
     return re.sub(r"\s+", " ", q).strip()
 
 
+# Rules whose answer is a quantity: on a text box that only takes a number (its
+# label or unit hint names the unit, or it is digits-only) they answer as for
+# type=number, i.e. one plain number in that unit.
+_QUANTITY_RULES = {"experience", "notice", "earliest_start", "current_ctc", "expected_ctc", "age"}
+
+
+def _first_rule(ctx: _Ctx) -> Optional[str]:
+    for name, rx, _ in _COMPILED:
+        if rx.search(ctx.q) and (name != "address" or _address_ok(ctx)):
+            return name
+    return None
+
+
 def answer_question(question: str, *, field_type: str = "text", options: Optional[list[str]] = None,
                     job: Optional[dict] = None, answers: Any = None, facts: Any = None,
                     required: Optional[bool] = None, company: Any = None,
-                    today: Optional[dt.date] = None, allow_open: bool = True) -> Answer:
+                    today: Optional[dt.date] = None, allow_open: bool = True,
+                    unit_hint: str = "", digits_only: bool = False) -> Answer:
     """allow_open=False never drafts an open answer (no LLM call): such questions
-    come back unanswered."""
+    come back unanswered. `unit_hint` = the unit words shown beside the box
+    (SafePage meta unit_hint: "years", "inr, annual"); `digits_only` = the box
+    takes digits only (inputmode numeric / a digits pattern)."""
     ft = field_type if field_type in FIELD_TYPES else "text"
     raw = _strip_marks(question)
+    hint = str(unit_hint or "")[:120]
     ctx = _Ctx(norm(raw), raw, ft, list(options or []), job, as_bank(answers), facts,
-               today or dt.date.today(), company, required)
+               today or dt.date.today(), company, required, hint,
+               frozenset(label_units(raw) | hint_units(hint)), bool(digits_only))
     if not ctx.q:
         return _none("empty question")
     if _is_attestation(ctx):
         return _none("consent / attestation / authorisation checkbox: only you can tick this", "consent")
+    if ft == "text" and _first_rule(ctx) in _QUANTITY_RULES and (
+            ctx.digits_only or hint_units(hint) or label_units(raw) & set(COUNT_UNITS + ("lpa",))):
+        ctx.field_type = "number"
     saved = _custom_answer(ctx)
     if saved is not None:
         return saved

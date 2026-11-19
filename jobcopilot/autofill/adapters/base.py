@@ -45,14 +45,15 @@ class PlanContext:
     cover_letter_text: Optional[str] = field(default=None, repr=False)
 
     def answer(self, question: str, *, field_type: str = "text", options: Optional[list] = None,
-               required: Optional[bool] = None) -> Any:
+               required: Optional[bool] = None, **extra: Any) -> Any:
+        """`extra`: unit_hint / digits_only when the field has them (answers.answer_question)."""
         fn = self.answer_fn
         if fn is None:
             from ... import answers as A
             fn = A.answer_question
         return fn(question, field_type=field_type, options=options, job=self.job or None,
                   answers=self.answers, facts=self.facts, required=required,
-                  company=self.company, today=self.today)
+                  company=self.company, today=self.today, **extra)
 
 
 class Adapter:

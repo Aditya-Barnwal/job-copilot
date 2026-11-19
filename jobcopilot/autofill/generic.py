@@ -83,7 +83,8 @@ def normalize(snapshot: Any) -> list[dict]:
                           "locator": f.get("locator") or "", "hidden": bool(f.get("hidden")),
                           "honeypot": detect.honeypot({"name": f.get("name"), "label": f.get("label"),
                                                        "type": t}),
-                          "name": f.get("name") or "", "accept": f.get("accept") or ""})
+                          "name": f.get("name") or "", "accept": f.get("accept") or "",
+                          "unit_hint": str(f.get("unit_hint") or ""), "digits_only": False})
             continue
         t = f.get("type") or "text"
         own = f.get("label") or ""
@@ -111,7 +112,8 @@ def normalize(snapshot: Any) -> list[dict]:
                       "required": bool(f.get("required")), "options": opts,
                       "locator": f.get("selector") or "", "hidden": bool(f.get("hidden")),
                       "honeypot": detect.honeypot(f), "name": f.get("name") or "",
-                      "accept": f.get("accept") or ""})
+                      "accept": f.get("accept") or "", "unit_hint": str(f.get("unit_hint") or ""),
+                      "digits_only": _digits_only(f)})
     for g in groups.values():                      # a lone checkbox is its own question
         metas = g.pop("metas")
         if g["type"] == "checkbox" and len(metas) == 1:
@@ -124,6 +126,12 @@ def normalize(snapshot: Any) -> list[dict]:
         if all(m.get("hidden") or m.get("offscreen") or m.get("aria_hidden") for m in metas):
             g["hidden"] = True                     # an invisible group is never ticked
     return items
+
+
+def _digits_only(meta: dict) -> bool:
+    from .safepage import _DIGITS_PATTERN_RE
+    return (str(meta.get("inputmode") or "") in ("numeric", "decimal")
+            or bool(_DIGITS_PATTERN_RE.match(str(meta.get("pattern") or ""))))
 
 
 def _value_str(v: Any) -> Optional[str]:
@@ -210,9 +218,14 @@ class GenericAdapter(Adapter):
                       "radio" if t == "radio" else "select", source="consent")
                 continue
             ft = _FT.get(t, "text")
+            extra: dict = {}
+            if it.get("unit_hint"):
+                extra["unit_hint"] = it["unit_hint"]
+            if it.get("digits_only"):
+                extra["digits_only"] = True
             try:
                 a = answer(question, field_type=ft, options=it["options"] or None,
-                           required=it["required"])
+                           required=it["required"], **extra)
             except Exception as exc:  # noqa: BLE001 — no answer is never a guess
                 log.info("answer failed for %r: %s", label, type(exc).__name__)
                 leave(it, "no answer", "check" if t == "checkbox" else "fill")
@@ -243,6 +256,14 @@ class GenericAdapter(Adapter):
             if not ok or value is None:
                 leave(it, note, kind, source=src, conf=conf)
                 continue
+            if kind == "fill":                 # the same check SafePage.fill makes before typing
+                from .. import answers as A
+                why = A.implausible_number(value, label=" ; ".join(dict.fromkeys(x for x in (label, question) if x)),
+                                           hint=it.get("unit_hint") or "", numeric=t == "number",
+                                           digits_only=bool(it.get("digits_only")))
+                if why:
+                    leave(it, why + ": please answer it yourself", kind, source=src)
+                    continue
             actions.append(FieldAction(it["locator"], label, kind, value, src, conf, False, a.note or "",
                                        it["required"]))
         log.info("generic plan: %d actions, %d unresolved", len(actions), len(unresolved))

@@ -17,11 +17,13 @@ fields:
   - {locator: '#firstName', question: 'First Name', kind: fill}
   - {locator: '#middleName', question: 'Middle Name', kind: fill}
   - {locator: '#lastName', question: 'Last Name', kind: fill}
-  - {locator: '[id="mobilePhone.number"]', question: 'Phone', kind: fill}
+  # the number box sits beside its own country-code picker (left for you, `never`):
+  # it takes the national number, never "+<code> ..." (maxlength 13 would cut it)
+  - {locator: '[id="mobilePhone.number"]', question: 'Phone number (without country code)', kind: fill, question_wins: true}
   - {locator: '#email', question: 'Email', kind: fill}
   - {locator: '#gender', question: 'Gender', kind: select}
   - {locator: '#workExperience', question: 'Years of experience', kind: fill}
-  - {locator: '[name="workExperience.months"]', question: 'Experience (months, beyond full years)', kind: select}
+  - {locator: '[name="workExperience.months"]', question: 'Months of experience (beyond full years)', kind: select}
   - {locator: '#currentSalary', question: 'Current salary', kind: fill}
   - {locator: '#expectedSalary', question: 'Expected salary', kind: fill}
   - {locator: '#availability', question: 'Notice period (days)', kind: fill}

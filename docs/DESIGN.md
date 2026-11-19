@@ -404,6 +404,16 @@ that a keyword rule can't be trusted with:
   proposed. A value from an unapproved block is returned with *needs you*, so
   nothing autofills from a value the person hasn't signed off.
 - Low-confidence option matches are left for the person.
+- **Numbers in the asked unit.** A numeric box (type=number, a digits-only box,
+  or one whose label or adjacent unit text says "Years", "Months", "(in days)",
+  "LPA", "INR", "Annual") gets one plain number in that unit: whole years
+  (rounded down, never a decimal), months beyond the years for a 0–11 picker,
+  notice in days / weeks / months, LPA as lakhs, as rupees per year (an annual
+  period, or INR plus the word CTC) or per month. When the unit can't be told
+  ("Expected CTC" alone, "Salary (INR)" with no period) the field is left for
+  the person. Ranges in options are matched as ranges; on a shared edge the
+  range that starts at your figure wins over the one that ends there (an
+  answer never undersells).
 
 Credentials and ID or card numbers are never stored.
 
@@ -490,6 +500,16 @@ known-trap fields (such as Workday's `beecatcher`) raise `HoneypotRefused`.
 Consent, attestation and agreement checkboxes or radios raise
 `ConsentRefused`. Hidden controls are never force-ticked. Password fields are
 never typed.
+
+**6b. Implausible numbers are not typed.** `SafePage.fill` checks a value
+right before typing into a numeric field (`answers.implausible_number`): one
+plain number, never a year in a count field, inside a plausible range for what
+the label and the field's unit hint ask (experience 0–50 years, 0–11 months
+beyond full years, notice 0–365 days, a salary in its unit) and the field's own
+min / max / step. Otherwise the field is left empty, highlighted, and named in
+the outcome with the reason (never the value). The planners make the same check.
+The unit hint is read-only: the inspector returns only words from a fixed unit
+vocabulary found beside the box, never page content.
 
 **7. Values are never stored or logged.** The in-page inspector reports
 structure only (labels, names, types, `has_value`), never a field's current

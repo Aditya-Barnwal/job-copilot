@@ -35,6 +35,13 @@ class SafePageError(RuntimeError):
     """Base class: a SafePage refused an action."""
 
 
+class ImplausibleValue(SafePageError):
+    """A value refused just before typing it into a numeric field: not one plain
+    number, a year in a count field, or outside the plausible range for what the
+    label and unit hint ask (answers.implausible_number). The message is the
+    reason; it never contains the value."""
+
+
 class SubmitGuardViolation(SafePageError):
     """Something tried to click / activate a submit-like control."""
 
@@ -504,6 +511,6 @@ class _NavWindow:
 
 __all__ = ["Guard", "guard_for", "handover", "SubmitGuardViolation", "SafePageError", "DeniedHost",
            "DeniedHostHalt", "OffSite", "AUTOFILL_BUILTIN_DENIED",
-           "ConsentRefused", "HoneypotRefused", "PasswordRefused", "Halted",
+           "ConsentRefused", "HoneypotRefused", "PasswordRefused", "Halted", "ImplausibleValue",
            "is_submit_like", "is_next_like", "is_consent_label", "is_denied", "denied_hosts",
            "site_of", "host_of", "host_matches", "SUBMIT_RE", "NEXT_RE"]

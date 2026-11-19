@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from . import detect
-from .guard import (ConsentRefused, DeniedHost, DeniedHostHalt, Guard, Halted, guard_for, HoneypotRefused, OffSite,
+from .guard import (ConsentRefused, DeniedHost, DeniedHostHalt, Guard, Halted, guard_for, HoneypotRefused,
+                    ImplausibleValue, OffSite,
                     PasswordRefused, SafePageError, SubmitGuardViolation, host_matches, host_of,
                     is_consent_label, is_denied, is_next_like, is_submit_like, site_of, SUBMIT_RE,
                     norm_name)
@@ -82,6 +83,56 @@ const __selector = (el) => {
   }
   return parts.join(' > ');
 };
+// Unit hint: the unit words shown beside a box ("Years" / "Months" suffix boxes,
+// an "INR" currency picker, an "Annual" tag, CSS ::before/::after text). Climbs at
+// most 5 ancestors and stops before one that holds another field (a select whose
+// chosen option is itself a unit, like a currency picker, doesn't count). Only
+// words from this fixed vocabulary are returned: never page content or values.
+const __UNIT_RX = /(?<![a-z])(per\s+(?:month|annum|year|week|day|hour)|p\.\s?a\.|years?|yrs?|months?|mos|weeks?|days?|lpa|lakhs?|lacs?|crores?|annual(?:ly)?|annum|yearly|monthly|inr|usd|eur|gbp|sgd|aud|cad|aed|rupees?|dollars?)(?![a-z])|([₹$€£])/gi;
+const __unitWords = (t, out) => {
+  const s = String(t || '').trim(); if (!s || s.length > 40) return;
+  for (const m of s.matchAll(__UNIT_RX)) { const w = (m[1] || m[2]).toLowerCase().replace(/\s+/g, ' '); if (!out.includes(w)) out.push(w); }
+};
+const __isUnitText = (t) => { const s = String(t || '').trim(); if (!s || s.length > 40) return false;
+  const o = []; __unitWords(s, o); return o.length > 0 && s.replace(__UNIT_RX, '').replace(/[\s()\[\]:.,\/-]/g, '') === ''; };
+const __selText = (s) => (s.selectedIndex >= 0 && s.options[s.selectedIndex]) ? __txt(s.options[s.selectedIndex]) : '';
+const __pseudo = (n, out) => { for (const ps of ['::before', '::after']) { let c = '';
+  try { c = getComputedStyle(n, ps).content || ''; } catch (e) {}
+  if (c && c !== 'none' && c !== 'normal' && /^["']/.test(c)) __unitWords(c.replace(/^["']|["']$/g, ''), out); } };
+const __unitHint = (el) => {
+  const tag = el.tagName.toLowerCase(), typ = (el.type || '').toLowerCase();
+  if (!(tag === 'select' || (tag === 'input' && ['text', 'number', 'search', ''].includes(typ)))) return '';
+  const own = new Set(Array.from(el.labels || []));
+  const words = [];
+  __unitWords(el.getAttribute('placeholder'), words);
+  let node = el;
+  for (let depth = 0; depth < 5 && node.parentElement; depth++) {
+    const up = node.parentElement;
+    if (up === document.body || ['FORM', 'FIELDSET', 'BODY', 'HTML'].includes(up.tagName)) break;
+    const others = Array.from(up.querySelectorAll('input, select, textarea')).filter(c => c !== el
+      && !['hidden', 'submit', 'button', 'reset', 'image'].includes((c.type || '').toLowerCase())
+      && !(c.tagName === 'INPUT' && c.readOnly)
+      && !(c.tagName === 'SELECT' && __isUnitText(__selText(c))));
+    if (others.length) break;
+    let budget = 200;
+    __pseudo(up, words);
+    const tw = document.createTreeWalker(up, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {acceptNode: (n) => {
+      if (--budget < 0) return NodeFilter.FILTER_REJECT;
+      if (n.nodeType === 3) { const p = n.parentElement;
+        if (p && (!p.checkVisibility || p.checkVisibility())) __unitWords(n.nodeValue, words);
+        return NodeFilter.FILTER_SKIP; }
+      if (n === el || own.has(n)) return NodeFilter.FILTER_REJECT;
+      if (n.tagName === 'SELECT') { const t = __selText(n); if (__isUnitText(t)) __unitWords(t, words); return NodeFilter.FILTER_REJECT; }
+      if (['OPTION', 'SCRIPT', 'STYLE', 'TEXTAREA', 'NOSCRIPT', 'TEMPLATE', 'BUTTON'].includes(n.tagName)) return NodeFilter.FILTER_REJECT;
+      if (n.tagName === 'INPUT') { if (n.readOnly && __isUnitText(n.value)) __unitWords(n.value, words); return NodeFilter.FILTER_REJECT; }
+      if (n.checkVisibility && !n.checkVisibility()) return NodeFilter.FILTER_REJECT;
+      __pseudo(n, words);
+      return NodeFilter.FILTER_ACCEPT; }});
+    while (tw.nextNode()) {}
+    node = up;
+  }
+  return words.join(', ');
+};
 const __meta = (el) => {
   const tag = el.tagName.toLowerCase();
   const typ = (el.type || '').toLowerCase();
@@ -109,6 +160,9 @@ const __meta = (el) => {
     multiple: !!el.multiple, checked: !!el.checked, disabled: !!el.disabled, readonly: !!el.readOnly,
     has_value: (tag === 'select') ? el.selectedIndex > 0 : ((typ === 'checkbox' || typ === 'radio') ? !!el.checked : !!(el.value && String(el.value).length) || (typ === 'file' && el.files && el.files.length > 0)),
     selector: __selector(el),
+    inputmode: (el.getAttribute('inputmode') || '').toLowerCase(), pattern: el.getAttribute('pattern') || '',
+    min: el.getAttribute('min') || '', max: el.getAttribute('max') || '', step: el.getAttribute('step') || '',
+    unit_hint: buttonish ? '' : __unitHint(el),
   };
   if (tag === 'select') m.options = Array.from(el.options).map(o => ({label: __txt(o) || o.label || '', value: o.value, disabled: !!o.disabled}));
   return m;
@@ -140,6 +194,23 @@ _JS_HIGHLIGHT = r"""(el, a) => {
 }"""
 _HIGHLIGHT = {"needs_you": ("#d97706", "needs you"), "uncertain": ("#d97706", "needs you"),
               "submit": ("#15803d", "Submit: press it yourself"), "error": ("#b91c1c", "check this")}
+
+
+_DIGITS_PATTERN_RE = re.compile(r"^\^?(\[0-9\]|\\d)[*+{]")
+
+
+def numeric_problem(value: Any, meta: dict, label: str = "") -> Optional[str]:
+    """The last check before typing into a numeric field (type=number, a box whose
+    label or unit hint names a unit, or a digits-only box asking for experience,
+    notice or salary): why `value` must not go in, or None. Uses the field's own
+    label, the plan's label for it, its placeholder, unit hint and min / max / step."""
+    from .. import answers as A
+    labels = " ; ".join(dict.fromkeys(str(x) for x in (label, meta.get("label"), meta.get("placeholder")) if x))
+    digits = (meta.get("inputmode") in ("numeric", "decimal")
+              or bool(_DIGITS_PATTERN_RE.match(str(meta.get("pattern") or ""))))
+    return A.implausible_number(value, label=labels, hint=meta.get("unit_hint") or "",
+                                numeric=meta.get("type") == "number", digits_only=digits,
+                                bounds=(meta.get("min"), meta.get("max"), meta.get("step")))
 
 
 # A group legend that asks for agreement (vs "I identify as (select all)").
@@ -284,6 +355,10 @@ class SafePage:
             raise SafePageError(f"fill() needs a text field, got {m['tag']}/{m['type']}")
         if m["disabled"] or m["readonly"]:
             raise SafePageError("field is disabled / read-only")
+        why = numeric_problem(value, m, label)
+        if why:
+            log.info("refused %r: %s", label or m.get("label") or m.get("name"), why)
+            raise ImplausibleValue(why)
         loc.fill(str(value))
         log.info("filled %r from %s", label or m.get("label") or m.get("name"), source or "?")
 

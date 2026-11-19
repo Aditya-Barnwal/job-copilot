@@ -26,8 +26,8 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from .guard import (ConsentRefused, DeniedHost, Halted, HoneypotRefused, OffSite, SafePageError,
-                    SubmitGuardViolation)
+from .guard import (ConsentRefused, DeniedHost, Halted, HoneypotRefused, ImplausibleValue, OffSite,
+                    SafePageError, SubmitGuardViolation)
 from .plan import NO_FORM_REASON, FieldAction, FillPlan, Outcome, zero_fill_reason
 from .safepage import SafePage, job_dir
 
@@ -59,6 +59,7 @@ class _Run:
         self.highlighted: list[str] = []
         self.missing_required: list[str] = []      # no data at all  -> blocked
         self.uncertain_required: list[str] = []    # data needs you  -> needs_you
+        self.problems: list[str] = []              # values refused just before typing (no values)
 
     def mark(self, a: FieldAction, *, missing: bool, kind: str = "needs_you") -> None:
         self.left_empty += 1
@@ -233,6 +234,9 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
                     log.info("honeypot left alone: %r", a.label)
                 except ConsentRefused:
                     run.mark(a, missing=False)
+                except ImplausibleValue as exc:     # the pre-typing number check: needs you
+                    run.problems.append(f"{a.label}: {exc}, left for you")
+                    run.mark(a, missing=False)
                 except (SubmitGuardViolation, SafePageError) as exc:
                     log.info("left empty %r: %s", a.label, type(exc).__name__)
                     run.mark(a, missing=False, kind="error")
@@ -287,6 +291,8 @@ def run_plan(page_or_safe: Any, plan: FillPlan, *, adapter: Any = None, ctx: Any
             status, reason = "ready", "filled; review and press Submit yourself"
         status, reason = apply_zero_fill_rule(status, reason, run.filled, form_field_count(safe),
                                               "" if open_detail in ("", "-") else open_detail)
+        if run.problems:
+            reason += "; " + "; ".join(run.problems[:3])
         log.info("autofill %s: filled=%d left_empty=%d highlighted=%d", status, run.filled,
                  run.left_empty, len(run.highlighted))
         return _outcome(status, reason, run, submit_selector=submit,
